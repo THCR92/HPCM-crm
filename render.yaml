@@ -1,0 +1,30 @@
+# Render Blueprint: creates the web app and its PostgreSQL database together.
+# In Render: New > Blueprint > pick this repository.
+services:
+  - type: web
+    name: hpcm-crm
+    runtime: node
+    plan: 0.5c-512mb
+    buildCommand: npm ci
+    # db:setup creates the tables on the first start and does nothing after that.
+    startCommand: npm run db:setup && npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hpcm-db
+          property: connectionString
+      - key: APP_USER
+        value: hpcm
+      # Render asks for this password when the Blueprint is created.
+      - key: APP_PASSWORD
+        sync: false
+
+databases:
+  - name: hpcm-db
+    plan: 0.1c-256mb
+    postgresMajorVersion: "16"
+    databaseName: hpcm
+    user: hpcm

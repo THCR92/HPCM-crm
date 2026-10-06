@@ -95,3 +95,8 @@ test('status changes: completing locks editing', async () => {
   const edit = await post(`/orders/${o.order_id}`, { customer_id: 1, sections: [] });
   assert.strictEqual(edit.status, 400);
 });
+
+test('health check answers', async () => {
+  const res = await fetch(`${base}/healthz`);
+  assert.strictEqual(await res.text(), 'ok');
+});

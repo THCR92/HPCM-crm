@@ -58,3 +58,10 @@ Settings (environment variables):
 | `APP_PASSWORD` | Turns on a sign-in prompt. Set this before putting the app online. |
 | `APP_USER` | Sign-in user name (default `hpcm`). |
 | `PORT` | Web port (default 3000). |
+
+## Putting it online (Render)
+
+`render.yaml` sets up the app and its database on [Render](https://render.com):
+in the Render dashboard choose **New → Blueprint**, pick this repository, and enter
+a sign-in password when asked. The tables and price list load on the first start.
+Sign in with user name `hpcm` and that password.
