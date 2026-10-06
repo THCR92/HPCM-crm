@@ -273,9 +273,28 @@ test('shop board shows counts and the next orders by due date', async () => {
   assert.strictEqual(res.status, 200);
   const page = await res.text();
   assert.match(page, /Quotes out/);
-  assert.match(page, /Approved, waiting for production/);
+  assert.match(page, /Approved, waiting/);
   assert.match(page, /Next up/);
+  assert.match(page, /Coil check/);
+  assert.match(page, /Ready and waiting/);
+  assert.match(page, /This week:/);
   assert.match(page, /http-equiv="refresh"/);
   const { rows: [c] } = await query(`SELECT count(*) AS n FROM orders WHERE status = 'in_production'`);
   assert.match(page, new RegExp(`<div class="n">${c.n}</div><div class="label">In production`));
+});
+
+test('shop board flags an approved job that needs more coil than is on hand', async () => {
+  const { rows: [col] } = await query(`INSERT INTO colors (name, finish) VALUES ('Board Test ' || gen_random_uuid(), 'smooth')
+    RETURNING color_id, name`);
+  const { rows: [g] } = await query(`SELECT gauge_id FROM products WHERE sku = 'PNL-PBR-26'`);
+  await query(`INSERT INTO coils (coil_tag, gauge_id, color_id, width_in, initial_lf, current_lf)
+    VALUES ('BT-' || gen_random_uuid(), $1, $2, 48, 100, 100)`, [g.gauge_id, col.color_id]);
+  const { rows: [cust] } = await query(`INSERT INTO customers (display_name) VALUES ('Board ' || gen_random_uuid()) RETURNING customer_id`);
+  const { rows: [o] } = await query(`INSERT INTO orders (customer_id, status, need_by) VALUES ($1, 'confirmed', current_date - 400)
+    RETURNING order_id`, [cust.customer_id]);
+  // 10 pieces x 20' = 200 ft needed, 100 ft on hand.
+  await query(`INSERT INTO order_items (order_id, product_id, color_id, pieces, length_in)
+    VALUES ($1, $2, $3, 10, 240)`, [o.order_id, await productId('PNL-PBR-26'), col.color_id]);
+  const page = await (await fetch(base + '/board')).text();
+  assert.match(page, new RegExp(`${col.name}[^<]*<span class="ga">26 ga</span> <b>200 ft</b> <em>short 100 ft</em>`));
 });

@@ -2,7 +2,7 @@
 // hold the cut-sheet rows; billable sq ft / LF are computed by the database.
 const { query, tx } = require('../db');
 const { feetInches } = require('../length');
-const { footage, runError } = require('../production');
+const { RUNNABLE, footage, runError } = require('../production');
 const {
   html, raw, layout, money, num, date, statusBadge, UNIT_LABEL, STATUS_LABEL, AREA_LABEL,
 } = require('../html');
@@ -356,7 +356,10 @@ router.post('/:id(\\d+)/status', async (req, res) => {
   if (!SETTABLE.includes(status)) return res.status(400).send('Unknown status');
   await query(`
     UPDATE orders SET status = $1::order_status,
-           completed_at = CASE WHEN $1::order_status = 'completed' THEN COALESCE(completed_at, now()) ELSE completed_at END
+           completed_at = CASE WHEN $1::order_status = 'completed' THEN COALESCE(completed_at, now()) ELSE completed_at END,
+           ready_at = CASE WHEN $1::order_status = 'ready' THEN COALESCE(ready_at, now())
+                           WHEN $1::order_status IN ('quote', 'confirmed', 'in_production') THEN NULL
+                           ELSE ready_at END
     WHERE order_id = $2 AND status <> 'invoiced'`, [status, req.params.id]);
   res.redirect(`/orders/${req.params.id}`);
 });
@@ -458,7 +461,6 @@ router.get('/:id(\\d+)', async (req, res) => {
 // ---------------------------------------------------------------------------
 // Production: which coils each line was run from
 // ---------------------------------------------------------------------------
-const RUNNABLE = ['panel', 'custom_trim', 'trim', 'flat_sheet', 'downspout'];
 const NO_PRODUCTION = ['quote', 'cancelled'];
 
 async function productionSection(o, req) {

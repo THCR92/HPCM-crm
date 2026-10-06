@@ -6,6 +6,9 @@
 // Coil footage for pieces x length (the coil feeds lengthwise). Trim is slit
 // from the coil: when a piece's flat width (girth) is known, as many pieces as
 // fit across the coil come out of each length of coil.
+// Product categories that are cut from coil.
+const RUNNABLE = ['panel', 'custom_trim', 'trim', 'flat_sheet', 'downspout'];
+
 function footage(pieces, lengthIn, { girth, coilWidth } = {}) {
   if (!(pieces > 0 && lengthIn > 0)) return null;
   const across = girth > 0 && coilWidth >= girth ? Math.floor(coilWidth / girth) : 1;
@@ -43,4 +46,4 @@ const runError = (err) => {
   return null;
 };
 
-module.exports = { footage, undoRun, runError };
+module.exports = { RUNNABLE, footage, undoRun, runError };
