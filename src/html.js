@@ -64,7 +64,7 @@ const layout = ({ title, active, body, scripts = [] }) => String(html`<!doctype 
 </head>
 <body>
 <header class="topbar">
-  <a class="brand" href="/orders"><strong>HIGH PLAINS</strong> CUSTOM METAL</a>
+  <a class="brand" href="/orders"><img src="/logo.svg" alt="High Plains Custom Metal"></a>
   <nav>${NAV.map(([href, label]) =>
     html`<a href="${href}" class="${active === href ? 'active' : ''}">${label}</a>`)}</nav>
 </header>

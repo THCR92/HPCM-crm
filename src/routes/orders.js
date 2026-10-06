@@ -404,7 +404,7 @@ router.get('/:id(\\d+)', async (req, res) => {
 
     <section class="sheet">
       <div class="sheet-head">
-        <div class="sheet-brand"><strong>HIGH PLAINS CUSTOM METAL</strong><br>
+        <div class="sheet-brand"><img src="/logo.svg" alt="High Plains Custom Metal">
           805 E Fox Farm Rd Unit B · Cheyenne, WY 82007 · (307) 331-6449</div>
         <div class="sheet-no">Order <strong>${o.order_number}</strong><br>${STATUS_LABEL[o.status]}</div>
       </div>

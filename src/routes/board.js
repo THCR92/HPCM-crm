@@ -155,7 +155,7 @@ router.get('/', async (req, res) => {
 </head>
 <body class="board">
 <header>
-  <div class="brand"><strong>HIGH PLAINS</strong> CUSTOM METAL</div>
+  <img class="brand" src="/logo.svg" alt="High Plains Custom Metal">
   <div class="week">This week: <b>${num(week.lf_run, 0)} ft</b> run · <b>${week.finished}</b> ${
     week.finished === 1 ? 'order' : 'orders'} finished</div>
   <div class="clock">${now}</div>

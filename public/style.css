@@ -5,9 +5,9 @@
   --ink: #1d2329;
   --muted: #66707a;
   --line: #d9dde2;
-  --brand: #8a2b1d;
+  --brand: #1d315e;   /* logo navy */
   --brand-ink: #ffffff;
-  --accent: #1f5f8b;
+  --accent: #196fb6;  /* logo blue */
   --warn: #b3261e;
   --radius: 8px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -23,12 +23,14 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.25rem 16px 4rem; }
 .muted { color: var(--muted); }
 .small { font-size: .85rem; }
 
-.topbar { background: var(--brand); color: var(--brand-ink); display: flex; align-items: center;
-  gap: 2rem; padding: .7rem 16px; flex-wrap: wrap; }
-.brand { color: inherit; text-decoration: none; letter-spacing: .04em; }
+.topbar { background: #fff; border-bottom: 4px solid var(--brand); display: flex; align-items: center;
+  gap: 1.5rem; padding: .4rem 16px; flex-wrap: wrap; }
+.brand { display: block; line-height: 0; }
+.brand img { height: 56px; width: auto; }
 .topbar nav { display: flex; gap: .3rem; flex-wrap: wrap; }
-.topbar nav a { color: inherit; text-decoration: none; padding: .35rem .7rem; border-radius: 6px; opacity: .85; }
-.topbar nav a.active, .topbar nav a:hover { background: rgba(255,255,255,.16); opacity: 1; }
+.topbar nav a { color: var(--brand); text-decoration: none; padding: .4rem .75rem; border-radius: 6px; font-weight: 600; }
+.topbar nav a:hover { background: #e8eef7; }
+.topbar nav a.active { background: var(--brand); color: var(--brand-ink); }
 
 .page-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .page-head h1 { margin: 0; }
@@ -90,8 +92,9 @@ dl.details dd { margin: 0; }
 
 /* ---- cut sheet view ---- */
 .sheet { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.25rem; }
-.sheet-head { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 3px solid var(--brand); padding-bottom: .7rem; margin-bottom: 1rem; }
+.sheet-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; border-bottom: 3px solid var(--brand); padding-bottom: .7rem; margin-bottom: 1rem; }
 .sheet-no { text-align: right; }
+.sheet-brand img { height: 72px; width: auto; display: block; margin-bottom: .3rem; }
 .sheet-fields { display: grid; grid-template-columns: max-content 1fr max-content 1fr; gap: .35rem 1rem; margin: 0 0 1rem; }
 .sheet-fields dt { color: var(--muted); font-size: .85rem; }
 .sheet-fields dd { margin: 0; border-bottom: 1px solid var(--line); min-height: 1.3em; }
