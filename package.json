@@ -1,0 +1,20 @@
+{
+  "name": "hpcm-crm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "High Plains Custom Metal CRM: customers, cut-sheet orders, inventory and QuickBooks invoicing",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "db:setup": "node scripts/setup-db.js",
+    "db:sample": "node scripts/setup-db.js --sample",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.22.3",
+    "pg": "^8.23.1"
+  }
+}
