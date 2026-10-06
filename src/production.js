@@ -3,9 +3,14 @@
 // the coil and add stock when a run is made to stock; this module adds the
 // default footage and the undo.
 
-// Coil footage for pieces x length (the coil feeds lengthwise).
-const footage = (pieces, lengthIn) =>
-  (pieces > 0 && lengthIn > 0 ? Math.round(((pieces * lengthIn) / 12) * 10) / 10 : null);
+// Coil footage for pieces x length (the coil feeds lengthwise). Trim is slit
+// from the coil: when a piece's flat width (girth) is known, as many pieces as
+// fit across the coil come out of each length of coil.
+function footage(pieces, lengthIn, { girth, coilWidth } = {}) {
+  if (!(pieces > 0 && lengthIn > 0)) return null;
+  const across = girth > 0 && coilWidth >= girth ? Math.floor(coilWidth / girth) : 1;
+  return Math.round(((Math.ceil(pieces / across) * lengthIn) / 12) * 10) / 10;
+}
 
 async function undoRun(db, runId) {
   const { rows: [run] } = await db.query(

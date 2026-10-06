@@ -11,7 +11,7 @@
   const UNIT = { sqft: 'sq ft', lf: 'LF', each: 'ea', bag: 'bag', roll: 'roll' };
   const CATEGORY = {
     panel: 'Panels', custom_trim: 'Custom trim', trim: 'Trims & specialty cuts', flat_sheet: 'Flat sheet',
-    boot: 'Boots', jack: 'Jacks', fastener: 'Screws', accessory: 'Accessories', service: 'Services',
+    downspout: 'Downspouts & elbows', boot: 'Boots', jack: 'Jacks', fastener: 'Screws', accessory: 'Accessories', service: 'Services',
   };
 
   // ---------------------------------------------------------------- helpers
@@ -89,8 +89,12 @@
     let qty;
     if (p.unit === 'sqft') qty = len > 0 && width > 0 ? round2((pieces * len * width) / 144) : 0;
     else if (p.unit === 'lf') qty = len > 0 ? round2((pieces * len) / 12) : 0;
+    // Each-priced pieces cut to a length are billed in standard lengths (6 @ 12' = 7.2 x 10').
+    else if (p.standard_length_in && len > 0) qty = round2((pieces * len) / p.standard_length_in);
     else qty = pieces;
-    return { qty, amount: row.unit_price === '' ? 0 : round2(qty * price), unit: p.unit };
+    const per = p.unit === 'each' && p.standard_length_in && len > 0 ? Number(p.standard_length_in) : null;
+    const tooLong = !!(p.max_length_in && len > Number(p.max_length_in));
+    return { qty, amount: row.unit_price === '' ? 0 : round2(qty * price), unit: p.unit, per, tooLong };
   }
 
   // ----------------------------------------------------------------- render
@@ -246,7 +250,10 @@
       s.items.forEach((row, ii) => {
         const tr = root.querySelector(`tr[data-s="${si}"][data-i="${ii}"]`);
         const c = compute(row);
-        tr.querySelector('.billed').textContent = c.unit ? `${fmt(c.qty)} ${UNIT[c.unit]}` : '';
+        tr.querySelector('.billed').textContent = !c.unit ? ''
+          : c.per ? `${fmt(c.qty)} × ${fmt(c.per / 12)}'` : `${fmt(c.qty)} ${UNIT[c.unit]}`;
+        tr.querySelector('.ft').classList.toggle('missing', !!c.tooLong);
+        tr.querySelector('.ft').title = c.tooLong ? `Longest piece is ${Number(productById.get(Number(row.product_id)).max_length_in) / 12}'` : '';
         tr.querySelector('.amount').textContent = c.unit ? money(c.amount) : '';
         tr.querySelector('.price').classList.toggle('missing', !!c.unit && row.unit_price === '');
         if (c.unit === 'sqft') sSq += c.qty;

@@ -15,7 +15,9 @@ works out the square feet, linear feet and price for every line.
     (Snap Lock / Nail Flange coverage is chosen per line, 16"–18").
   - PBR/R and Tuff Rib are billed **per linear foot**.
   - Custom trim is billed per sq ft using its girth (flat width).
-  - Trims, boots, jacks, screws and accessories are billed each / bag / roll.
+  - Trims, boots, jacks, screws and accessories are billed each / bag / roll. Trim and
+    downspouts are priced per 10' piece; other lengths (trim up to 20') bill in proportion,
+    so 6 pieces at 12' = 7.2 × the 10' price.
   - Totals update as you type. Pressing Enter on a line starts the next line with
     the same panel and color, so a list of lengths goes in quickly.
   - Special-order colors add their upcharge automatically.
@@ -33,7 +35,9 @@ works out the square feet, linear feet and price for every line.
   after measuring it, and close out used-up or returned coils. Weight is optional.
 - **Production** on each order: log which coil each line was run from. Coil feet used
   default to pieces × length (plus scrap). The form warns when a coil doesn't match the
-  line's color (including the same color name from another supplier) or gauge. Runs can
+  line's color (including the same color name from another supplier) or gauge. For trim
+  with a flat width set on the Price list, pieces that fit side by side across the coil
+  (e.g. four 12" pieces across a 48" coil) share the same footage. Runs can
   be undone, and the first run moves a confirmed order to In production.
 - **Stock**: panels and trim cut ahead or left over, by product, color and length. Add
   pieces (optionally cut from a coil) and take them out when sold or scrapped.

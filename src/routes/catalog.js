@@ -1,11 +1,12 @@
 // Price list and colors.
 const { query } = require('../db');
-const { html, layout, money, date, UNIT_LABEL } = require('../html');
+const { html, layout, money, num, date, UNIT_LABEL } = require('../html');
 
 const router = require('../async-router')();
 
 const CATEGORY_LABEL = {
   panel: 'Panels', custom_trim: 'Custom trim', trim: 'Trims & specialty cuts', flat_sheet: 'Flat sheet',
+  downspout: 'Downspouts & elbows',
   boot: 'Boots', jack: 'Jacks', fastener: 'Screws', accessory: 'Accessories',
   service: 'Services', delivery: 'Delivery',
 };
@@ -13,6 +14,7 @@ const CATEGORY_LABEL = {
 router.get('/products', async (req, res) => {
   const { rows } = await query(`
     SELECT p.product_id, p.sku, p.name, p.category, p.pricing_unit, p.price_varies,
+           p.standard_length_in, p.girth_in,
            cp.unit_price, cp.effective_from
     FROM products p LEFT JOIN v_current_prices cp USING (product_id)
     WHERE p.active ORDER BY array_position(enum_range(NULL::product_category), p.category), p.name`);
@@ -24,21 +26,30 @@ router.get('/products', async (req, res) => {
     <div class="page-head"><h1>Price list</h1></div>
     <p class="muted">Prices are for standard stock colors. Change a price here and new order lines use it
     from today on; orders already written keep the price they were written at.</p>
-    ${req.query.saved ? html`<div class="notice">Price saved.</div>` : ''}
-    ${Object.entries(groups).map(([cat, items]) => html`
+    <p class="muted">Trim and downspouts are priced per 10' piece; other lengths are billed in proportion
+    (a 20' piece counts as two). <strong>Flat width</strong> is how wide a strip of coil one piece takes;
+    it decides how many pieces come out across a coil when production is logged.</p>
+    ${req.query.saved ? html`<div class="notice">Saved.</div>` : ''}
+    ${Object.entries(groups).map(([cat, items]) => {
+    const cut = ['trim', 'downspout'].includes(cat);
+    return html`
       <h2>${CATEGORY_LABEL[cat] || cat}</h2>
       <table class="list">
-        <thead><tr><th>Product</th><th>Unit</th><th class="num">Price</th><th>Since</th><th></th></tr></thead>
+        <thead><tr><th>Product</th><th>Unit</th>${cut ? html`<th>Flat width</th>` : ''}<th class="num">Price</th><th>Since</th><th></th></tr></thead>
         <tbody>${items.map((p) => html`
           <tr><td>${p.name}<div class="muted small">${p.sku}</div></td>
-          <td>${UNIT_LABEL[p.pricing_unit]}</td>
+          <td>${p.pricing_unit === 'each' && p.standard_length_in ? `per ${num(p.standard_length_in / 12)}' piece` : UNIT_LABEL[p.pricing_unit]}</td>
+          ${cut ? html`<td><form method="post" action="/products/${p.product_id}/girth" class="inline">
+            <input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}" placeholder="inches" style="width:5.5rem">
+            <button class="btn small">Save</button></form></td>` : ''}
           <td class="num">${p.unit_price !== null ? money(p.unit_price) : html`<span class="muted">${p.price_varies ? 'Varies' : '—'}</span>`}</td>
           <td>${date(p.effective_from)}</td>
           <td><form method="post" action="/products/${p.product_id}/price" class="inline">
             <input name="unit_price" type="number" step="0.01" min="0" placeholder="New price" required>
             <button class="btn small">Set</button></form></td></tr>`)}
         </tbody>
-      </table>`)}`,
+      </table>`;
+  })}`,
   }));
 });
 
@@ -87,6 +98,13 @@ const colorError = (err, c) => {
   if (err.code === '23503') return 'Pick a supplier and finish from the lists.';
   return err.message;
 };
+
+router.post('/products/:id(\\d+)/girth', async (req, res) => {
+  const g = req.body.girth_in === '' ? null : Number(req.body.girth_in);
+  if (g !== null && !(g > 0)) return res.status(400).send('Enter the flat width in inches');
+  await query('UPDATE products SET girth_in = $2 WHERE product_id = $1', [req.params.id, g]);
+  res.redirect('/products?saved=1');
+});
 
 router.get('/colors', async (req, res) => {
   const { rows: colors } = await query(

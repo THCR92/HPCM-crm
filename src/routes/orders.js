@@ -38,7 +38,8 @@ async function loadOrder(id) {
   const { rows: sections } = await query(
     'SELECT * FROM order_sections WHERE order_id = $1 ORDER BY sort_order, section_id', [id]);
   const { rows: items } = await query(`
-    SELECT oi.*, p.name AS product_name, p.sku, p.category, p.gauge_id AS product_gauge_id, g.gauge, col.label AS color_name,
+    SELECT oi.*, p.name AS product_name, p.sku, p.category, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
+           g.gauge, col.label AS color_name,
            fn_format_length(oi.length_in) AS length_display, ts.girth_in
     FROM order_items oi
     JOIN products p USING (product_id)
@@ -56,7 +57,7 @@ async function loadOrder(id) {
 async function loadCatalog() {
   const { rows: products } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies,
-           p.is_cut_to_length, p.standard_length_in, cp.unit_price AS price,
+           p.is_cut_to_length, p.standard_length_in, p.max_length_in, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max
     FROM products p
     LEFT JOIN v_current_prices cp USING (product_id)
@@ -125,6 +126,9 @@ function parseSections(b, productsById) {
       if (!(pieces > 0)) throw new UserError(`${where(ii + 1)}: quantity must be more than zero.`);
       const length = blank(it.length_in) ? null : Number(it.length_in);
       if (length !== null && !(length > 0)) throw new UserError(`${where(ii + 1)}: length must be more than zero.`);
+      if (length !== null && p.max_length_in && length > p.max_length_in) {
+        throw new UserError(`${where(ii + 1)}: ${p.name} can be at most ${p.max_length_in / 12}' long.`);
+      }
       if (['sqft', 'lf'].includes(p.unit) && length === null) {
         throw new UserError(`${where(ii + 1)}: ${p.name} needs a length.`);
       }
@@ -155,7 +159,7 @@ function parseSections(b, productsById) {
 async function saveOrder(orderId, body) {
   const header = parseHeader(body);
   const { rows: prodRows } = await query(`
-    SELECT product_id AS id, name, category, pricing_unit AS unit, taxable FROM products`);
+    SELECT product_id AS id, name, category, pricing_unit AS unit, taxable, max_length_in FROM products`);
   const productsById = new Map(prodRows.map((p) => [p.id, p]));
   const sections = parseSections(body, productsById);
 
@@ -221,7 +225,8 @@ async function saveOrder(orderId, body) {
                                             JOIN panel_profiles pp USING (profile_id)
                                             WHERE p.product_id = $3)),
                    unit_price = $8, description = $9,
-                   pricing_unit = p.pricing_unit, taxable = p.taxable
+                   pricing_unit = p.pricing_unit, taxable = p.taxable,
+                   per_length_in = CASE WHEN p.pricing_unit = 'each' THEN p.standard_length_in END
             FROM products p
             WHERE p.product_id = $3 AND oi.order_item_id = $10 AND oi.order_id = $11`,
           [...vals, itemId, orderId]);
@@ -373,6 +378,9 @@ router.get('/:id(\\d+)', async (req, res) => {
     return [sq ? `${num(sq)} sq ft` : '', lf ? `${num(lf)} LF` : ''].filter(Boolean).join(' · ');
   };
   const nextStatuses = SETTABLE.filter((s) => s !== o.status);
+  // Each-priced pieces cut to a length are billed in standard lengths: "7.2 × 10'".
+  const billed = (i) => (i.pricing_unit === 'each' && i.per_length_in && i.length_in
+    ? `${num(i.billable_qty)} × ${num(i.per_length_in / 12)}'` : `${num(i.billable_qty)} ${UNIT_LABEL[i.pricing_unit]}`);
   const production = await productionSection(o, req);
 
   res.send(layout({
@@ -418,7 +426,7 @@ router.get('/:id(\\d+)', async (req, res) => {
           <tr><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
           <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}</td>
           <td>${i.gauge || ''}</td><td>${i.color_name}</td><td>${sizeCol(i)}</td>
-          <td class="num">${num(i.billable_qty)} ${UNIT_LABEL[i.pricing_unit]}</td>
+          <td class="num">${billed(i)}</td>
           <td class="num">${money(i.unit_price)}</td><td class="num">${money(i.line_total)}</td></tr>`)
         : html`<tr><td colspan="9" class="empty">Nothing in this section.</td></tr>`}</tbody>
       </table>`)}
@@ -450,7 +458,7 @@ router.get('/:id(\\d+)', async (req, res) => {
 // ---------------------------------------------------------------------------
 // Production: which coils each line was run from
 // ---------------------------------------------------------------------------
-const RUNNABLE = ['panel', 'custom_trim', 'trim', 'flat_sheet'];
+const RUNNABLE = ['panel', 'custom_trim', 'trim', 'flat_sheet', 'downspout'];
 const NO_PRODUCTION = ['quote', 'cancelled'];
 
 async function productionSection(o, req) {
@@ -494,14 +502,14 @@ async function productionSection(o, req) {
       <label class="span2">Line *<select name="order_item_id" required>
         <option value="">Pick a line…</option>
         ${items.map((i) => html`<option value="${i.order_item_id}" data-pieces="${Math.max(0, i.pieces - runPieces(i.order_item_id))}"
-            data-length="${i.length_in ?? ''}" data-color="${i.color_id ?? ''}" data-gauge="${i.product_gauge_id ?? ''}"
+            data-length="${i.length_in ?? i.per_length_in ?? ''}" data-girth="${(i.category === 'custom_trim' ? i.width_in : i.product_girth_in) ?? ''}" data-color="${i.color_id ?? ''}" data-gauge="${i.product_gauge_id ?? ''}"
 >
           ${i.line_no}. ${AREA_LABEL[i.area]}: ${num(i.pieces)} × ${i.length_display || 'each'} ${i.product_name}${i.color_name ? `, ${i.color_name}` : ''}
           (${runPieces(i.order_item_id)} of ${num(i.pieces)} run)</option>`)}
       </select></label>
       <label class="span2">Coil *<select name="coil_id" required>
         <option value="">Pick a coil…</option>
-        ${coils.map((c) => html`<option value="${c.coil_id}" data-color="${c.color_id}" data-gauge="${c.gauge_id}">
+        ${coils.map((c) => html`<option value="${c.coil_id}" data-color="${c.color_id}" data-gauge="${c.gauge_id}" data-width="${c.width_in}">
           ${c.coil_tag}: ${c.color_label}, ${c.gauge} ga, ${num(c.width_in, 3)}" (${num(c.current_lf, 0)} LF left)</option>`)}
       </select></label>
       <div class="span2 alert run-warning" hidden></div>
@@ -513,7 +521,8 @@ async function productionSection(o, req) {
       <label>By<input name="operator"></label>
       <label class="check run-confirm" hidden><input type="checkbox" name="confirm" value="1"> Use this coil anyway</label>
       <div class="span2 actions"><button class="btn primary">Log run</button></div>
-      <p class="span2 muted small">Coil feet used fills in as pieces × length. Change it if more came off the coil,
+      <p class="span2 muted small"><span class="run-across"></span> Coil feet used fills in as pieces × length
+        (for trim with a flat width set, pieces that fit side by side across the coil share the same footage). Change it if more came off the coil,
         and put any wasted footage under scrap.</p>
     </form>` : ''}
   </section>`;
@@ -524,7 +533,7 @@ router.post('/:id(\\d+)/runs', async (req, res) => {
   const b = req.body;
   const back = (msg) => res.redirect(`/orders/${orderId}?error=${encodeURIComponent(msg)}#production`);
   const { rows: [line] } = await query(`
-    SELECT oi.*, p.category, p.gauge_id AS product_gauge_id, o.status, col.label AS color_label
+    SELECT oi.*, p.category, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in, o.status, col.label AS color_label
     FROM order_items oi JOIN products p USING (product_id) JOIN orders o USING (order_id)
     LEFT JOIN v_colors col ON col.color_id = oi.color_id
     WHERE oi.order_item_id = $1 AND oi.order_id = $2`, [Number(b.order_item_id), orderId]);
@@ -554,7 +563,8 @@ router.post('/:id(\\d+)/runs', async (req, res) => {
   const typed = Number(b.lf_used);
   const scrap = Number(b.scrap_lf) || 0;
   // Footage typed in already includes scrap; otherwise it's pieces x length plus scrap.
-  const used = typed > 0 ? typed : footage(pieces, len) + scrap;
+  const girth = line.category === 'custom_trim' ? line.width_in : line.product_girth_in;
+  const used = typed > 0 ? typed : footage(pieces, len, { girth, coilWidth: coil.width_in }) + scrap;
   if (scrap > used) return back('Scrap can\'t be more than the coil feet used.');
   try {
     await tx(async (db) => {

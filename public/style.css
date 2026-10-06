@@ -125,7 +125,7 @@ table.lines.edit .w-num { width: 4.6rem; }
 table.lines.edit .price { width: 5.6rem; }
 table.lines.edit td.price-cell, table.lines.edit td.width { white-space: nowrap; }
 table.lines.edit .color { min-width: 9.5rem; }
-table.lines.edit .price.missing { border-color: var(--warn); background: #fff6f5; }
+table.lines.edit .ft.missing, table.lines.edit .price.missing { border-color: var(--warn); background: #fff6f5; }
 table.lines.edit td.billed, table.lines.edit td.amount { min-width: 6rem; }
 .unit { color: var(--muted); padding: 0 .15rem; }
 .fixed-width { color: var(--muted); white-space: nowrap; }

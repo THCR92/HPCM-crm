@@ -27,8 +27,14 @@
     const pieces = Number(form.elements.pieces.value);
     const len = (Number(form.elements.ft.value) || 0) * 12 + parseInches(form.elements.inch.value);
     const scrap = Number(form.elements.scrap_lf.value) || 0;
+    // Mirrors footage() in src/production.js: trim pieces side by side across the coil.
+    const girth = Number(line.selectedOptions[0]?.dataset.girth);
+    const width = Number(coil.selectedOptions[0]?.dataset.width);
+    const across = girth > 0 && width >= girth ? Math.floor(width / girth) : 1;
     form.elements.lf_used.placeholder = pieces > 0 && len > 0
-      ? `${Math.round(((pieces * len) / 12 + scrap) * 10) / 10}` : '';
+      ? `${Math.round(((Math.ceil(pieces / across) * len) / 12 + scrap) * 10) / 10}` : '';
+    const note = form.querySelector('.run-across');
+    if (note) note.textContent = across > 1 ? `${across} pieces fit across this coil.` : '';
   }
 
   function check() {
@@ -59,6 +65,6 @@
     }
     check(); updateFootage();
   });
-  coil.addEventListener('change', check);
+  coil.addEventListener('change', () => { check(); updateFootage(); });
   form.addEventListener('input', updateFootage);
 }());

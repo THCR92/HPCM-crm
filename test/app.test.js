@@ -230,3 +230,39 @@ test('coils by linear foot: receive, run against an order line, mismatch check, 
     assert.strictEqual((await fetch(base + p)).status, 200, p);
   }
 });
+
+test('trim at custom lengths bills in 10\' pieces, up to 20\'; trim footage counts pieces across the coil', async () => {
+  const { rows: [c] } = await query(
+    "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const ridge = await productId('TRM-RIDGE-26');
+  const ds = await productId('DS-3X4');
+  const order = (items) => ({ customer_id: c.customer_id, sections: [{ area: 'trim', items }] });
+  // 6 pcs @ 12' = 7.2 x 10' at $44.20; 3 pcs no length = 3; downspout 4 @ 20' = 8 x 10' at $15.
+  let res = await post('/orders', order([
+    { product_id: ridge, pieces: 6, length_in: 144, unit_price: 44.20 },
+    { product_id: ridge, pieces: 3, unit_price: 44.20 },
+    { product_id: ds, pieces: 4, length_in: 240, unit_price: 15 },
+  ]));
+  const out = await res.json();
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const { rows } = await query('SELECT billable_qty, line_total FROM order_items WHERE order_id = $1 ORDER BY line_no', [id]);
+  assert.deepStrictEqual(rows.map((r) => [r.billable_qty, r.line_total]), [[7.2, 318.24], [3, 132.6], [8, 120]]);
+  const { rows: [inv] } = await query('SELECT qbo_description FROM v_order_invoice_lines WHERE order_id = $1 AND line_no = 1', [id]);
+  assert.match(inv.qbo_description, /6 pcs @ 12' 0" = 7.2 x 10' 0" lengths/);
+  assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /7\.2 × 10&#39;/);
+
+  res = await post('/orders', order([{ product_id: ridge, pieces: 1, length_in: 252, unit_price: 44.20 }]));
+  assert.strictEqual(res.status, 400);
+  assert.match((await res.json()).error, /at most 20'/);
+
+  // Footage: girth 12" on a 48" coil = 4 across; 10 pcs @ 10' -> 3 strips x 10' = 30 LF.
+  const { footage } = require('../src/production');
+  assert.strictEqual(footage(10, 120, { girth: 12, coilWidth: 48 }), 30);
+  assert.strictEqual(footage(10, 120), 100);
+  assert.strictEqual(footage(2, 120, { girth: 60, coilWidth: 48 }), 20);
+
+  const prices = await (await fetch(`${base}/products`)).text();
+  assert.match(prices, /Downspout 3&quot;x4&quot;/);
+  assert.match(prices, /per 10' piece/);
+});
