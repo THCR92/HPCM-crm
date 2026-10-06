@@ -4,8 +4,8 @@ SET search_path = hpcm, public;
 INSERT INTO suppliers (name) VALUES ('Coil Supplier A'), ('Coil Supplier B');
 INSERT INTO colors (name, supplier_id, finish, is_stock_color, upcharge_pct) VALUES
     ('Charcoal Gray', 1, 'smooth', true, 0), ('Copper Penny', 1, 'smooth', false, 15);
-INSERT INTO coils (coil_tag, gauge_id, color_id, width_in, initial_weight_lb, current_weight_lb, cost_per_lb, supplier_id)
-SELECT 'T-24-0457', g.gauge_id, c.color_id, 20, 5000, 5000, 0.92, 1 FROM gauges g, colors c WHERE g.gauge=24 AND c.name='Charcoal Gray';
+INSERT INTO coils (coil_tag, gauge_id, color_id, width_in, initial_lf, current_lf, cost_per_lf, supplier_id)
+SELECT 'T-24-0457', g.gauge_id, c.color_id, 20, 2500, 2500, 1.85, 1 FROM gauges g, colors c WHERE g.gauge=24 AND c.name='Charcoal Gray';
 INSERT INTO customers (display_name, company_name, email, phone) VALUES ('Summit Exteriors LLC','Summit Exteriors LLC','ap@summit.example','307-555-0100');
 INSERT INTO orders (customer_id, job_name, po_number, job_address_text, fulfillment, need_by, delivery_charge)
 VALUES (1, 'Miller Residence', 'SE-2231', '1418 Ridge Rd, Cheyenne WY 82009', 'delivery', '2026-10-15', 75) RETURNING order_number;
@@ -30,7 +30,7 @@ SELECT 1,3,product_id,1,6,126,11.5 FROM products WHERE sku='TRM-CUST-24' RETURNI
 INSERT INTO order_item_trim_specs (order_item_id, girth_in, bend_count, segments) VALUES ((SELECT max(order_item_id) FROM order_items), 11.5, 4, '[{"leg_in":4,"angle_deg":90}]');
 INSERT INTO order_items (order_id, product_id, pieces) SELECT 1, product_id, 2 FROM products WHERE sku='SCR-PANHEAD-1';
 -- production
-INSERT INTO production_runs (coil_id, order_item_id, pieces, length_in, weight_used_lb, scrap_lb, operator) VALUES (1, 1, 12, 174, 280, 12, 'JR');
+INSERT INTO production_runs (coil_id, order_item_id, pieces, length_in, lf_used, scrap_lf, operator) VALUES (1, 1, 12, 174, 180, 6, 'JR');
 INSERT INTO colors (name, supplier_id, finish, upcharge_pct) VALUES
     ('Galvalume', 1, 'smooth', 0), ('Burnished Slate', 1, 'smooth', 0), ('Polar White', 1, 'smooth', 0),
     ('Charcoal Gray', 2, 'smooth', 0), ('Barn Red', 2, 'smooth', 0),

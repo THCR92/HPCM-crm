@@ -45,6 +45,8 @@ const statusBadge = (s) => html`<span class="badge badge-${s}">${STATUS_LABEL[s]
 const NAV = [
   ['/orders', 'Orders'],
   ['/customers', 'Customers'],
+  ['/coils', 'Coils'],
+  ['/stock', 'Stock'],
   ['/products', 'Price list'],
   ['/colors', 'Colors'],
 ];

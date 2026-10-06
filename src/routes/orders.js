@@ -1,6 +1,8 @@
 // Orders: one order = one cut sheet. Sections (Roof / Wall / Trim / Other)
 // hold the cut-sheet rows; billable sq ft / LF are computed by the database.
 const { query, tx } = require('../db');
+const { feetInches } = require('../length');
+const { footage, runError } = require('../production');
 const {
   html, raw, layout, money, num, date, statusBadge, UNIT_LABEL, STATUS_LABEL, AREA_LABEL,
 } = require('../html');
@@ -36,7 +38,7 @@ async function loadOrder(id) {
   const { rows: sections } = await query(
     'SELECT * FROM order_sections WHERE order_id = $1 ORDER BY sort_order, section_id', [id]);
   const { rows: items } = await query(`
-    SELECT oi.*, p.name AS product_name, p.sku, p.category, g.gauge, col.label AS color_name,
+    SELECT oi.*, p.name AS product_name, p.sku, p.category, p.gauge_id AS product_gauge_id, g.gauge, col.label AS color_name,
            fn_format_length(oi.length_in) AS length_display, ts.girth_in
     FROM order_items oi
     JOIN products p USING (product_id)
@@ -371,6 +373,7 @@ router.get('/:id(\\d+)', async (req, res) => {
     return [sq ? `${num(sq)} sq ft` : '', lf ? `${num(lf)} LF` : ''].filter(Boolean).join(' · ');
   };
   const nextStatuses = SETTABLE.filter((s) => s !== o.status);
+  const production = await productionSection(o, req);
 
   res.send(layout({
     title: `Order ${o.order_number}`, active: '/orders',
@@ -438,8 +441,136 @@ router.get('/:id(\\d+)', async (req, res) => {
           <tr><td colspan="2" class="muted small">Sales tax is added on the QuickBooks invoice.</td></tr>
         </table>
       </div>
-    </section>`,
+    </section>
+    ${production}`,
+    scripts: ['/production.js'],
   }));
+});
+
+// ---------------------------------------------------------------------------
+// Production: which coils each line was run from
+// ---------------------------------------------------------------------------
+const RUNNABLE = ['panel', 'custom_trim', 'trim', 'flat_sheet'];
+const NO_PRODUCTION = ['quote', 'cancelled'];
+
+async function productionSection(o, req) {
+  const items = o.sections.flatMap((s) => s.items.map((i) => ({ ...i, area: s.area })))
+    .filter((i) => RUNNABLE.includes(i.category));
+  if (!items.length) return '';
+  const { rows: runs } = await query(`
+    SELECT r.*, fn_format_length(r.length_in) AS length_display, oi.line_no, oi.color_id AS line_color_id,
+           c.coil_tag, c.color_id AS coil_color_id, c.color_label AS coil_color, c.gauge AS coil_gauge
+    FROM production_runs r
+    JOIN order_items oi USING (order_item_id)
+    JOIN v_coils c USING (coil_id)
+    WHERE oi.order_id = $1 ORDER BY r.run_at, r.production_run_id`, [o.order_id]);
+  const runPieces = (id) => runs.filter((r) => r.order_item_id === id).reduce((a, r) => a + r.pieces, 0);
+  const canLog = !NO_PRODUCTION.includes(o.status) && o.status !== 'invoiced';
+  const { rows: coils } = canLog ? await query(`
+    SELECT coil_id, coil_tag, color_id, color_label, gauge_id, gauge, width_in, current_lf
+    FROM v_coils WHERE status IN ('received','in_stock','on_machine')
+    ORDER BY color_label, gauge, coil_tag`) : { rows: [] };
+  const back = `/orders/${o.order_id}`;
+  return html`
+  <section class="no-print" id="production">
+    <h2>Production</h2>
+    ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
+    <table class="list">
+      <thead><tr><th>Line</th><th>Run</th><th>Coil</th><th class="num">Used</th><th>By</th><th>When</th><th></th></tr></thead>
+      <tbody>${runs.length ? runs.map((r) => html`<tr>
+        <td>${r.line_no}</td><td>${r.pieces} × ${r.length_display}</td>
+        <td><a href="/coils/${r.coil_id}">${r.coil_tag}</a> ${r.coil_color}
+          ${r.coil_color_id !== r.line_color_id ? html`<span class="badge badge-cancelled">different color</span>` : ''}</td>
+        <td class="num">${num(r.lf_used, 1)} LF${r.scrap_lf ? html` <span class="muted small">(${num(r.scrap_lf, 1)} scrap)</span>` : ''}</td>
+        <td>${r.operator}</td><td>${date(r.run_at)}</td>
+        <td class="num">${canLog ? html`<form method="post" action="/runs/${r.production_run_id}/undo" class="inline"
+            onsubmit="return confirm('Undo this run? The footage goes back on the coil.')">
+            <input type="hidden" name="back" value="${back}"><button class="btn small">Undo</button></form>` : ''}</td></tr>`)
+      : html`<tr><td colspan="7" class="empty">Nothing has been run for this order yet.</td></tr>`}</tbody>
+    </table>
+    ${o.status === 'quote' ? html`<p class="muted">Confirm the order to start logging production.</p>` : ''}
+    ${canLog ? html`
+    <form method="post" action="/orders/${o.order_id}/runs" class="card form-grid run-form" style="margin-top:1rem">
+      <label class="span2">Line *<select name="order_item_id" required>
+        <option value="">Pick a line…</option>
+        ${items.map((i) => html`<option value="${i.order_item_id}" data-pieces="${Math.max(0, i.pieces - runPieces(i.order_item_id))}"
+            data-length="${i.length_in ?? ''}" data-color="${i.color_id ?? ''}" data-gauge="${i.product_gauge_id ?? ''}"
+>
+          ${i.line_no}. ${AREA_LABEL[i.area]}: ${num(i.pieces)} × ${i.length_display || 'each'} ${i.product_name}${i.color_name ? `, ${i.color_name}` : ''}
+          (${runPieces(i.order_item_id)} of ${num(i.pieces)} run)</option>`)}
+      </select></label>
+      <label class="span2">Coil *<select name="coil_id" required>
+        <option value="">Pick a coil…</option>
+        ${coils.map((c) => html`<option value="${c.coil_id}" data-color="${c.color_id}" data-gauge="${c.gauge_id}">
+          ${c.coil_tag}: ${c.color_label}, ${c.gauge} ga, ${num(c.width_in, 3)}" (${num(c.current_lf, 0)} LF left)</option>`)}
+      </select></label>
+      <div class="span2 alert run-warning" hidden></div>
+      <label>Pieces *<input name="pieces" type="number" min="1" step="1" required></label>
+      <label>Length<span class="row"><input name="ft" inputmode="numeric" placeholder="ft"><span class="unit">'</span>
+        <input name="inch" placeholder="in"><span class="unit">"</span></span></label>
+      <label>Coil feet used<input name="lf_used" type="number" step="0.1" min="0"></label>
+      <label>Of that, scrap (LF)<input name="scrap_lf" type="number" step="0.1" min="0" placeholder="0"></label>
+      <label>By<input name="operator"></label>
+      <label class="check run-confirm" hidden><input type="checkbox" name="confirm" value="1"> Use this coil anyway</label>
+      <div class="span2 actions"><button class="btn primary">Log run</button></div>
+      <p class="span2 muted small">Coil feet used fills in as pieces × length. Change it if more came off the coil,
+        and put any wasted footage under scrap.</p>
+    </form>` : ''}
+  </section>`;
+}
+
+router.post('/:id(\\d+)/runs', async (req, res) => {
+  const orderId = Number(req.params.id);
+  const b = req.body;
+  const back = (msg) => res.redirect(`/orders/${orderId}?error=${encodeURIComponent(msg)}#production`);
+  const { rows: [line] } = await query(`
+    SELECT oi.*, p.category, p.gauge_id AS product_gauge_id, o.status, col.label AS color_label
+    FROM order_items oi JOIN products p USING (product_id) JOIN orders o USING (order_id)
+    LEFT JOIN v_colors col ON col.color_id = oi.color_id
+    WHERE oi.order_item_id = $1 AND oi.order_id = $2`, [Number(b.order_item_id), orderId]);
+  if (!line) return back('Pick a line.');
+  if (NO_PRODUCTION.includes(line.status) || line.status === 'invoiced') return back('Production can\'t be logged on this order.');
+  const { rows: [coil] } = await query('SELECT * FROM v_coils WHERE coil_id = $1', [Number(b.coil_id)]);
+  if (!coil) return back('Pick a coil.');
+  const pieces = Number(b.pieces);
+  if (!(pieces > 0) || !Number.isInteger(pieces)) return back('Enter a whole number of pieces.');
+  let len = feetInches(b.ft, b.inch);
+  if (Number.isNaN(len)) return back('The length isn\'t readable. Use feet, then inches like 6 or 6 1/2.');
+  len = len || line.length_in;
+  if (!(len > 0)) return back('Enter the length that was cut.');
+
+  // The same color name from another supplier, or another gauge, doesn't match.
+  const problems = [];
+  if (line.color_id && coil.color_id !== line.color_id) {
+    problems.push(`the coil is ${coil.color_label} but the line is ${line.color_label}`);
+  }
+  if (line.product_gauge_id && coil.gauge_id !== line.product_gauge_id) {
+    problems.push(`the coil is ${coil.gauge} ga but the product is a different gauge`);
+  }
+  if (problems.length && b.confirm !== '1') {
+    return back(`Check the coil: ${problems.join(', and ')}. Tick "Use this coil anyway" if that's right.`);
+  }
+
+  const typed = Number(b.lf_used);
+  const scrap = Number(b.scrap_lf) || 0;
+  // Footage typed in already includes scrap; otherwise it's pieces x length plus scrap.
+  const used = typed > 0 ? typed : footage(pieces, len) + scrap;
+  if (scrap > used) return back('Scrap can\'t be more than the coil feet used.');
+  try {
+    await tx(async (db) => {
+      await db.query(`
+        INSERT INTO production_runs (coil_id, order_item_id, pieces, length_in, lf_used, scrap_lf, operator)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [coil.coil_id, line.order_item_id, pieces, len, Math.round(used * 10) / 10, scrap,
+        (b.operator || '').trim() || null]);
+      await db.query(`UPDATE orders SET status = 'in_production' WHERE order_id = $1 AND status = 'confirmed'`, [orderId]);
+    });
+    res.redirect(`/orders/${orderId}#production`);
+  } catch (err) {
+    const msg = runError(err);
+    if (!msg) throw err;
+    back(msg);
+  }
 });
 
 module.exports = router;

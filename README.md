@@ -28,8 +28,18 @@ works out the square feet, linear feet and price for every line.
   two suppliers is a different color). Colors have a finish (Smooth, Textured, Metallic, Premium, PVDF heat-reflective, or one you add), the same color name can be listed in several finishes, and carry a price
   premium % that is added to lines in that color.
 
-Coming next: coil and panel inventory, then sending completed orders to QuickBooks
-as invoices (see the QuickBooks mapping guide), then user sign-in and going live.
+- **Coils**, tracked by linear feet: receive each coil by tag (color sets the supplier),
+  see feet on hand per coil and totals by color, gauge and width, correct a coil's footage
+  after measuring it, and close out used-up or returned coils. Weight is optional.
+- **Production** on each order: log which coil each line was run from. Coil feet used
+  default to pieces × length (plus scrap). The form warns when a coil doesn't match the
+  line's color (including the same color name from another supplier) or gauge. Runs can
+  be undone, and the first run moves a confirmed order to In production.
+- **Stock**: panels and trim cut ahead or left over, by product, color and length. Add
+  pieces (optionally cut from a coil) and take them out when sold or scrapped.
+
+Coming next: sending completed orders to QuickBooks as invoices (see the QuickBooks
+mapping guide).
 
 ## How it's built
 

@@ -151,3 +151,82 @@ test('one supplier can list the same color in several finishes; new finishes can
   assert.match(page, new RegExp(`Matte ${tag}`));
   assert.match(page, /Premium/);
 });
+
+test('coils by linear foot: receive, run against an order line, mismatch check, undo, correct, stock', async () => {
+  const tag = Math.random().toString(36).slice(2, 8);
+  const form = (path, body) => fetch(base + path, { method: 'POST', body: new URLSearchParams(body), redirect: 'manual' });
+  const errorOf = (res) => new URL(res.headers.get('location'), base).searchParams.get('error');
+  const ids = async (sql, params) => (await query(sql, params)).rows[0];
+
+  await form('/suppliers', { name: `Inv ${tag}` });
+  const { supplier_id: sup } = await ids('SELECT supplier_id FROM suppliers WHERE name = $1', [`Inv ${tag}`]);
+  await form('/colors', { supplier_id: sup, name: 'Slate', finish: 'smooth' });
+  await form('/colors', { supplier_id: sup, name: 'Slate', finish: 'textured' });
+  const { color_id: slate } = await ids("SELECT color_id FROM colors WHERE supplier_id = $1 AND finish = 'smooth'", [sup]);
+  const { color_id: slateTx } = await ids("SELECT color_id FROM colors WHERE supplier_id = $1 AND finish = 'textured'", [sup]);
+  const { gauge_id: g26 } = await ids('SELECT gauge_id FROM gauges WHERE gauge = 26');
+
+  let res = await form('/coils', { coil_tag: `C-${tag}`, color_id: slate, gauge_id: g26, width_in: 20, initial_lf: 1500 });
+  assert.strictEqual(res.status, 302);
+  const coil = await ids('SELECT coil_id, supplier_id, current_lf FROM coils WHERE coil_tag = $1', [`C-${tag}`]);
+  assert.strictEqual(coil.supplier_id, sup); // supplier comes from the color
+  assert.strictEqual(coil.current_lf, 1500);
+  res = await form('/coils', { coil_tag: `C-${tag}`, color_id: slate, gauge_id: g26, width_in: 20, initial_lf: 10 });
+  assert.match(errorOf(res), /already in the system/);
+
+  // Order with a Snap Lock 26 line in Slate (smooth): 10 pcs @ 12'.
+  const { customer_id: cust } = await ids(
+    "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const { order_id: oid } = await ids("INSERT INTO orders (customer_id, status) VALUES ($1, 'confirmed') RETURNING order_id", [cust]);
+  const { order_item_id: item } = await ids(`
+    INSERT INTO order_items (order_id, product_id, color_id, pieces, length_in)
+    SELECT $1, product_id, $2, 10, 144 FROM products WHERE sku = 'PNL-SL-26' RETURNING order_item_id`, [oid, slate]);
+
+  // A textured-Slate coil doesn't match the smooth-Slate line.
+  await form('/coils', { coil_tag: `T-${tag}`, color_id: slateTx, gauge_id: g26, width_in: 20, initial_lf: 800 });
+  const tx2 = await ids('SELECT coil_id FROM coils WHERE coil_tag = $1', [`T-${tag}`]);
+  res = await form(`/orders/${oid}/runs`, { order_item_id: item, coil_id: tx2.coil_id, pieces: 10, ft: '12', inch: '' });
+  assert.match(errorOf(res), /Use this coil anyway/);
+
+  // Matching coil: 10 x 12' = 120 LF + 3 LF scrap.
+  res = await form(`/orders/${oid}/runs`, { order_item_id: item, coil_id: coil.coil_id, pieces: 10, ft: '12', inch: '', scrap_lf: 3 });
+  assert.strictEqual(errorOf(res), null);
+  let c = await ids('SELECT current_lf FROM coils WHERE coil_id = $1', [coil.coil_id]);
+  assert.strictEqual(c.current_lf, 1377);
+  const o = await ids('SELECT status FROM orders WHERE order_id = $1', [oid]);
+  assert.strictEqual(o.status, 'in_production');
+  const page = await (await fetch(`${base}/orders/${oid}`)).text();
+  assert.match(page, new RegExp(`C-${tag}`));
+
+  // Too much footage is refused with the coil's balance.
+  res = await form(`/orders/${oid}/runs`, { order_item_id: item, coil_id: coil.coil_id, pieces: 10, ft: '12', lf_used: 5000 });
+  assert.match(errorOf(res), /has only 1377 LF left/);
+
+  // Undo puts it back.
+  const run = await ids('SELECT production_run_id FROM production_runs WHERE order_item_id = $1', [item]);
+  await form(`/runs/${run.production_run_id}/undo`, { back: `/orders/${oid}` });
+  c = await ids('SELECT current_lf FROM coils WHERE coil_id = $1', [coil.coil_id]);
+  assert.strictEqual(c.current_lf, 1500);
+
+  // Measured correction, then stock cut from the coil: 4 pcs @ 10' 6" = 42 LF.
+  await form(`/coils/${coil.coil_id}/correct`, { actual_lf: 1450 });
+  const { product_id: pbr } = await ids("SELECT product_id FROM products WHERE sku = 'PNL-SL-26'");
+  res = await form('/stock', { product_id: pbr, color_id: slate, qty: 4, ft: '10', inch: '6', coil_id: coil.coil_id });
+  assert.strictEqual(errorOf(res), null);
+  c = await ids('SELECT current_lf FROM coils WHERE coil_id = $1', [coil.coil_id]);
+  assert.strictEqual(c.current_lf, 1408);
+  const fg = await ids('SELECT finished_good_id, qty_on_hand FROM finished_goods WHERE color_id = $1', [slate]);
+  assert.strictEqual(fg.qty_on_hand, 4);
+  res = await form(`/stock/${fg.finished_good_id}/remove`, { qty: 9, reason: 'sell' });
+  assert.match(errorOf(res), /aren't that many/);
+  await form(`/stock/${fg.finished_good_id}/remove`, { qty: 3, reason: 'sell' });
+  assert.strictEqual((await ids('SELECT qty_on_hand FROM finished_goods WHERE finished_good_id = $1', [fg.finished_good_id])).qty_on_hand, 1);
+
+  // Closing the coil zeroes it out.
+  await form(`/coils/${coil.coil_id}/close`, { reason: 'used_up' });
+  c = await ids('SELECT current_lf, status FROM coils WHERE coil_id = $1', [coil.coil_id]);
+  assert.deepStrictEqual([c.current_lf, c.status], [0, 'depleted']);
+  for (const p of ['/coils', '/coils?show=all', `/coils/${coil.coil_id}`, '/stock']) {
+    assert.strictEqual((await fetch(base + p)).status, 200, p);
+  }
+});

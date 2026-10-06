@@ -28,6 +28,7 @@ app.get('/', (req, res) => res.redirect('/orders'));
 app.use('/orders', require('./routes/orders'));
 app.use('/customers', require('./routes/customers'));
 app.use('/', require('./routes/catalog'));
+app.use('/', require('./routes/inventory'));
 
 app.use((req, res) => res.status(404).send('Page not found'));
 // eslint-disable-next-line no-unused-vars
