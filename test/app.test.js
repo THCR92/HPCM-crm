@@ -267,3 +267,15 @@ test('trim at custom lengths bills in 10\' pieces, up to 20\'; trim footage coun
   assert.match(prices, /Short Offset Elbow 3&quot;x4&quot; B style/);
   assert.match(prices, /per 10' piece/);
 });
+
+test('shop board shows counts and the next orders by due date', async () => {
+  const res = await fetch(base + '/board');
+  assert.strictEqual(res.status, 200);
+  const page = await res.text();
+  assert.match(page, /Quotes out/);
+  assert.match(page, /Approved, waiting for production/);
+  assert.match(page, /Next up/);
+  assert.match(page, /http-equiv="refresh"/);
+  const { rows: [c] } = await query(`SELECT count(*) AS n FROM orders WHERE status = 'in_production'`);
+  assert.match(page, new RegExp(`<div class="n">${c.n}</div><div class="label">In production`));
+});

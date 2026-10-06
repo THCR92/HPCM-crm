@@ -41,6 +41,9 @@ works out the square feet, linear feet and price for every line.
   be undone, and the first run moves a confirmed order to In production.
 - **Stock**: panels and trim cut ahead or left over, by product, color and length. Add
   pieces (optionally cut from a coil) and take them out when sold or scrapped.
+- **Shop board** (`/board`): a full-screen page for a TV in the shop. Shows how many
+  quotes are out, orders approved and waiting, jobs in production and ready, plus the
+  next 5 orders by Need-by date (late ones in red). Refreshes itself every minute.
 
 Coming next: sending completed orders to QuickBooks as invoices (see the QuickBooks
 mapping guide).

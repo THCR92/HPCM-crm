@@ -49,6 +49,7 @@ const NAV = [
   ['/stock', 'Stock'],
   ['/products', 'Price list'],
   ['/colors', 'Colors'],
+  ['/board', 'Shop board'],
 ];
 
 // Returns a plain string, ready for res.send().
