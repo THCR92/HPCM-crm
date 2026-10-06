@@ -110,7 +110,7 @@
       groups.get(key).push(c);
     }
     const opt = (c) => `<option value="${c.id}" ${c.id === Number(selected) ? 'selected' : ''}>${esc(c.name)}${
-      c.finish && c.finish !== 'smooth' ? ` (${c.finish})` : ''}${Number(c.upcharge) ? ` +${Number(c.upcharge)}%` : ''}</option>`;
+      c.finish && c.finish !== 'smooth' ? ` (${c.finish_label})` : ''}${Number(c.upcharge) ? ` +${Number(c.upcharge)}%` : ''}</option>`;
     // A line saved with a color that is now hidden still shows it.
     const hidden = selected && !colorById.has(Number(selected)) && order.hidden_colors
       ? order.hidden_colors.filter((c) => c.id === Number(selected)).map(opt).join('') : '';

@@ -62,8 +62,8 @@ async function loadCatalog() {
     WHERE p.active AND p.category <> 'delivery'
     ORDER BY array_position(enum_range(NULL::product_category), p.category), p.name`);
   const { rows: colors } = await query(`
-    SELECT color_id AS id, name, label, supplier_name AS supplier, finish, upcharge_pct AS upcharge
-    FROM v_colors WHERE active ORDER BY supplier_name NULLS FIRST, finish, name`);
+    SELECT color_id AS id, name, label, supplier_name AS supplier, finish, finish_label, upcharge_pct AS upcharge
+    FROM v_colors WHERE active ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
   const { rows: customers } = await query(`
     SELECT customer_id AS id, display_name AS name, phone, email, default_fulfillment
     FROM customers WHERE active ORDER BY lower(display_name)`);
@@ -324,7 +324,7 @@ router.get('/:id(\\d+)/edit', async (req, res) => {
   if (!EDITABLE.includes(order.status)) return res.redirect(`/orders/${order.order_id}`);
   // Colors since hidden from new orders still show on the lines that use them.
   const { rows: hidden } = await query(`
-    SELECT color_id AS id, name, label, supplier_name AS supplier, finish, upcharge_pct AS upcharge
+    SELECT color_id AS id, name, label, supplier_name AS supplier, finish, finish_label, upcharge_pct AS upcharge
     FROM v_colors WHERE NOT active
       AND color_id IN (SELECT color_id FROM order_items WHERE order_id = $1)`, [order.order_id]);
   order.hidden_colors = hidden;

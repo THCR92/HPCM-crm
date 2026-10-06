@@ -25,7 +25,7 @@ works out the square feet, linear feet and price for every line.
 - **Price list** loaded from the October 1, 2026 HPCM price list. Change a price on the
   Price list page and new lines use it; existing orders keep the price they were written at.
 - **Suppliers and colors**: each color belongs to its supplier (the same color name from
-  two suppliers is a different color). Colors can be smooth, textured or metallic and carry a price
+  two suppliers is a different color). Colors have a finish (Smooth, Textured, Metallic, Premium, PVDF heat-reflective, or one you add), the same color name can be listed in several finishes, and carry a price
   premium % that is added to lines in that color.
 
 Coming next: coil and panel inventory, then sending completed orders to QuickBooks

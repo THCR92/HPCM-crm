@@ -117,8 +117,8 @@ test('colors are per supplier, and textured premiums price the line', async () =
   await form('/colors', { supplier_id: a, name: 'Copper', finish: 'metallic', upcharge_pct: 8 });
   const { rows } = await query(`SELECT color_id, label FROM v_colors WHERE supplier_id IN ($1, $2) ORDER BY label`, [a, b]);
   assert.deepStrictEqual(rows.map((r) => r.label),
-    [`Charcoal (Sup A ${tag})`, `Charcoal (Sup B ${tag})`, `Copper (Sup A ${tag}, metallic)`,
-      `Crinkle Black (Sup B ${tag}, textured)`]);
+    [`Charcoal (Sup A ${tag})`, `Charcoal (Sup B ${tag})`, `Copper (Sup A ${tag}, Metallic)`,
+      `Crinkle Black (Sup B ${tag}, Textured)`]);
 
   // The database applies the premium when a line is priced from the price list (3.65 x 1.12).
   const { rows: [c] } = await query(
@@ -131,4 +131,23 @@ test('colors are per supplier, and textured premiums price the line', async () =
   assert.strictEqual(line.unit_price, 4.09);
   const page = await (await fetch(`${base}/orders/new`)).text();
   assert.match(page, /Crinkle Black/);
+});
+
+test('one supplier can list the same color in several finishes; new finishes can be added', async () => {
+  const tag = Math.random().toString(36).slice(2, 8);
+  const form = (path, body) => fetch(base + path, { method: 'POST', body: new URLSearchParams(body), redirect: 'manual' });
+  await form('/suppliers', { name: `CMG ${tag}` });
+  const { rows: [s] } = await query('SELECT supplier_id FROM suppliers WHERE name = $1', [`CMG ${tag}`]);
+  await form('/colors', { supplier_id: s.supplier_id, name: 'Charcoal', finish: 'smooth' });
+  await form('/colors', { supplier_id: s.supplier_id, name: 'Charcoal', finish: 'pvdf_heat_reflective', upcharge_pct: 10 });
+  const dup = await form('/colors', { supplier_id: s.supplier_id, name: 'Charcoal', finish: 'pvdf_heat_reflective' });
+  assert.match(decodeURIComponent(dup.headers.get('location')), /already on the list/);
+  const { rows } = await query('SELECT label FROM v_colors WHERE supplier_id = $1 ORDER BY finish_sort', [s.supplier_id]);
+  assert.deepStrictEqual(rows.map((r) => r.label),
+    [`Charcoal (CMG ${tag})`, `Charcoal (CMG ${tag}, PVDF heat-reflective)`]);
+
+  await form('/finishes', { label: `Matte ${tag}` });
+  const page = await (await fetch(`${base}/colors`)).text();
+  assert.match(page, new RegExp(`Matte ${tag}`));
+  assert.match(page, /Premium/);
 });
