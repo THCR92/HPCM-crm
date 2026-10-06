@@ -264,5 +264,6 @@ test('trim at custom lengths bills in 10\' pieces, up to 20\'; trim footage coun
 
   const prices = await (await fetch(`${base}/products`)).text();
   assert.match(prices, /Downspout 3&quot;x4&quot;/);
+  assert.match(prices, /Short Offset Elbow 3&quot;x4&quot; B style/);
   assert.match(prices, /per 10' piece/);
 });
