@@ -53,7 +53,7 @@ router.post('/products/:id(\\d+)/price', async (req, res) => {
   res.redirect('/products?saved=1');
 });
 
-const FINISH_LABEL = { smooth: 'Smooth', textured: 'Textured' };
+const FINISH_LABEL = { smooth: 'Smooth', textured: 'Textured', metallic: 'Metallic' };
 
 function colorFields(c, suppliers) {
   const opt = (val, cur, label) => html`<option value="${val}" ${String(val) === String(cur) ? 'selected' : ''}>${label}</option>`;
@@ -76,7 +76,7 @@ function colorFromBody(b) {
     supplier_id: Number(b.supplier_id) || null,
     name: (b.name || '').trim(),
     manufacturer_code: (b.manufacturer_code || '').trim() || null,
-    finish: b.finish === 'textured' ? 'textured' : 'smooth',
+    finish: FINISH_LABEL[b.finish] ? b.finish : 'smooth',
     upcharge_pct: Math.max(0, Number(b.upcharge_pct) || 0),
     is_stock_color: b.special !== '1',
   };
@@ -101,7 +101,7 @@ router.get('/colors', async (req, res) => {
     <div class="page-head"><h1>Colors</h1></div>
     <p class="muted">Each color belongs to the supplier it comes from, because the same color name
     from two suppliers doesn't match. The price premium is added to the price of any panel or trim
-    ordered in that color (use it for textured and special-order colors).</p>
+    ordered in that color (use it for textured, metallic and special-order colors).</p>
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
     <h2>Add a supplier</h2>
     <form method="post" action="/suppliers" class="card form-row">

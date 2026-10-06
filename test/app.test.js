@@ -114,9 +114,11 @@ test('colors are per supplier, and textured premiums price the line', async () =
   const dup = await form('/colors', { supplier_id: a, name: 'Charcoal', finish: 'smooth', upcharge_pct: 0 });
   assert.match(decodeURIComponent(dup.headers.get('location')), /already on the list/);
   await form('/colors', { supplier_id: b, name: 'Crinkle Black', finish: 'textured', upcharge_pct: 12 });
+  await form('/colors', { supplier_id: a, name: 'Copper', finish: 'metallic', upcharge_pct: 8 });
   const { rows } = await query(`SELECT color_id, label FROM v_colors WHERE supplier_id IN ($1, $2) ORDER BY label`, [a, b]);
   assert.deepStrictEqual(rows.map((r) => r.label),
-    [`Charcoal (Sup A ${tag})`, `Charcoal (Sup B ${tag})`, `Crinkle Black (Sup B ${tag}, textured)`]);
+    [`Charcoal (Sup A ${tag})`, `Charcoal (Sup B ${tag})`, `Copper (Sup A ${tag}, metallic)`,
+      `Crinkle Black (Sup B ${tag}, textured)`]);
 
   // The database applies the premium when a line is priced from the price list (3.65 x 1.12).
   const { rows: [c] } = await query(
@@ -125,7 +127,7 @@ test('colors are per supplier, and textured premiums price the line', async () =
   const { rows: [line] } = await query(`
     INSERT INTO order_items (order_id, product_id, color_id, pieces, length_in)
     SELECT $1, product_id, $2, 1, 120 FROM products WHERE sku = 'PNL-SL-26' RETURNING unit_price`,
-  [o.order_id, rows[2].color_id]);
+  [o.order_id, rows[3].color_id]);
   assert.strictEqual(line.unit_price, 4.09);
   const page = await (await fetch(`${base}/orders/new`)).text();
   assert.match(page, /Crinkle Black/);
