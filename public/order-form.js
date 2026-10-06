@@ -101,9 +101,21 @@
       `<optgroup label="${esc(CATEGORY[cat] || cat)}">${list.map((p) =>
         `<option value="${p.id}" ${p.id === Number(selected) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</optgroup>`).join('')}`;
   }
+  // Grouped by supplier: the same color name from two suppliers is a different color.
   function colorOptions(selected) {
-    return `<option value="">—</option>${colors.map((c) =>
-      `<option value="${c.id}" ${c.id === Number(selected) ? 'selected' : ''}>${esc(c.name)}${Number(c.upcharge) ? ` (+${Number(c.upcharge)}%)` : ''}</option>`).join('')}`;
+    const groups = new Map();
+    for (const c of colors) {
+      const key = c.supplier || 'No supplier';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+    const opt = (c) => `<option value="${c.id}" ${c.id === Number(selected) ? 'selected' : ''}>${esc(c.name)}${
+      c.finish === 'textured' ? ' (textured)' : ''}${Number(c.upcharge) ? ` +${Number(c.upcharge)}%` : ''}</option>`;
+    // A line saved with a color that is now hidden still shows it.
+    const hidden = selected && !colorById.has(Number(selected)) && order.hidden_colors
+      ? order.hidden_colors.filter((c) => c.id === Number(selected)).map(opt).join('') : '';
+    return `<option value="">—</option>${hidden}${[...groups].map(([supplier, list]) =>
+      `<optgroup label="${esc(supplier)}">${list.map(opt).join('')}</optgroup>`).join('')}`;
   }
 
   function widthCell(row, p) {

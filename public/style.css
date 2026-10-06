@@ -145,3 +145,4 @@ table.lines.edit td.billed, table.lines.edit td.amount { min-width: 6rem; }
   .sheet { border: 0; padding: 0; }
   a { color: inherit; text-decoration: none; }
 }
+tr.inactive td { color: var(--muted); }

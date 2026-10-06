@@ -1,8 +1,9 @@
 -- Sample data: one coil, one customer, one mixed order (sqft + LF + each + custom trim).
 -- Load after hpcm_crm_schema.sql. Ends by printing the QBO-ready invoice lines.
 SET search_path = hpcm, public;
-INSERT INTO colors (name, is_stock_color, special_order_upcharge_pct) VALUES ('Charcoal Gray', true, 0), ('Copper Penny', false, 15);
-INSERT INTO suppliers (name) VALUES ('Coil Supplier A');
+INSERT INTO suppliers (name) VALUES ('Coil Supplier A'), ('Coil Supplier B');
+INSERT INTO colors (name, supplier_id, finish, is_stock_color, upcharge_pct) VALUES
+    ('Charcoal Gray', 1, 'smooth', true, 0), ('Copper Penny', 1, 'smooth', false, 15);
 INSERT INTO coils (coil_tag, gauge_id, color_id, width_in, initial_weight_lb, current_weight_lb, cost_per_lb, supplier_id)
 SELECT 'T-24-0457', g.gauge_id, c.color_id, 20, 5000, 5000, 0.92, 1 FROM gauges g, colors c WHERE g.gauge=24 AND c.name='Charcoal Gray';
 INSERT INTO customers (display_name, company_name, email, phone) VALUES ('Summit Exteriors LLC','Summit Exteriors LLC','ap@summit.example','307-555-0100');
@@ -30,5 +31,7 @@ INSERT INTO order_item_trim_specs (order_item_id, girth_in, bend_count, segments
 INSERT INTO order_items (order_id, product_id, pieces) SELECT 1, product_id, 2 FROM products WHERE sku='SCR-PANHEAD-1';
 -- production
 INSERT INTO production_runs (coil_id, order_item_id, pieces, length_in, weight_used_lb, scrap_lb, operator) VALUES (1, 1, 12, 174, 280, 12, 'JR');
-INSERT INTO colors (name, is_stock_color) VALUES ('Galvalume', true), ('Burnished Slate', true), ('Polar White', true), ('Barn Red', true), ('Matte Black', true)
-ON CONFLICT (name) DO NOTHING;
+INSERT INTO colors (name, supplier_id, finish, upcharge_pct) VALUES
+    ('Galvalume', 1, 'smooth', 0), ('Burnished Slate', 1, 'smooth', 0), ('Polar White', 1, 'smooth', 0),
+    ('Charcoal Gray', 2, 'smooth', 0), ('Barn Red', 2, 'smooth', 0),
+    ('Crinkle Black', 2, 'textured', 12);

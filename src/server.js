@@ -6,7 +6,7 @@ const app = express();
 app.disable('x-powered-by');
 
 // Health check for the hosting service; answers without signing in.
-app.get('/healthz', (req, res) => res.send('ok'));
+app.get('/healthz', (req, res) => res.send(`ok ${(process.env.RENDER_GIT_COMMIT || '').slice(0, 7)}`.trim()));
 
 // Optional sign-in: set APP_PASSWORD (and optionally APP_USER) once the app is online.
 const { APP_USER = 'hpcm', APP_PASSWORD } = process.env;

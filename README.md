@@ -24,7 +24,9 @@ works out the square feet, linear feet and price for every line.
 - **Printable cut sheet** for the shop, with Completed by / Inspected by boxes.
 - **Price list** loaded from the October 1, 2026 HPCM price list. Change a price on the
   Price list page and new lines use it; existing orders keep the price they were written at.
-- **Colors** list, with special-order upcharges.
+- **Suppliers and colors**: each color belongs to its supplier (the same color name from
+  two suppliers is a different color). Colors can be smooth or textured and carry a price
+  premium % that is added to lines in that color.
 
 Coming next: coil and panel inventory, then sending completed orders to QuickBooks
 as invoices (see the QuickBooks mapping guide), then user sign-in and going live.
@@ -65,3 +67,8 @@ Settings (environment variables):
 in the Render dashboard choose **New → Blueprint**, pick this repository, and enter
 a sign-in password when asked. The tables and price list load on the first start.
 Sign in with user name `hpcm` and that password.
+
+## Database updates
+
+Changes to the database after the first install live in `db/migrations/` and are applied
+once each, in order, by `npm run db:setup` (which runs on every start on Render).

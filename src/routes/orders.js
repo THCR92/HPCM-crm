@@ -36,12 +36,12 @@ async function loadOrder(id) {
   const { rows: sections } = await query(
     'SELECT * FROM order_sections WHERE order_id = $1 ORDER BY sort_order, section_id', [id]);
   const { rows: items } = await query(`
-    SELECT oi.*, p.name AS product_name, p.sku, p.category, g.gauge, col.name AS color_name,
+    SELECT oi.*, p.name AS product_name, p.sku, p.category, g.gauge, col.label AS color_name,
            fn_format_length(oi.length_in) AS length_display, ts.girth_in
     FROM order_items oi
     JOIN products p USING (product_id)
     LEFT JOIN gauges g ON g.gauge_id = p.gauge_id
-    LEFT JOIN colors col ON col.color_id = oi.color_id
+    LEFT JOIN v_colors col ON col.color_id = oi.color_id
     LEFT JOIN order_item_trim_specs ts USING (order_item_id)
     WHERE oi.order_id = $1 ORDER BY oi.line_no`, [id]);
   for (const s of sections) s.items = items.filter((i) => i.section_id === s.section_id);
@@ -62,8 +62,8 @@ async function loadCatalog() {
     WHERE p.active AND p.category <> 'delivery'
     ORDER BY array_position(enum_range(NULL::product_category), p.category), p.name`);
   const { rows: colors } = await query(`
-    SELECT color_id AS id, name, CASE WHEN is_stock_color THEN 0 ELSE special_order_upcharge_pct END AS upcharge
-    FROM colors WHERE active ORDER BY name`);
+    SELECT color_id AS id, name, label, supplier_name AS supplier, finish, upcharge_pct AS upcharge
+    FROM v_colors WHERE active ORDER BY supplier_name NULLS FIRST, finish, name`);
   const { rows: customers } = await query(`
     SELECT customer_id AS id, display_name AS name, phone, email, default_fulfillment
     FROM customers WHERE active ORDER BY lower(display_name)`);
@@ -322,6 +322,12 @@ router.get('/:id(\\d+)/edit', async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order) return res.status(404).send('Order not found');
   if (!EDITABLE.includes(order.status)) return res.redirect(`/orders/${order.order_id}`);
+  // Colors since hidden from new orders still show on the lines that use them.
+  const { rows: hidden } = await query(`
+    SELECT color_id AS id, name, label, supplier_name AS supplier, finish, upcharge_pct AS upcharge
+    FROM v_colors WHERE NOT active
+      AND color_id IN (SELECT color_id FROM order_items WHERE order_id = $1)`, [order.order_id]);
+  order.hidden_colors = hidden;
   formPage(res, { title: `Edit order ${order.order_number}`, order, catalog: await loadCatalog() });
 });
 
