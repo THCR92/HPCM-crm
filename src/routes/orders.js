@@ -43,6 +43,7 @@ async function loadOrder(id) {
     'SELECT * FROM order_sections WHERE order_id = $1 ORDER BY sort_order, section_id', [id]);
   const { rows: items } = await query(`
     SELECT oi.*, p.name AS product_name, p.sku, p.category, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
+           p.flat_extra_in AS product_flat_extra,
            g.gauge, col.label AS color_name,
            col.name || CASE WHEN col.finish <> 'smooth' THEN ' (' || col.finish_label || ')' ELSE '' END AS customer_color,
            fn_format_length(oi.length_in) AS length_display, ts.girth_in
@@ -62,7 +63,8 @@ async function loadOrder(id) {
 async function loadCatalog() {
   const { rows: products } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies, p.taxable,
-           p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth, cp.unit_price AS price,
+           p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
+           p.flat_extra_in AS flat_extra, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max
     FROM products p
     LEFT JOIN v_current_prices cp USING (product_id)
@@ -75,7 +77,8 @@ async function loadCatalog() {
   const { rows: customers } = await query(`
     SELECT customer_id AS id, display_name AS name, phone, email, default_fulfillment, tax_exempt
     FROM customers WHERE active ORDER BY lower(display_name)`);
-  return { products, colors, customers, default_tax_rate: await defaultTaxRate() };
+  const { rows: [sp] } = await query("SELECT value FROM app_settings WHERE key = 'sized_trim_pricing'");
+  return { products, colors, customers, default_tax_rate: await defaultTaxRate(), sized_pricing: sp ? sp.value : 'flat' };
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +252,10 @@ async function saveOrder(orderId, body) {
                    unit_price = $8, description = $9,
                    pricing_unit = p.pricing_unit, taxable = p.taxable,
                    per_length_in = CASE WHEN p.pricing_unit = 'each' THEN p.standard_length_in END,
-                   per_width_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL THEN p.girth_in END
+                   per_width_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
+                                       THEN (fn_sized_trim_basis(p.product_id)).per_width END,
+                   width_add_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
+                                       THEN (fn_sized_trim_basis(p.product_id)).width_add END
             FROM products p
             WHERE p.product_id = $3 AND oi.order_item_id = $10 AND oi.order_id = $11`,
           [...vals, itemId, orderId]);
@@ -300,7 +306,7 @@ router.get('/', async (req, res) => {
     body: html`
     <div class="page-head">
       <h1>Orders</h1>
-      <a class="btn primary" href="/orders/new">+ New order</a>
+      <a class="btn primary" href="/orders/new">+ New quote</a>
     </div>
     <div class="tabs">${Object.entries(TABS).map(([k, t]) =>
       html`<a href="?tab=${k}" class="${k === tab ? 'active' : ''}">${t.label}</a>`)}</div>
@@ -335,7 +341,7 @@ router.get('/new', async (req, res) => {
   const customerId = Number(req.query.customer_id) || null;
   const cust = catalog.customers.find((c) => c.id === customerId);
   formPage(res, {
-    title: 'New order',
+    title: 'New quote',
     catalog,
     order: {
       order_id: null,
@@ -403,13 +409,20 @@ router.post('/:id(\\d+)/status', async (req, res) => {
 });
 
 // Width shown on a line: panel coverage, custom trim girth, or sized trim width.
-const sizeCol = (i) => {
+const sizeCol = (i, { shop = true } = {}) => {
   if (i.pricing_unit === 'sqft' && i.width_in) {
     return `${num(i.width_in, 3)}" ${i.category === 'custom_trim' ? 'girth' : 'cov.'}`;
   }
-  if (i.per_width_in && i.width_in) return `${num(i.width_in, 3)}" wide`;
+  if (i.per_width_in && i.width_in) {
+    return `${num(i.width_in, 3)}" wide${shop && i.product_flat_extra ? ` (${num(i.width_in + i.product_flat_extra, 3)}" flat)` : ''}`;
+  }
   return '';
 };
+
+// Flat strip of coil one piece takes: panels use the product's girth (if any);
+// trim uses the line's width plus how much wider the flat strip is (ridge cap +1").
+const lineGirth = (i) => (i.category === 'panel' ? i.product_girth_in
+  : i.width_in != null ? i.width_in + (i.product_flat_extra || 0) : i.product_girth_in);
 
 // Subtotal, tax and total rows shared by the cut sheet and the customer copy.
 const totalsRows = (o) => html`
@@ -466,7 +479,7 @@ router.get('/:id(\\d+)/customer', async (req, res) => {
         <tbody>${sec.items.map((i) => html`
           <tr><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
           <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}</td>
-          <td>${i.customer_color}</td><td>${sizeCol(i)}</td>
+          <td>${i.customer_color}</td><td>${sizeCol(i, { shop: false })}</td>
           <td class="num">${money(i.pieces ? i.line_total / i.pieces : i.line_total)}</td>
           <td class="num">${money(i.line_total)}</td></tr>`)}</tbody>
       </table>`)}
@@ -630,7 +643,7 @@ async function productionSection(o, req) {
       <label class="span2">Line *<select name="order_item_id" required>
         <option value="">Pick a line…</option>
         ${items.map((i) => html`<option value="${i.order_item_id}" data-pieces="${Math.max(0, i.pieces - runPieces(i.order_item_id))}"
-            data-length="${i.length_in ?? i.per_length_in ?? ''}" data-girth="${(i.category === 'panel' ? i.product_girth_in : i.width_in ?? i.product_girth_in) ?? ''}" data-color="${i.color_id ?? ''}" data-gauge="${i.product_gauge_id ?? ''}"
+            data-length="${i.length_in ?? i.per_length_in ?? ''}" data-girth="${lineGirth(i) ?? ''}" data-color="${i.color_id ?? ''}" data-gauge="${i.product_gauge_id ?? ''}"
 >
           ${i.line_no}. ${AREA_LABEL[i.area]}: ${num(i.pieces)} × ${i.length_display || 'each'} ${i.product_name}${i.color_name ? `, ${i.color_name}` : ''}
           (${runPieces(i.order_item_id)} of ${num(i.pieces)} run)</option>`)}
@@ -661,7 +674,8 @@ router.post('/:id(\\d+)/runs', async (req, res) => {
   const b = req.body;
   const back = (msg) => res.redirect(`/orders/${orderId}?error=${encodeURIComponent(msg)}#production`);
   const { rows: [line] } = await query(`
-    SELECT oi.*, p.category, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in, o.status, col.label AS color_label
+    SELECT oi.*, p.category, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
+           p.flat_extra_in AS product_flat_extra, o.status, col.label AS color_label
     FROM order_items oi JOIN products p USING (product_id) JOIN orders o USING (order_id)
     LEFT JOIN v_colors col ON col.color_id = oi.color_id
     WHERE oi.order_item_id = $1 AND oi.order_id = $2`, [Number(b.order_item_id), orderId]);
@@ -691,7 +705,7 @@ router.post('/:id(\\d+)/runs', async (req, res) => {
   const typed = Number(b.lf_used);
   const scrap = Number(b.scrap_lf) || 0;
   // Footage typed in already includes scrap; otherwise it's pieces x length plus scrap.
-  const girth = line.category === 'panel' ? line.product_girth_in : line.width_in ?? line.product_girth_in;
+  const girth = lineGirth(line);
   const used = typed > 0 ? typed : footage(pieces, len, { girth, coilWidth: coil.width_in }) + scrap;
   if (scrap > used) return back('Scrap can\'t be more than the coil feet used.');
   try {

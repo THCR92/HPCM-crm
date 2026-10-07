@@ -14,7 +14,7 @@ const CATEGORY_LABEL = {
 router.get('/products', async (req, res) => {
   const { rows } = await query(`
     SELECT p.product_id, p.sku, p.name, p.category, p.pricing_unit, p.price_varies,
-           p.standard_length_in, p.girth_in,
+           p.standard_length_in, p.girth_in, p.flat_extra_in,
            cp.unit_price, cp.effective_from
     FROM products p LEFT JOIN v_current_prices cp USING (product_id)
     WHERE p.active ORDER BY array_position(enum_range(NULL::product_category), p.category), p.name`);
@@ -26,7 +26,7 @@ router.get('/products', async (req, res) => {
     body: html`
     <div class="page-head"><h1>Price list</h1>
       <form method="post" action="/settings/tax" class="inline">
-        <label class="inline-date">Sales tax for new orders
+        <label class="inline-date">Sales tax for new quotes
           <input name="sales_tax_rate" type="number" step="0.001" min="0" max="99" value="${tax ? Number(tax.value) : ''}"
             style="width:6rem">%</label>
         <button class="btn small">Save</button>
@@ -48,7 +48,8 @@ router.get('/products', async (req, res) => {
           <td>${p.pricing_unit === 'each' && p.standard_length_in ? `per ${num(p.standard_length_in / 12)}' piece` : UNIT_LABEL[p.pricing_unit]}</td>
           ${cut ? html`<td><form method="post" action="/products/${p.product_id}/girth" class="inline">
             <input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}" placeholder="inches" style="width:5.5rem">
-            <button class="btn small">Save</button></form></td>` : ''}
+            <button class="btn small">Save</button></form>${p.flat_extra_in && p.girth_in ? html`
+            <div class="muted small">${num(p.girth_in - p.flat_extra_in, 3)}" finished; flat is ${num(p.flat_extra_in, 3)}" wider</div>` : ''}</td>` : ''}
           <td class="num">${p.unit_price !== null ? money(p.unit_price) : html`<span class="muted">${p.price_varies ? 'Varies' : '—'}</span>`}</td>
           <td>${date(p.effective_from)}</td>
           <td><form method="post" action="/products/${p.product_id}/price" class="inline">

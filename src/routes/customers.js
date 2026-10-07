@@ -122,7 +122,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       <h1>${c.display_name}</h1>
       <div>
         <a class="btn" href="/customers/${c.customer_id}/edit">Edit</a>
-        <a class="btn primary" href="/orders/new?customer_id=${c.customer_id}">+ New order</a>
+        <a class="btn primary" href="/orders/new?customer_id=${c.customer_id}">+ New quote</a>
       </div>
     </div>
     <div class="card"><dl class="details">

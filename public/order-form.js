@@ -2,7 +2,7 @@
 // and posts the whole order back as JSON. Billable sq ft / LF are previewed
 // here with the same rules the database uses; the database is the final word.
 (function () {
-  const { order, products, colors, customers } = window.ORDER_FORM;
+  const { order, products, colors, customers, sized_pricing: sizedPricing = 'flat' } = window.ORDER_FORM;
   const root = document.getElementById('order-form');
   const productById = new Map(products.map((p) => [p.id, p]));
   const colorById = new Map(colors.map((c) => [c.id, c]));
@@ -80,6 +80,12 @@
     return round2(product.price * (1 + up / 100)).toFixed(2);
   }
 
+  // Sized trim basis, mirroring fn_sized_trim_basis: width is the finished width;
+  // the flat strip is flat_extra wider (ridge cap: 24" finished = 25" flat).
+  const finishedStd = (p) => Number(p.girth) - Number(p.flat_extra || 0);
+  const perWidth = (p) => (sizedPricing === 'flat' ? Number(p.girth) : finishedStd(p));
+  const widthAdd = (p) => (sizedPricing === 'finished' ? 0 : Number(p.flat_extra || 0));
+
   // Mirrors order_items.billable_qty in the database.
   function compute(row) {
     const p = productById.get(Number(row.product_id));
@@ -95,14 +101,14 @@
     // and sized trim in standard widths (10 @ 24" ridge cap = 18.46 x 13").
     else {
       const byLen = p.standard_length_in && len > 0 ? len / p.standard_length_in : 1;
-      const byWidth = p.girth && width > 0 ? width / p.girth : 1;
+      const byWidth = p.girth && width > 0 ? (width + widthAdd(p)) / perWidth(p) : 1;
       qty = round4(pieces * byLen * byWidth);
     }
     const sized = p.unit === 'each' && p.girth && width > 0;
     const per = p.unit === 'each' && p.standard_length_in && (len > 0 || sized) ? Number(p.standard_length_in) : null;
-    const perWidth = sized ? Number(p.girth) : null;
+    const perW = sized ? perWidth(p) : null;
     const tooLong = !!(p.max_length_in && len > Number(p.max_length_in));
-    return { qty, amount: row.unit_price === '' ? 0 : round2(qty * price), unit: p.unit, per, perWidth, tooLong };
+    return { qty, amount: row.unit_price === '' ? 0 : round2(qty * price), unit: p.unit, per, perWidth: perW, tooLong };
   }
 
   // ----------------------------------------------------------------- render
@@ -141,8 +147,8 @@
     }
     if (p.unit === 'each' && p.girth) {
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="0.125"
-                value="${esc(row.width_in)}" placeholder="${Number(p.girth)}"
-                title="Flat width in inches. The price is for ${Number(p.girth)}&quot; wide; other widths scale it."><span class="unit">" wide</span>`;
+                value="${esc(row.width_in)}" placeholder="${finishedStd(p)}"
+                title="Finished width in inches. The list price is for ${finishedStd(p)}&quot;; other widths scale it."><span class="unit">" wide</span>`;
     }
     if (p.category === 'custom_trim') {
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="0.125"
@@ -244,7 +250,7 @@
           <tr><th id="t-tax-label">Sales tax</th><td id="t-tax"></td></tr>
           <tr class="grand"><th>Total</th><td id="t-total"></td></tr>
         </table>
-        <button type="button" class="btn primary big" data-act="save">Save order</button>
+        <button type="button" class="btn primary big" data-act="save">Save ${!h.status || h.status === 'quote' ? 'quote' : 'order'}</button>
         <a class="btn" href="${h.order_id ? `/orders/${h.order_id}` : '/orders'}">Cancel</a>
       </div>
     </div>`;
@@ -312,7 +318,7 @@
       const w = Number(row.width_in);
       if (!(w >= Number(p.cov_min) && w <= Number(p.cov_max))) row.width_in = String(Number(p.cov));
     } else if (p && p.unit === 'each' && p.girth) {
-      if (row.width_in === '' || row.width_in === undefined || row.lastProduct !== p.id) row.width_in = String(Number(p.girth));
+      if (row.width_in === '' || row.width_in === undefined || row.lastProduct !== p.id) row.width_in = String(finishedStd(p));
     } else if (!p || p.category !== 'custom_trim') {
       row.width_in = '';
     }

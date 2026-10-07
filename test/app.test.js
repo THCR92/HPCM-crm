@@ -308,14 +308,15 @@ test('shop board flags an approved job that needs more coil than is on hand', as
   assert.match(page, new RegExp(`${col.name}[^<]*<span class="ga">26 ga</span> <b>200 ft</b> <em>short 100 ft</em>`));
 });
 
-test('ridge cap at other widths scales the 13" price; editing keeps the width', async () => {
+test('ridge cap at other widths: priced by flat width (finished + 1"); editing keeps the width', async () => {
   const { rows: [c] } = await query(
     "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
   const ridge = await productId('TRM-RIDGE-26');
-  const { rows: [p] } = await query('SELECT girth_in FROM products WHERE product_id = $1', [ridge]);
-  assert.strictEqual(p.girth_in, 13);
+  const { rows: [p] } = await query('SELECT girth_in, flat_extra_in FROM products WHERE product_id = $1', [ridge]);
+  assert.deepStrictEqual(p, { girth_in: 14, flat_extra_in: 1 });
   const order = (items) => ({ customer_id: c.customer_id, sections: [{ area: 'trim', items }] });
-  // 10 @ 24" (10') = 10 x 24/13 = 18.4615 ($81.60 each); 4 @ 24" x 12' = 4 x 1.2 x 24/13 = 8.8615; 2 @ 13" = 2.
+  // Flat widths: 13" = 14", 24" = 25". 10 @ 24" = 10 x 25/14 = 17.8571 ($78.93 each);
+  // 4 @ 24" x 12' = 4 x 1.2 x 25/14 = 8.5714; 2 @ 13" = 2.
   const res = await post('/orders', order([
     { product_id: ridge, pieces: 10, width_in: 24, unit_price: 44.20 },
     { product_id: ridge, pieces: 4, length_in: 144, width_in: 24, unit_price: 44.20 },
@@ -327,13 +328,16 @@ test('ridge cap at other widths scales the 13" price; editing keeps the width', 
   const lines = async () => (await query(`SELECT order_item_id, width_in, per_width_in, billable_qty, line_total
     FROM order_items WHERE order_id = $1 ORDER BY line_no`, [id])).rows;
   let rows = await lines();
-  assert.deepStrictEqual(rows.map((r) => [r.billable_qty, r.line_total]), [[18.4615, 816], [8.8615, 391.68], [2, 88.4]]);
-  assert.strictEqual(rows[0].per_width_in, 13);
+  assert.deepStrictEqual(rows.map((r) => [r.billable_qty, r.line_total]), [[17.8571, 789.28], [8.5714, 378.86], [2, 88.4]]);
+  assert.strictEqual(rows[0].per_width_in, 14);
   const { rows: [inv] } = await query('SELECT qbo_description FROM v_order_invoice_lines WHERE order_id = $1 AND line_no = 1', [id]);
-  assert.match(inv.qbo_description, /10 pcs @ 10' 0" x 24" wide = 18.4615 x 13" x 10' 0" pieces/);
+  assert.match(inv.qbo_description, /10 pcs @ 10' 0" x 24" wide = 17.8571 x 14" x 10' 0" pieces/);
   const page = await (await fetch(`${base}/orders/${id}`)).text();
-  assert.match(page, /24&quot; wide/);
-  assert.match(page, /18\.46 × 13&quot; × 10&#39;/);
+  assert.match(page, /24&quot; wide \(25&quot; flat\)/);
+  assert.match(page, /17\.86 × 14&quot; × 10&#39;/);
+  // A 25" strip fits once across a 48" coil: 10 pieces x 10' = 100 ft.
+  const { footage } = require('../src/production');
+  assert.strictEqual(footage(10, 120, { girth: 25, coilWidth: 48 }), 100);
 
   // Saving again (as the edit form does) keeps the same lines and widths.
   const again = await post(`/orders/${id}`, order(rows.map((r, i) => ({
@@ -342,7 +346,7 @@ test('ridge cap at other widths scales the 13" price; editing keeps the width', 
   }))));
   assert.ok((await again.json()).ok);
   rows = await lines();
-  assert.deepStrictEqual(rows.map((r) => r.billable_qty), [18.4615, 8.8615, 2]);
+  assert.deepStrictEqual(rows.map((r) => r.billable_qty), [17.8571, 8.5714, 2]);
 });
 
 test('sales tax on taxable materials after discount; exempt customers pay none; customer copy', async () => {
@@ -352,7 +356,7 @@ test('sales tax on taxable materials after discount; exempt customers pay none; 
   const { rows: [col] } = await query(`INSERT INTO colors (name, supplier_id, finish)
     VALUES ('Tax Test ' || gen_random_uuid(), (SELECT min(supplier_id) FROM suppliers), 'textured') RETURNING color_id, name`);
   const { rows: [sup] } = await query('SELECT name FROM suppliers WHERE supplier_id = (SELECT min(supplier_id) FROM suppliers)');
-  // $816.00 + $100 delivery - $16 discount; tax 6% on 816 - 16 = 800 -> $48.00.
+  // $789.28 + $100 delivery - $16 discount; tax 6% on 789.28 - 16 = 773.28 -> $46.40.
   const res = await post('/orders', {
     customer_id: c.customer_id, tax_rate: 6, delivery_charge: 100, discount_amount: 16, job_name: 'Barn',
     sections: [{ area: 'trim', items: [{ product_id: ridge, color_id: col.color_id, pieces: 10, width_in: 24, unit_price: 44.20 }] }],
@@ -361,7 +365,7 @@ test('sales tax on taxable materials after discount; exempt customers pay none; 
   assert.ok(out.ok, out.error);
   const id = Number(out.redirect.split('/').pop());
   const totals = async () => (await query('SELECT pre_tax_total, tax_amount, grand_total FROM v_order_totals WHERE order_id = $1', [id])).rows[0];
-  assert.deepStrictEqual(await totals(), { pre_tax_total: 900, tax_amount: 48, grand_total: 948 });
+  assert.deepStrictEqual(await totals(), { pre_tax_total: 873.28, tax_amount: 46.4, grand_total: 919.68 });
 
   const view = await (await fetch(`${base}/orders/${id}`)).text();
   assert.match(view, /Quote HP-/);
@@ -371,8 +375,9 @@ test('sales tax on taxable materials after discount; exempt customers pay none; 
   // Customer copy: price per piece, no billing column, no supplier.
   const copy = await (await fetch(`${base}/orders/${id}/customer`)).text();
   assert.match(copy, /QUOTE/);
-  assert.match(copy, /\$81\.60/);
-  assert.match(copy, /\$948\.00/);
+  assert.match(copy, /\$78\.93/);
+  assert.match(copy, /\$919\.68/);
+  assert.match(copy, /24&quot; wide</);
   assert.match(copy, new RegExp(`${col.name} \\(Textured\\)`));
   assert.doesNotMatch(copy, new RegExp(sup.name));
   assert.doesNotMatch(copy, /Billed/);
@@ -380,5 +385,20 @@ test('sales tax on taxable materials after discount; exempt customers pay none; 
 
   await query('UPDATE customers SET tax_exempt = true WHERE customer_id = $1', [c.customer_id]);
   await query('UPDATE orders SET tax_exempt = NULL WHERE order_id = $1', [id]);
-  assert.deepStrictEqual(await totals(), { pre_tax_total: 900, tax_amount: 0, grand_total: 900 });
+  assert.deepStrictEqual(await totals(), { pre_tax_total: 873.28, tax_amount: 0, grand_total: 873.28 });
+});
+
+test('sized trim pricing setting picks the width basis', async () => {
+  const ridge = await productId('TRM-RIDGE-26');
+  const basis = async (mode) => {
+    await query("UPDATE app_settings SET value = $1 WHERE key = 'sized_trim_pricing'", [mode]);
+    return (await query('SELECT * FROM fn_sized_trim_basis($1)', [ridge])).rows[0];
+  };
+  try {
+    assert.deepStrictEqual(await basis('mixed'), { per_width: 13, width_add: 1 }); // 24" = 25/13 = $85.00
+    assert.deepStrictEqual(await basis('finished'), { per_width: 13, width_add: 0 }); // 24/13
+    assert.deepStrictEqual(await basis('flat'), { per_width: 14, width_add: 1 }); // 25/14
+  } finally {
+    await query("UPDATE app_settings SET value = 'flat' WHERE key = 'sized_trim_pricing'");
+  }
 });

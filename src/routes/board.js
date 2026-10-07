@@ -32,7 +32,8 @@ async function coilPlan(orderIds) {
   const [{ rows: lines }, { rows: stock }] = await Promise.all([
     query(`
       SELECT oi.order_id, oi.order_item_id, oi.pieces, COALESCE(oi.length_in, oi.per_length_in) AS length_in,
-             CASE WHEN p.category = 'panel' THEN p.girth_in ELSE COALESCE(oi.width_in, p.girth_in) END AS girth,
+             CASE WHEN p.category = 'panel' THEN p.girth_in
+                  ELSE COALESCE(oi.width_in + p.flat_extra_in, p.girth_in) END AS girth,
              oi.color_id, col.label AS color_label, p.gauge_id, g.gauge,
              COALESCE((SELECT sum(r.pieces) FROM production_runs r WHERE r.order_item_id = oi.order_item_id), 0) AS run_pieces
       FROM order_items oi

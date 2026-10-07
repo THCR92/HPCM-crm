@@ -27,6 +27,8 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.25rem 16px 4rem; }
   gap: 1.5rem; padding: .4rem 16px; flex-wrap: wrap; }
 .brand { display: block; line-height: 0; }
 .brand img { height: 56px; width: auto; }
+.topbar .quote-btn { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.topbar .quote-btn:hover { background: #155d99; }
 .topbar nav { display: flex; gap: .3rem; flex-wrap: wrap; }
 .topbar nav a { color: var(--brand); text-decoration: none; padding: .4rem .75rem; border-radius: 6px; font-weight: 600; }
 .topbar nav a:hover { background: #e8eef7; }

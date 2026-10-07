@@ -43,7 +43,7 @@ const statusBadge = (s) => html`<span class="badge badge-${s}">${STATUS_LABEL[s]
 
 // ---- page shell ------------------------------------------------------------
 const NAV = [
-  ['/orders', 'Orders'],
+  ['/orders', 'Quotes & orders'],
   ['/customers', 'Customers'],
   ['/coils', 'Coils'],
   ['/stock', 'Stock'],
@@ -65,6 +65,7 @@ const layout = ({ title, active, body, scripts = [] }) => String(html`<!doctype 
 <body>
 <header class="topbar">
   <a class="brand" href="/orders"><img src="/logo.svg" alt="High Plains Custom Metal"></a>
+  <a class="btn quote-btn" href="/orders/new">+ Quote</a>
   <nav>${NAV.map(([href, label]) =>
     html`<a href="${href}" class="${active === href ? 'active' : ''}">${label}</a>`)}</nav>
 </header>
