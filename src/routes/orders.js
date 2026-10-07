@@ -78,7 +78,7 @@ async function loadCatalog() {
     SELECT customer_id AS id, display_name AS name, phone, email, default_fulfillment, tax_exempt
     FROM customers WHERE active ORDER BY lower(display_name)`);
   const { rows: [sp] } = await query("SELECT value FROM app_settings WHERE key = 'sized_trim_pricing'");
-  return { products, colors, customers, default_tax_rate: await defaultTaxRate(), sized_pricing: sp ? sp.value : 'flat' };
+  return { products, colors, customers, default_tax_rate: await defaultTaxRate(), sized_pricing: sp ? sp.value : 'per_inch' };
 }
 
 // ---------------------------------------------------------------------------
@@ -253,9 +253,9 @@ async function saveOrder(orderId, body) {
                    pricing_unit = p.pricing_unit, taxable = p.taxable,
                    per_length_in = CASE WHEN p.pricing_unit = 'each' THEN p.standard_length_in END,
                    per_width_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
-                                       THEN (fn_sized_trim_basis(p.product_id)).per_width END,
+                                       THEN (fn_sized_trim_basis(p.product_id, $7::numeric)).per_width END,
                    width_add_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
-                                       THEN (fn_sized_trim_basis(p.product_id)).width_add END
+                                       THEN (fn_sized_trim_basis(p.product_id, $7::numeric)).width_add END
             FROM products p
             WHERE p.product_id = $3 AND oi.order_item_id = $10 AND oi.order_id = $11`,
           [...vals, itemId, orderId]);

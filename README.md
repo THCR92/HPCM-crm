@@ -46,8 +46,9 @@ works out the square feet, linear feet and price for every line.
   at 10' bill as 10 x 24/13 = 18.46 x the 13" price.
 - **Ridge cap flat width**: ridge cap is entered by finished width; the flat strip is 1" wider
   (13" = 14" flat, 24" = 25" flat). Coil footage uses the flat width. Pricing basis is the
-  `sized_trim_pricing` setting: `flat` (list x flat / 14), `mixed` (list / 13 x flat) or
-  `finished` (list x finished / 13).
+  `sized_trim_pricing` setting, default `per_inch`: the standard 13" piece is the list price
+  ($44.20 = $3.40 per finished inch) and any other width is $3.40 x its flat width
+  (24" = $3.40 x 25 = $85.00), recouping some of the drop. Other values: `flat`, `mixed`, `finished`.
 - **Quotes first**: "+ Quote" at the start of the menu and "New quote" buttons; a quote turns
   into an order when it's approved.
 - **Customer quote / copy** (`/orders/:id/customer`): what the customer sees. One price per

@@ -2,7 +2,7 @@
 // and posts the whole order back as JSON. Billable sq ft / LF are previewed
 // here with the same rules the database uses; the database is the final word.
 (function () {
-  const { order, products, colors, customers, sized_pricing: sizedPricing = 'flat' } = window.ORDER_FORM;
+  const { order, products, colors, customers, sized_pricing: sizedPricing = 'per_inch' } = window.ORDER_FORM;
   const root = document.getElementById('order-form');
   const productById = new Map(products.map((p) => [p.id, p]));
   const colorById = new Map(colors.map((c) => [c.id, c]));
@@ -85,6 +85,8 @@
   const finishedStd = (p) => Number(p.girth) - Number(p.flat_extra || 0);
   const perWidth = (p) => (sizedPricing === 'flat' ? Number(p.girth) : finishedStd(p));
   const widthAdd = (p) => (sizedPricing === 'finished' ? 0 : Number(p.flat_extra || 0));
+  // per_inch: the standard width is a plain piece at the list price.
+  const sizedAt = (p, width) => !!(p.girth && width > 0 && !(sizedPricing === 'per_inch' && width === finishedStd(p)));
 
   // Mirrors order_items.billable_qty in the database.
   function compute(row) {
@@ -101,10 +103,10 @@
     // and sized trim in standard widths (10 @ 24" ridge cap = 18.46 x 13").
     else {
       const byLen = p.standard_length_in && len > 0 ? len / p.standard_length_in : 1;
-      const byWidth = p.girth && width > 0 ? (width + widthAdd(p)) / perWidth(p) : 1;
+      const byWidth = sizedAt(p, width) ? (width + widthAdd(p)) / perWidth(p) : 1;
       qty = round4(pieces * byLen * byWidth);
     }
-    const sized = p.unit === 'each' && p.girth && width > 0;
+    const sized = p.unit === 'each' && sizedAt(p, width);
     const per = p.unit === 'each' && p.standard_length_in && (len > 0 || sized) ? Number(p.standard_length_in) : null;
     const perW = sized ? perWidth(p) : null;
     const tooLong = !!(p.max_length_in && len > Number(p.max_length_in));
