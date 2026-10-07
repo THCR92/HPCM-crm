@@ -443,6 +443,16 @@ router.get('/:id(\\d+)/customer', async (req, res) => {
   const quoteDate = isQuote ? o.quoted_on : o.ordered_on;
   const email = o.contact_email || o.customer_email;
   const subject = `${docName} ${o.order_number} from High Plains Custom Metal`;
+  const body = [
+    'Hello,', '',
+    `Attached is ${docName.toLowerCase()} ${o.order_number}${o.job_name ? ` for ${o.job_name}` : ''}.`,
+    `Total: ${money(o.grand_total)}${o.tax_amount ? ' including sales tax' : ''}.`,
+    ...(isQuote ? [`Prices are good until ${date(o.valid_until)}.`] : []),
+    '', 'Thank you,', 'High Plains Custom Metal', '(307) 331-6449',
+  ].join('\n');
+  // Gmail's compose page, filled in; the PDF still has to be attached by hand.
+  const gmail = `https://mail.google.com/mail/?${new URLSearchParams({
+    view: 'cm', fs: '1', to: email || '', su: subject, body })}`;
   const sections = o.sections.filter((sec) => sec.items.length);
   res.send(layout({
     title: `${docName} ${o.order_number} (customer)`, active: '/orders',
@@ -452,10 +462,13 @@ router.get('/:id(\\d+)/customer', async (req, res) => {
       <div class="actions">
         <a class="btn" href="/orders/${o.order_id}">Back</a>
         <button class="btn primary" onclick="window.print()">Print or save as PDF</button>
-        ${email ? html`<a class="btn" href="mailto:${email}?subject=${encodeURIComponent(subject)}">Email ${email}</a>` : ''}
+        <a class="btn" href="${gmail}" target="_blank" rel="noopener">Email with Gmail</a>
       </div>
     </div>
-    <p class="muted small no-print">To email it: click Print, choose "Save as PDF", then attach the PDF to your email.</p>
+    <p class="muted small no-print">To email it: click <strong>Print or save as PDF</strong> and save the PDF, then click
+      <strong>Email with Gmail</strong>. Gmail opens with the ${email ? `customer's address (${email}),` : 'subject and'} message
+      filled in; attach the PDF and send. ${email ? '' : 'Add an email address to the customer or order to fill in the To line.'}
+      ${email ? html`Not using Gmail? <a href="mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}">Use your email app</a>.` : ''}</p>
     <section class="sheet customer-doc">
       <div class="sheet-head">
         <div class="sheet-brand"><img src="/logo.svg" alt="High Plains Custom Metal">

@@ -383,6 +383,7 @@ test('sales tax on taxable materials after discount; exempt customers pay none; 
   assert.doesNotMatch(copy, new RegExp(sup.name));
   assert.doesNotMatch(copy, /Billed/);
   assert.match(copy, /mailto:buyer@example.com/);
+  assert.match(copy, /https:\/\/mail\.google\.com\/mail\/\?view=cm&amp;fs=1&amp;to=buyer%40example\.com&amp;su=Quote\+HP-/);
 
   await query('UPDATE customers SET tax_exempt = true WHERE customer_id = $1', [c.customer_id]);
   await query('UPDATE orders SET tax_exempt = NULL WHERE order_id = $1', [id]);
