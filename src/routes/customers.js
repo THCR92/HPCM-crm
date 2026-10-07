@@ -111,7 +111,7 @@ router.get('/:id(\\d+)', async (req, res) => {
   if (!c) return res.status(404).send('Customer not found');
   const { rows: orders } = await query(`
     SELECT o.order_id, o.order_number, o.job_name, o.po_number, o.status, o.ordered_on, o.need_by,
-           t.pre_tax_total
+           t.grand_total
     FROM orders o JOIN v_order_totals t USING (order_id)
     WHERE o.customer_id = $1 ORDER BY o.ordered_on DESC, o.order_id DESC`, [c.customer_id]);
   const row = (label, v) => (v ? html`<dt>${label}</dt><dd>${v}</dd>` : '');
@@ -135,11 +135,11 @@ router.get('/:id(\\d+)', async (req, res) => {
     </dl></div>
     <h2>Orders</h2>
     <table class="list">
-      <thead><tr><th>Order #</th><th>Job</th><th>PO</th><th>Status</th><th>Ordered</th><th>Need by</th><th class="num">Total (pre-tax)</th></tr></thead>
+      <thead><tr><th>Order #</th><th>Job</th><th>PO</th><th>Status</th><th>Date</th><th>Need by</th><th class="num">Total</th></tr></thead>
       <tbody>${orders.length ? orders.map((o) => html`
         <tr><td><a href="/orders/${o.order_id}">${o.order_number}</a></td><td>${o.job_name}</td><td>${o.po_number}</td>
         <td>${statusBadge(o.status)}</td><td>${date(o.ordered_on)}</td><td>${date(o.need_by)}</td>
-        <td class="num">${money(o.pre_tax_total)}</td></tr>`)
+        <td class="num">${money(o.grand_total)}</td></tr>`)
       : html`<tr><td colspan="7" class="empty">No orders yet.</td></tr>`}</tbody>
     </table>`,
   }));

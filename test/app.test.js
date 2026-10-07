@@ -82,15 +82,23 @@ test('friendly errors for bad lines', async () => {
   }
 });
 
-test('status changes: completing locks editing', async () => {
+test('status changes: approving needs a due date and sets the order date; completing locks editing', async () => {
   const { rows: [o] } = await query(`
-    INSERT INTO orders (customer_id) SELECT customer_id FROM customers LIMIT 1 RETURNING order_id`);
-  const res = await fetch(`${base}/orders/${o.order_id}/status`, {
-    method: 'POST', body: new URLSearchParams({ status: 'completed' }), redirect: 'manual',
+    INSERT INTO orders (customer_id, ordered_on) SELECT customer_id, current_date - 5 FROM customers LIMIT 1
+    RETURNING order_id`);
+  const setStatus = (body) => fetch(`${base}/orders/${o.order_id}/status`, {
+    method: 'POST', body: new URLSearchParams(body), redirect: 'manual',
   });
+  let res = await setStatus({ status: 'completed' });
+  assert.match(res.headers.get('location'), /status_error=.*Need-by/);
+  assert.strictEqual((await query('SELECT status FROM orders WHERE order_id = $1', [o.order_id])).rows[0].status, 'quote');
+  res = await setStatus({ status: 'completed', need_by: '2030-01-15' });
   assert.strictEqual(res.status, 302);
-  const { rows: [after] } = await query('SELECT status, completed_at FROM orders WHERE order_id = $1', [o.order_id]);
+  const { rows: [after] } = await query(`SELECT status, completed_at, need_by, ordered_on = current_date AS today
+    FROM orders WHERE order_id = $1`, [o.order_id]);
   assert.strictEqual(after.status, 'completed');
+  assert.strictEqual(after.need_by, '2030-01-15');
+  assert.ok(after.today);
   assert.ok(after.completed_at);
   const edit = await post(`/orders/${o.order_id}`, { customer_id: 1, sections: [] });
   assert.strictEqual(edit.status, 400);
@@ -307,7 +315,7 @@ test('ridge cap at other widths scales the 13" price; editing keeps the width', 
   const { rows: [p] } = await query('SELECT girth_in FROM products WHERE product_id = $1', [ridge]);
   assert.strictEqual(p.girth_in, 13);
   const order = (items) => ({ customer_id: c.customer_id, sections: [{ area: 'trim', items }] });
-  // 10 @ 24" (10') = 10 x 24/13 = 18.46; 4 @ 24" x 12' = 4 x 1.2 x 24/13 = 8.86; 2 @ 13" = 2.
+  // 10 @ 24" (10') = 10 x 24/13 = 18.4615 ($81.60 each); 4 @ 24" x 12' = 4 x 1.2 x 24/13 = 8.8615; 2 @ 13" = 2.
   const res = await post('/orders', order([
     { product_id: ridge, pieces: 10, width_in: 24, unit_price: 44.20 },
     { product_id: ridge, pieces: 4, length_in: 144, width_in: 24, unit_price: 44.20 },
@@ -319,10 +327,10 @@ test('ridge cap at other widths scales the 13" price; editing keeps the width', 
   const lines = async () => (await query(`SELECT order_item_id, width_in, per_width_in, billable_qty, line_total
     FROM order_items WHERE order_id = $1 ORDER BY line_no`, [id])).rows;
   let rows = await lines();
-  assert.deepStrictEqual(rows.map((r) => [r.billable_qty, r.line_total]), [[18.46, 815.93], [8.86, 391.61], [2, 88.4]]);
+  assert.deepStrictEqual(rows.map((r) => [r.billable_qty, r.line_total]), [[18.4615, 816], [8.8615, 391.68], [2, 88.4]]);
   assert.strictEqual(rows[0].per_width_in, 13);
   const { rows: [inv] } = await query('SELECT qbo_description FROM v_order_invoice_lines WHERE order_id = $1 AND line_no = 1', [id]);
-  assert.match(inv.qbo_description, /10 pcs @ 10' 0" x 24" wide = 18.46 x 13" x 10' 0" pieces/);
+  assert.match(inv.qbo_description, /10 pcs @ 10' 0" x 24" wide = 18.4615 x 13" x 10' 0" pieces/);
   const page = await (await fetch(`${base}/orders/${id}`)).text();
   assert.match(page, /24&quot; wide/);
   assert.match(page, /18\.46 × 13&quot; × 10&#39;/);
@@ -334,5 +342,43 @@ test('ridge cap at other widths scales the 13" price; editing keeps the width', 
   }))));
   assert.ok((await again.json()).ok);
   rows = await lines();
-  assert.deepStrictEqual(rows.map((r) => r.billable_qty), [18.46, 8.86, 2]);
+  assert.deepStrictEqual(rows.map((r) => r.billable_qty), [18.4615, 8.8615, 2]);
+});
+
+test('sales tax on taxable materials after discount; exempt customers pay none; customer copy', async () => {
+  const { rows: [c] } = await query(
+    "INSERT INTO customers (display_name, email) VALUES ('Test ' || gen_random_uuid(), 'buyer@example.com') RETURNING customer_id");
+  const ridge = await productId('TRM-RIDGE-26');
+  const { rows: [col] } = await query(`INSERT INTO colors (name, supplier_id, finish)
+    VALUES ('Tax Test ' || gen_random_uuid(), (SELECT min(supplier_id) FROM suppliers), 'textured') RETURNING color_id, name`);
+  const { rows: [sup] } = await query('SELECT name FROM suppliers WHERE supplier_id = (SELECT min(supplier_id) FROM suppliers)');
+  // $816.00 + $100 delivery - $16 discount; tax 6% on 816 - 16 = 800 -> $48.00.
+  const res = await post('/orders', {
+    customer_id: c.customer_id, tax_rate: 6, delivery_charge: 100, discount_amount: 16, job_name: 'Barn',
+    sections: [{ area: 'trim', items: [{ product_id: ridge, color_id: col.color_id, pieces: 10, width_in: 24, unit_price: 44.20 }] }],
+  });
+  const out = await res.json();
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const totals = async () => (await query('SELECT pre_tax_total, tax_amount, grand_total FROM v_order_totals WHERE order_id = $1', [id])).rows[0];
+  assert.deepStrictEqual(await totals(), { pre_tax_total: 900, tax_amount: 48, grand_total: 948 });
+
+  const view = await (await fetch(`${base}/orders/${id}`)).text();
+  assert.match(view, /Quote HP-/);
+  assert.match(view, /Quoted \d/);
+  assert.match(view, /Sales tax \(6%\)/);
+
+  // Customer copy: price per piece, no billing column, no supplier.
+  const copy = await (await fetch(`${base}/orders/${id}/customer`)).text();
+  assert.match(copy, /QUOTE/);
+  assert.match(copy, /\$81\.60/);
+  assert.match(copy, /\$948\.00/);
+  assert.match(copy, new RegExp(`${col.name} \\(Textured\\)`));
+  assert.doesNotMatch(copy, new RegExp(sup.name));
+  assert.doesNotMatch(copy, /Billed/);
+  assert.match(copy, /mailto:buyer@example.com/);
+
+  await query('UPDATE customers SET tax_exempt = true WHERE customer_id = $1', [c.customer_id]);
+  await query('UPDATE orders SET tax_exempt = NULL WHERE order_id = $1', [id]);
+  assert.deepStrictEqual(await totals(), { pre_tax_total: 900, tax_amount: 0, grand_total: 900 });
 });

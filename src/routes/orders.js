@@ -12,6 +12,7 @@ const router = require('../async-router')();
 const EDITABLE = ['quote', 'confirmed', 'in_production', 'ready'];
 // Statuses a person can pick. "invoiced" is set when the order goes to QuickBooks.
 const SETTABLE = ['quote', 'confirmed', 'in_production', 'ready', 'completed', 'cancelled'];
+const APPROVED = ['confirmed', 'in_production', 'ready', 'completed'];
 const AREAS = ['roof', 'wall', 'trim', 'other'];
 
 const TABS = {
@@ -31,7 +32,10 @@ const jsonForScript = (v) => raw(JSON.stringify(v).replace(/</g, '\\u003c'));
 async function loadOrder(id) {
   const { rows: [order] } = await query(`
     SELECT o.*, c.display_name AS customer_name, c.phone AS customer_phone, c.email AS customer_email,
-           t.lines_subtotal, t.taxable_subtotal, t.pre_tax_total
+           t.lines_subtotal, t.taxable_subtotal, t.pre_tax_total,
+           t.tax_exempt AS tax_exempt_effective, t.tax_amount, t.grand_total,
+           (o.created_at AT TIME ZONE 'America/Denver')::date AS quoted_on,
+           COALESCE(o.quote_expires_on, (o.created_at AT TIME ZONE 'America/Denver')::date + 30) AS valid_until
     FROM orders o JOIN customers c USING (customer_id) JOIN v_order_totals t USING (order_id)
     WHERE o.order_id = $1`, [id]);
   if (!order) return null;
@@ -40,6 +44,7 @@ async function loadOrder(id) {
   const { rows: items } = await query(`
     SELECT oi.*, p.name AS product_name, p.sku, p.category, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
            g.gauge, col.label AS color_name,
+           col.name || CASE WHEN col.finish <> 'smooth' THEN ' (' || col.finish_label || ')' ELSE '' END AS customer_color,
            fn_format_length(oi.length_in) AS length_display, ts.girth_in
     FROM order_items oi
     JOIN products p USING (product_id)
@@ -56,7 +61,7 @@ async function loadOrder(id) {
 
 async function loadCatalog() {
   const { rows: products } = await query(`
-    SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies,
+    SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies, p.taxable,
            p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max
     FROM products p
@@ -68,9 +73,9 @@ async function loadCatalog() {
     SELECT color_id AS id, name, label, supplier_name AS supplier, finish, finish_label, upcharge_pct AS upcharge
     FROM v_colors WHERE active ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
   const { rows: customers } = await query(`
-    SELECT customer_id AS id, display_name AS name, phone, email, default_fulfillment
+    SELECT customer_id AS id, display_name AS name, phone, email, default_fulfillment, tax_exempt
     FROM customers WHERE active ORDER BY lower(display_name)`);
-  return { products, colors, customers };
+  return { products, colors, customers, default_tax_rate: await defaultTaxRate() };
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +97,17 @@ const amount = (v, label) => {
 const blank = (v) => v === null || v === undefined || v === '';
 const isoDate = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
 
+async function defaultTaxRate() {
+  const { rows: [r] } = await query("SELECT value FROM app_settings WHERE key = 'sales_tax_rate'");
+  return r ? Number(r.value) : 0;
+}
+
+const taxRate = (v) => {
+  const n = blank(v) ? 0 : Number(v);
+  if (!Number.isFinite(n) || n < 0 || n >= 100) throw new UserError('Sales tax must be a percent from 0 to 99.');
+  return Math.round(n * 1000) / 1000;
+};
+
 function parseHeader(b) {
   const customerId = Number(b.customer_id);
   if (!Number.isInteger(customerId) || customerId <= 0) throw new UserError('Pick a customer.');
@@ -107,6 +123,8 @@ function parseHeader(b) {
     delivery_charge: amount(b.delivery_charge, 'Delivery charge'),
     discount_amount: amount(b.discount_amount, 'Discount'),
     deposit_amount: amount(b.deposit_amount, 'Deposit'),
+    tax_rate: taxRate(b.tax_rate),
+    tax_exempt: blank(b.tax_exempt) ? null : b.tax_exempt === true || b.tax_exempt === 'true',
     customer_memo: text(b.customer_memo, 1000),
     internal_notes: text(b.internal_notes, 4000),
     completed_by: text(b.completed_by),
@@ -271,7 +289,7 @@ router.get('/', async (req, res) => {
   const q = (req.query.q || '').trim();
   const { rows } = await query(`
     SELECT o.order_id, o.order_number, o.job_name, o.po_number, o.status, o.ordered_on, o.need_by,
-           o.fulfillment, c.display_name AS customer_name, t.pre_tax_total
+           o.fulfillment, c.display_name AS customer_name, t.grand_total
     FROM orders o JOIN customers c USING (customer_id) JOIN v_order_totals t USING (order_id)
     WHERE ${TABS[tab].where}
       AND ($1 = '' OR o.order_number ILIKE '%' || $1 || '%' OR o.job_name ILIKE '%' || $1 || '%'
@@ -290,12 +308,12 @@ router.get('/', async (req, res) => {
       <input name="q" value="${q}" placeholder="Search order #, job, PO or customer"><button class="btn">Search</button></form>
     <table class="list">
       <thead><tr><th>Order #</th><th>Customer</th><th>Job</th><th>PO</th><th>Status</th>
-        <th>Need by</th><th></th><th class="num">Total (pre-tax)</th></tr></thead>
+        <th>Need by</th><th></th><th class="num">Total</th></tr></thead>
       <tbody>${rows.length ? rows.map((o) => html`
         <tr><td><a href="/orders/${o.order_id}">${o.order_number}</a></td><td>${o.customer_name}</td>
         <td>${o.job_name}</td><td>${o.po_number}</td><td>${statusBadge(o.status)}</td>
         <td>${date(o.need_by)}</td><td>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</td>
-        <td class="num">${money(o.pre_tax_total)}</td></tr>`)
+        <td class="num">${money(o.grand_total)}</td></tr>`)
       : html`<tr><td colspan="8" class="empty">No orders here.</td></tr>`}</tbody>
     </table>`,
   }));
@@ -323,6 +341,8 @@ router.get('/new', async (req, res) => {
       order_id: null,
       customer_id: customerId,
       fulfillment: cust ? cust.default_fulfillment : 'pickup',
+      tax_rate: catalog.default_tax_rate,
+      tax_exempt: cust ? cust.tax_exempt : false,
       contact_phone: cust?.phone || null,
       contact_email: cust?.email || null,
       sections: [{ area: 'roof', items: [] }, { area: 'wall', items: [] }, { area: 'trim', items: [] }],
@@ -340,7 +360,8 @@ router.get('/:id(\\d+)/edit', async (req, res) => {
     FROM v_colors WHERE NOT active
       AND color_id IN (SELECT color_id FROM order_items WHERE order_id = $1)`, [order.order_id]);
   order.hidden_colors = hidden;
-  formPage(res, { title: `Edit order ${order.order_number}`, order, catalog: await loadCatalog() });
+  order.tax_exempt = order.tax_exempt_effective;
+  formPage(res, { title: `Edit ${order.status === 'quote' ? 'quote' : 'order'} ${order.order_number}`, order, catalog: await loadCatalog() });
 });
 
 const saveHandler = (getId) => async (req, res) => {
@@ -359,14 +380,111 @@ router.post('/:id(\\d+)', saveHandler((req) => Number(req.params.id)));
 router.post('/:id(\\d+)/status', async (req, res) => {
   const status = req.body.status;
   if (!SETTABLE.includes(status)) return res.status(400).send('Unknown status');
+  const back = `/orders/${req.params.id}`;
+  // An approved order needs a due date: it's what the shop board sorts by.
+  const needBy = isoDate(req.body.need_by);
+  const { rows: [cur] } = await query('SELECT status, need_by FROM orders WHERE order_id = $1', [req.params.id]);
+  if (!cur) return res.status(404).send('Order not found');
+  if (APPROVED.includes(status) && !cur.need_by && !needBy) {
+    return res.redirect(`${back}?status_error=${encodeURIComponent('Set a Need-by date to approve this quote.')}`);
+  }
   await query(`
     UPDATE orders SET status = $1::order_status,
+           need_by = COALESCE($3::date, need_by),
+           -- The order date is the day the quote was approved.
+           ordered_on = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
+                             THEN current_date ELSE ordered_on END,
            completed_at = CASE WHEN $1::order_status = 'completed' THEN COALESCE(completed_at, now()) ELSE completed_at END,
            ready_at = CASE WHEN $1::order_status = 'ready' THEN COALESCE(ready_at, now())
                            WHEN $1::order_status IN ('quote', 'confirmed', 'in_production') THEN NULL
                            ELSE ready_at END
-    WHERE order_id = $2 AND status <> 'invoiced'`, [status, req.params.id]);
-  res.redirect(`/orders/${req.params.id}`);
+    WHERE order_id = $2 AND status <> 'invoiced'`, [status, req.params.id, needBy]);
+  res.redirect(back);
+});
+
+// Width shown on a line: panel coverage, custom trim girth, or sized trim width.
+const sizeCol = (i) => {
+  if (i.pricing_unit === 'sqft' && i.width_in) {
+    return `${num(i.width_in, 3)}" ${i.category === 'custom_trim' ? 'girth' : 'cov.'}`;
+  }
+  if (i.per_width_in && i.width_in) return `${num(i.width_in, 3)}" wide`;
+  return '';
+};
+
+// Subtotal, tax and total rows shared by the cut sheet and the customer copy.
+const totalsRows = (o) => html`
+  <tr><th>Subtotal</th><td>${money(o.pre_tax_total)}</td></tr>
+  <tr><th>${o.tax_exempt_effective ? 'Sales tax (exempt)' : `Sales tax (${num(o.tax_rate, 3)}%)`}</th>
+    <td>${money(o.tax_amount)}</td></tr>
+  <tr class="grand"><th>Total</th><td>${money(o.grand_total)}</td></tr>
+  ${o.deposit_amount ? html`<tr><th>Deposit received</th><td>−${money(o.deposit_amount)}</td></tr>
+    <tr><th>Balance due</th><td>${money(o.grand_total - o.deposit_amount)}</td></tr>` : ''}`;
+
+// What the customer sees: one price per piece (the line amount over the pieces),
+// no billing units, no coil supplier. Print it, or save it as a PDF to email.
+router.get('/:id(\\d+)/customer', async (req, res) => {
+  const o = await loadOrder(req.params.id);
+  if (!o) return res.status(404).send('Order not found');
+  const isQuote = o.status === 'quote';
+  const docName = isQuote ? 'Quote' : 'Order';
+  const quoteDate = isQuote ? o.quoted_on : o.ordered_on;
+  const email = o.contact_email || o.customer_email;
+  const subject = `${docName} ${o.order_number} from High Plains Custom Metal`;
+  const sections = o.sections.filter((sec) => sec.items.length);
+  res.send(layout({
+    title: `${docName} ${o.order_number} (customer)`, active: '/orders',
+    body: html`
+    <div class="page-head no-print">
+      <h1>Customer ${docName.toLowerCase()} ${o.order_number}</h1>
+      <div class="actions">
+        <a class="btn" href="/orders/${o.order_id}">Back</a>
+        <button class="btn primary" onclick="window.print()">Print or save as PDF</button>
+        ${email ? html`<a class="btn" href="mailto:${email}?subject=${encodeURIComponent(subject)}">Email ${email}</a>` : ''}
+      </div>
+    </div>
+    <p class="muted small no-print">To email it: click Print, choose "Save as PDF", then attach the PDF to your email.</p>
+    <section class="sheet customer-doc">
+      <div class="sheet-head">
+        <div class="sheet-brand"><img src="/logo.svg" alt="High Plains Custom Metal">
+          805 E Fox Farm Rd Unit B · Cheyenne, WY 82007 · (307) 331-6449</div>
+        <div class="sheet-no"><div class="doc-title">${docName.toUpperCase()}</div>
+          <strong>${o.order_number}</strong><br>${date(quoteDate)}</div>
+      </div>
+      <dl class="sheet-fields">
+        <dt>Customer</dt><dd>${o.customer_name}</dd>
+        <dt>Job name</dt><dd>${o.job_name}</dd>
+        <dt>Project / PO #</dt><dd>${o.po_number}</dd>
+        <dt>${isQuote ? 'Valid until' : 'Need by'}</dt><dd>${date(isQuote ? o.valid_until : o.need_by)}</dd>
+        <dt>Job address</dt><dd>${o.job_address_text}</dd>
+        <dt>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</dt><dd>${o.fulfillment === 'delivery' ? 'Delivered' : 'Customer pickup'}</dd>
+      </dl>
+      ${sections.map((sec) => html`
+      <h3 class="area">${AREA_LABEL[sec.area] || sec.area}${sec.label ? ` · ${sec.label}` : ''}</h3>
+      <table class="lines">
+        <thead><tr><th class="num">Qty</th><th>Length</th><th>Item</th><th>Color</th><th>Size</th>
+          <th class="num">Price each</th><th class="num">Amount</th></tr></thead>
+        <tbody>${sec.items.map((i) => html`
+          <tr><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
+          <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}</td>
+          <td>${i.customer_color}</td><td>${sizeCol(i)}</td>
+          <td class="num">${money(i.pieces ? i.line_total / i.pieces : i.line_total)}</td>
+          <td class="num">${money(i.line_total)}</td></tr>`)}</tbody>
+      </table>`)}
+      <div class="sheet-foot">
+        <div>
+          ${o.customer_memo ? html`<p><strong>Notes:</strong> ${o.customer_memo}</p>` : ''}
+          ${isQuote ? html`<p class="muted small">Prices are good for 30 days. Lengths and quantities are
+            cut exactly as listed, so please check them before approving.</p>` : ''}
+        </div>
+        <table class="totals">
+          <tr><th>Materials</th><td>${money(o.lines_subtotal)}</td></tr>
+          ${o.delivery_charge ? html`<tr><th>Delivery</th><td>${money(o.delivery_charge)}</td></tr>` : ''}
+          ${o.discount_amount ? html`<tr><th>Discount</th><td>−${money(o.discount_amount)}</td></tr>` : ''}
+          ${totalsRows(o)}
+        </table>
+      </div>
+    </section>`,
+  }));
 });
 
 router.get('/:id(\\d+)', async (req, res) => {
@@ -374,13 +492,6 @@ router.get('/:id(\\d+)', async (req, res) => {
   if (!o) return res.status(404).send('Order not found');
   const editable = EDITABLE.includes(o.status);
 
-  const sizeCol = (i) => {
-    if (i.pricing_unit === 'sqft' && i.width_in) {
-      return `${num(i.width_in, 3)}" ${i.category === 'custom_trim' ? 'girth' : 'cov.'}`;
-    }
-    if (i.per_width_in && i.width_in) return `${num(i.width_in, 3)}" wide`;
-    return '';
-  };
   const sectionTotals = (items) => {
     const sq = items.filter((i) => i.pricing_unit === 'sqft').reduce((a, i) => a + i.billable_qty, 0);
     const lf = items.filter((i) => i.pricing_unit === 'lf').reduce((a, i) => a + i.billable_qty, 0);
@@ -396,28 +507,33 @@ router.get('/:id(\\d+)', async (req, res) => {
     return parts.length ? `${num(i.billable_qty)} × ${parts.join(' × ')}` : `${num(i.billable_qty)} ${UNIT_LABEL.each}`;
   };
   const production = await productionSection(o, req);
+  const docName = o.status === 'quote' ? 'Quote' : 'Order';
 
   res.send(layout({
     title: `Order ${o.order_number}`, active: '/orders',
     body: html`
     <div class="page-head no-print">
-      <h1>Order ${o.order_number} ${statusBadge(o.status)}</h1>
+      <h1>${docName} ${o.order_number} ${statusBadge(o.status)}</h1>
       <div class="actions">
-        ${editable ? html`<a class="btn primary" href="/orders/${o.order_id}/edit">Edit order</a>` : ''}
+        ${editable ? html`<a class="btn primary" href="/orders/${o.order_id}/edit">Edit ${docName.toLowerCase()}</a>` : ''}
+        <a class="btn" href="/orders/${o.order_id}/customer">Customer ${o.status === 'quote' ? 'quote' : 'copy'}</a>
         <button class="btn" onclick="window.print()">Print cut sheet</button>
         ${o.status !== 'invoiced' ? html`
         <form method="post" action="/orders/${o.order_id}/status" class="inline">
           <select name="status">${nextStatuses.map((s) => html`<option value="${s}">${STATUS_LABEL[s]}</option>`)}</select>
+          ${o.need_by ? '' : html`<label class="inline-date" title="Needed to approve a quote">Need by
+            <input type="date" name="need_by"></label>`}
           <button class="btn">Change status</button>
         </form>` : ''}
       </div>
     </div>
+    ${req.query.status_error ? html`<div class="alert no-print">${req.query.status_error}</div>` : ''}
 
     <section class="sheet">
       <div class="sheet-head">
         <div class="sheet-brand"><img src="/logo.svg" alt="High Plains Custom Metal">
           805 E Fox Farm Rd Unit B · Cheyenne, WY 82007 · (307) 331-6449</div>
-        <div class="sheet-no">Order <strong>${o.order_number}</strong><br>${STATUS_LABEL[o.status]}</div>
+        <div class="sheet-no">${docName} <strong>${o.order_number}</strong><br>${STATUS_LABEL[o.status]}</div>
       </div>
       <dl class="sheet-fields">
         <dt>Contractor / Customer</dt><dd><a href="/customers/${o.customer_id}">${o.customer_name}</a></dd>
@@ -425,7 +541,8 @@ router.get('/:id(\\d+)', async (req, res) => {
         <dt>Project / PO #</dt><dd>${o.po_number}</dd>
         <dt>Need by</dt><dd>${date(o.need_by)}</dd>
         <dt>Job address</dt><dd>${o.job_address_text}</dd>
-        <dt>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</dt><dd>Ordered ${date(o.ordered_on)}</dd>
+        <dt>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</dt><dd>${o.status === 'quote'
+          ? `Quoted ${date(o.quoted_on)}` : `Ordered ${date(o.ordered_on)}`}</dd>
         <dt>Phone</dt><dd>${o.contact_phone || o.customer_phone}</dd>
         <dt>Email</dt><dd>${o.contact_email || o.customer_email}</dd>
       </dl>
@@ -458,9 +575,7 @@ router.get('/:id(\\d+)', async (req, res) => {
           <tr><th>Materials</th><td>${money(o.lines_subtotal)}</td></tr>
           ${o.delivery_charge ? html`<tr><th>Delivery</th><td>${money(o.delivery_charge)}</td></tr>` : ''}
           ${o.discount_amount ? html`<tr><th>Discount</th><td>−${money(o.discount_amount)}</td></tr>` : ''}
-          <tr class="grand"><th>Total before tax</th><td>${money(o.pre_tax_total)}</td></tr>
-          ${o.deposit_amount ? html`<tr><th>Deposit received</th><td>${money(o.deposit_amount)}</td></tr>` : ''}
-          <tr><td colspan="2" class="muted small">Sales tax is added on the QuickBooks invoice.</td></tr>
+          ${totalsRows(o)}
         </table>
       </div>
     </section>

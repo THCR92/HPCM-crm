@@ -44,6 +44,14 @@ works out the square feet, linear feet and price for every line.
 - **Trim at other widths**: trim with a flat width on the price list (ridge cap is 13") gets
   a width box on the order. The price scales by width and length: 10 pieces of 24" ridge cap
   at 10' bill as 10 x 24/13 = 18.46 x the 13" price.
+- **Customer quote / copy** (`/orders/:id/customer`): what the customer sees. One price per
+  piece (the line amount over the pieces), no billing units, colors without the coil supplier.
+  Print it, or Save as PDF to email. Quotes show "Valid until" (30 days).
+- **Sales tax**: a default rate (set on the Price list page) is copied onto each new order and
+  can be changed per order. Tax is on taxable materials after the discount; delivery isn't
+  taxed. Tax-exempt customers pay none. Totals everywhere include tax.
+- **Approving quotes**: a quote needs a Need-by date before it can be approved, and the order
+  date becomes the day it was approved.
 - **Shop board** (`/board`): a full-screen page for a TV in the shop. Shows quotes out and
   approved orders (with dollars), jobs in production and ready, this week's coil feet run and
   orders finished, and the next 5 orders by Need-by date (late ones in red) with the coil

@@ -94,6 +94,9 @@ dl.details dd { margin: 0; }
 .sheet { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.25rem; }
 .sheet-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; border-bottom: 3px solid var(--brand); padding-bottom: .7rem; margin-bottom: 1rem; }
 .sheet-no { text-align: right; }
+.doc-title { font-size: 1.6rem; font-weight: 800; letter-spacing: .08em; color: var(--brand); }
+label.inline-date { flex-direction: row; align-items: center; gap: .3rem; }
+label.inline-date input { width: auto; }
 .sheet-brand img { height: 72px; width: auto; display: block; margin-bottom: .3rem; }
 .sheet-fields { display: grid; grid-template-columns: max-content 1fr max-content 1fr; gap: .35rem 1rem; margin: 0 0 1rem; }
 .sheet-fields dt { color: var(--muted); font-size: .85rem; }

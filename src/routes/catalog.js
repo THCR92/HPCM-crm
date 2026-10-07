@@ -18,12 +18,19 @@ router.get('/products', async (req, res) => {
            cp.unit_price, cp.effective_from
     FROM products p LEFT JOIN v_current_prices cp USING (product_id)
     WHERE p.active ORDER BY array_position(enum_range(NULL::product_category), p.category), p.name`);
+  const { rows: [tax] } = await query("SELECT value FROM app_settings WHERE key = 'sales_tax_rate'");
   const groups = {};
   for (const r of rows) (groups[r.category] ||= []).push(r);
   res.send(layout({
     title: 'Price list', active: '/products',
     body: html`
-    <div class="page-head"><h1>Price list</h1></div>
+    <div class="page-head"><h1>Price list</h1>
+      <form method="post" action="/settings/tax" class="inline">
+        <label class="inline-date">Sales tax for new orders
+          <input name="sales_tax_rate" type="number" step="0.001" min="0" max="99" value="${tax ? Number(tax.value) : ''}"
+            style="width:6rem">%</label>
+        <button class="btn small">Save</button>
+      </form></div>
     <p class="muted">Prices are for standard stock colors. Change a price here and new order lines use it
     from today on; orders already written keep the price they were written at.</p>
     <p class="muted">Trim and downspouts are priced per 10' piece; other lengths are billed in proportion
@@ -103,6 +110,15 @@ router.post('/products/:id(\\d+)/girth', async (req, res) => {
   const g = req.body.girth_in === '' ? null : Number(req.body.girth_in);
   if (g !== null && !(g > 0)) return res.status(400).send('Enter the flat width in inches');
   await query('UPDATE products SET girth_in = $2 WHERE product_id = $1', [req.params.id, g]);
+  res.redirect('/products?saved=1');
+});
+
+// Default sales tax percent copied onto new orders (each order can still change it).
+router.post('/settings/tax', async (req, res) => {
+  const r = Number(req.body.sales_tax_rate);
+  if (req.body.sales_tax_rate === '' || !(r >= 0 && r < 100)) return res.status(400).send('Enter a percent from 0 to 99');
+  await query(`INSERT INTO app_settings (key, value) VALUES ('sales_tax_rate', $1)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, [String(r)]);
   res.redirect('/products?saved=1');
 });
 

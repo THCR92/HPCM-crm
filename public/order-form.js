@@ -18,6 +18,7 @@
   const esc = (v) => (v === null || v === undefined ? '' : String(v)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'));
   const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+  const round4 = (n) => Math.round((n + Number.EPSILON) * 10000) / 10000;
   const money = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
   const fmt = (n) => n.toLocaleString('en-US', { maximumFractionDigits: 2 });
 
@@ -95,7 +96,7 @@
     else {
       const byLen = p.standard_length_in && len > 0 ? len / p.standard_length_in : 1;
       const byWidth = p.girth && width > 0 ? width / p.girth : 1;
-      qty = round2(pieces * byLen * byWidth);
+      qty = round4(pieces * byLen * byWidth);
     }
     const sized = p.unit === 'each' && p.girth && width > 0;
     const per = p.unit === 'each' && p.standard_length_in && (len > 0 || sized) ? Number(p.standard_length_in) : null;
@@ -224,7 +225,9 @@
         ${moneyField('delivery_charge', 'Delivery charge')}
         ${moneyField('discount_amount', 'Discount')}
         ${moneyField('deposit_amount', 'Deposit received')}
-        <span></span>
+        <label>Sales tax<span class="row"><input data-h="tax_rate" type="number" step="0.001" min="0" max="99"
+          value="${esc(h.tax_rate ?? '')}"><span class="unit">%</span></span></label>
+        <label class="check"><input type="checkbox" data-h="tax_exempt" ${h.tax_exempt ? 'checked' : ''}> Tax exempt</label>
         <label class="span2">Note to customer (prints on the invoice)<textarea data-h="customer_memo" rows="2" maxlength="1000">${esc(h.customer_memo ?? '')}</textarea></label>
         <label class="span2">Shop notes (internal)<textarea data-h="internal_notes" rows="2">${esc(h.internal_notes ?? '')}</textarea></label>
         <label>Completed by<input data-h="completed_by" value="${esc(h.completed_by ?? '')}"></label>
@@ -237,9 +240,10 @@
           <tr><th>Materials</th><td id="t-lines"></td></tr>
           <tr><th>Delivery</th><td id="t-delivery"></td></tr>
           <tr><th>Discount</th><td id="t-discount"></td></tr>
-          <tr class="grand"><th>Total before tax</th><td id="t-total"></td></tr>
+          <tr><th>Subtotal</th><td id="t-subtotal"></td></tr>
+          <tr><th id="t-tax-label">Sales tax</th><td id="t-tax"></td></tr>
+          <tr class="grand"><th>Total</th><td id="t-total"></td></tr>
         </table>
-        <p class="muted small">Sales tax is added on the QuickBooks invoice.</p>
         <button type="button" class="btn primary big" data-act="save">Save order</button>
         <a class="btn" href="${h.order_id ? `/orders/${h.order_id}` : '/orders'}">Cancel</a>
       </div>
@@ -256,7 +260,7 @@
   }
 
   function recompute() {
-    let sqft = 0; let lf = 0; let lines = 0;
+    let sqft = 0; let lf = 0; let lines = 0; let taxable = 0;
     state.sections.forEach((s, si) => {
       let sSq = 0; let sLf = 0;
       s.items.forEach((row, ii) => {
@@ -272,6 +276,7 @@
         if (c.unit === 'sqft') sSq += c.qty;
         if (c.unit === 'lf') sLf += c.qty;
         lines += c.amount;
+        if (productById.get(Number(row.product_id))?.taxable) taxable += c.amount;
       });
       sqft += sSq; lf += sLf;
       root.querySelector(`fieldset[data-s="${si}"] .section-total`).textContent =
@@ -284,7 +289,15 @@
     root.querySelector('#t-lines').textContent = money(round2(lines));
     root.querySelector('#t-delivery').textContent = money(delivery);
     root.querySelector('#t-discount').textContent = discount ? `−${money(discount)}` : money(0);
-    root.querySelector('#t-total').textContent = money(round2(lines + delivery - discount));
+    // Mirrors v_order_totals: tax on taxable materials after the discount; delivery isn't taxed.
+    const rate = Number(state.header.tax_rate) || 0;
+    const base = Math.max(taxable - (lines > 0 ? (discount * taxable) / lines : 0), 0);
+    const tax = state.header.tax_exempt ? 0 : round2((base * rate) / 100);
+    const subtotal = round2(lines + delivery - discount);
+    root.querySelector('#t-subtotal').textContent = money(subtotal);
+    root.querySelector('#t-tax-label').textContent = state.header.tax_exempt ? 'Sales tax (exempt)' : `Sales tax (${rate}%)`;
+    root.querySelector('#t-tax').textContent = money(tax);
+    root.querySelector('#t-total').textContent = money(round2(subtotal + tax));
   }
 
   // ----------------------------------------------------------------- events
@@ -310,7 +323,7 @@
   root.addEventListener('input', (e) => {
     const t = e.target;
     dirty = true;
-    if (t.dataset.h) state.header[t.dataset.h] = t.value;
+    if (t.dataset.h) state.header[t.dataset.h] = t.type === 'checkbox' ? t.checked : t.value;
     else if (t.dataset.sf) state.sections[t.closest('fieldset').dataset.s][t.dataset.sf] = t.value;
     else if (t.dataset.f) {
       const r = rowOf(t);
@@ -327,6 +340,7 @@
         state.header.contact_phone = state.header.contact_phone || c.phone || '';
         state.header.contact_email = state.header.contact_email || c.email || '';
         state.header.fulfillment = c.default_fulfillment;
+        state.header.tax_exempt = !!c.tax_exempt;
         render();
         return;
       }
