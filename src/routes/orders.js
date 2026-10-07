@@ -1,5 +1,6 @@
 // Orders: one order = one cut sheet. Sections (Roof / Wall / Trim / Other)
 // hold the cut-sheet rows; billable sq ft / LF are computed by the database.
+const express = require('express');
 const { query, tx } = require('../db');
 const { feetInches } = require('../length');
 const { RUNNABLE, footage, runError } = require('../production');
@@ -57,6 +58,15 @@ async function loadOrder(id) {
   const loose = items.filter((i) => !sections.some((s) => s.section_id === i.section_id));
   if (loose.length) sections.push({ section_id: null, area: 'other', label: null, items: loose });
   order.sections = sections;
+  const { rows: attachments } = await query(`
+    SELECT a.attachment_id, a.order_item_id, a.filename, a.content_type, a.byte_size, a.note, a.created_at,
+           oi.line_no, p.name AS product_name
+    FROM order_attachments a
+    LEFT JOIN order_items oi USING (order_item_id)
+    LEFT JOIN products p ON p.product_id = oi.product_id
+    WHERE a.order_id = $1 ORDER BY oi.line_no NULLS FIRST, a.attachment_id`, [id]);
+  order.attachments = attachments;
+  for (const i of items) i.attachments = attachments.filter((a) => a.order_item_id === i.order_item_id);
   return order;
 }
 
@@ -581,7 +591,8 @@ router.get('/:id(\\d+)', async (req, res) => {
           <th>Width</th><th class="num">Billed</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
         <tbody>${s.items.length ? s.items.map((i) => html`
           <tr><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
-          <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}</td>
+          <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}
+            ${i.attachments.map((a) => html`<div class="small"><a href="#drawing-${a.attachment_id}">📎 Drawing: ${a.filename}</a></div>`)}</td>
           <td>${i.gauge || ''}</td><td>${i.color_name}</td><td>${sizeCol(i)}</td>
           <td class="num">${billed(i)}</td>
           <td class="num">${money(i.unit_price)}</td><td class="num">${money(i.line_total)}</td></tr>`)
@@ -605,9 +616,107 @@ router.get('/:id(\\d+)', async (req, res) => {
         </table>
       </div>
     </section>
+    ${drawingsSection(o)}
     ${production}`,
-    scripts: ['/production.js'],
+    scripts: ['/production.js', '/attachments.js'],
   }));
+});
+
+// ---------------------------------------------------------------------------
+// Drawings: files attached to the order or to one line (reMarkable exports,
+// photos, PDFs). Pictures print on the cut sheet; PDFs open in a new tab.
+// ---------------------------------------------------------------------------
+const ATTACH_TYPES = {
+  'application/pdf': 'pdf', 'image/png': 'image', 'image/jpeg': 'image', 'image/gif': 'image', 'image/webp': 'image',
+};
+const ATTACH_MAX = 20 * 1024 * 1024;
+const isImage = (a) => ATTACH_TYPES[a.content_type] === 'image';
+const fileSize = (n) => (n >= 1024 * 1024 ? `${num(n / 1024 / 1024, 1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+function drawingsSection(o) {
+  const items = o.sections.flatMap((s) => s.items);
+  const lineLabel = (a) => (a.order_item_id ? `Line ${a.line_no}: ${a.product_name}` : 'Whole order');
+  const canEdit = o.status !== 'invoiced';
+  return html`
+  <section id="drawings" class="drawings${o.attachments.length ? '' : ' no-print'}">
+    <h2>Drawings &amp; files</h2>
+    ${o.attachments.length ? '' : html`<p class="muted no-print">No drawings yet. Export the page from the reMarkable
+      (Share, then PDF or PNG) and attach it here. Pictures (PNG or JPG) also print with the cut sheet.</p>`}
+    ${o.attachments.map((a) => {
+    const url = `/orders/${o.order_id}/attachments/${a.attachment_id}`;
+    return html`
+    <div class="drawing" id="drawing-${a.attachment_id}">
+      <div class="drawing-head">
+        <strong>${lineLabel(a)}</strong>
+        <span class="muted small">${a.filename} · ${fileSize(a.byte_size)}</span>
+        ${a.note ? html`<span>${a.note}</span>` : ''}
+        <span class="actions no-print">
+          <a class="btn small" href="${url}" target="_blank" rel="noopener">Open full size</a>
+          ${canEdit ? html`<form method="post" action="${url}/delete" class="inline"
+            onsubmit="return confirm('Remove this drawing?')"><button class="btn small">Remove</button></form>` : ''}
+        </span>
+      </div>
+      ${isImage(a) ? html`<a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${a.filename}"></a>`
+    : html`<object class="no-print" data="${url}" type="application/pdf"><a href="${url}" target="_blank">Open ${a.filename}</a></object>
+      <p class="print-only small">PDF drawing: open it in the CRM to view or print.</p>`}
+    </div>`;
+  })}
+    ${canEdit ? html`
+    <form class="card attach-form no-print" data-action="/orders/${o.order_id}/attachments">
+      <label>File (PDF, PNG or JPG)<input type="file" name="file" accept="application/pdf,image/png,image/jpeg,image/gif,image/webp" required></label>
+      <label>For<select name="line">
+        <option value="">Whole order</option>
+        ${items.map((i) => html`<option value="${i.order_item_id}">
+          Line ${i.line_no}: ${num(i.pieces)} × ${i.length_display || 'each'} ${i.product_name}</option>`)}
+      </select></label>
+      <label>Note<input name="note" placeholder="optional, e.g. bend order"></label>
+      <button class="btn primary">Attach</button>
+      <span class="attach-status muted small"></span>
+    </form>` : ''}
+  </section>`;
+}
+
+router.post('/:id(\\d+)/attachments', express.raw({ type: () => true, limit: ATTACH_MAX }), async (req, res) => {
+  const orderId = Number(req.params.id);
+  const type = (req.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (!ATTACH_TYPES[type]) return res.status(400).json({ error: 'Attach a PDF or a picture (PNG or JPG).' });
+  if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'The file is empty.' });
+  let filename = 'drawing';
+  try { filename = decodeURIComponent(req.get('x-filename') || '') || filename; } catch { /* keep default */ }
+  const lineId = req.query.line ? Number(req.query.line) : null;
+  const { rows: [o] } = await query('SELECT status FROM orders WHERE order_id = $1', [orderId]);
+  if (!o) return res.status(404).json({ error: 'Order not found' });
+  if (o.status === 'invoiced') return res.status(400).json({ error: 'This order is already invoiced.' });
+  if (lineId) {
+    const { rows } = await query('SELECT 1 FROM order_items WHERE order_item_id = $1 AND order_id = $2', [lineId, orderId]);
+    if (!rows.length) return res.status(400).json({ error: 'That line isn\'t on this order.' });
+  }
+  const { rows: [a] } = await query(`
+    INSERT INTO order_attachments (order_id, order_item_id, filename, content_type, byte_size, data, note)
+    VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING attachment_id`,
+  [orderId, lineId, filename.slice(0, 200), type, req.body.length, req.body, (req.query.note || '').trim() || null]);
+  res.json({ ok: true, attachment_id: a.attachment_id });
+});
+
+router.get('/:id(\\d+)/attachments/:aid(\\d+)', async (req, res) => {
+  const { rows: [a] } = await query(
+    'SELECT filename, content_type, data FROM order_attachments WHERE attachment_id = $1 AND order_id = $2',
+    [req.params.aid, req.params.id]);
+  if (!a) return res.status(404).send('File not found');
+  res.set({
+    'Content-Type': a.content_type,
+    'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(a.filename)}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=86400',
+  });
+  res.send(a.data);
+});
+
+router.post('/:id(\\d+)/attachments/:aid(\\d+)/delete', async (req, res) => {
+  await query(`DELETE FROM order_attachments a USING orders o
+    WHERE a.attachment_id = $1 AND a.order_id = $2 AND o.order_id = a.order_id AND o.status <> 'invoiced'`,
+  [req.params.aid, req.params.id]);
+  res.redirect(`/orders/${req.params.id}#drawings`);
 });
 
 // ---------------------------------------------------------------------------

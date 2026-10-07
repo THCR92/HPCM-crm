@@ -56,7 +56,11 @@ works out the square feet, linear feet and price for every line.
   Print it, or Save as PDF to email. Quotes show "Valid until" (30 days).
 - **Sales tax**: a default rate (set on the Price list page) is copied onto each new order and
   can be changed per order. Tax is on taxable materials after the discount; delivery isn't
-  taxed. Tax-exempt customers pay none. Totals everywhere include tax.
+  taxed. Tax-exempt customers pay none. Totals everywhere include tax. Default 5% (Cheyenne).
+- **Drawings**: attach a PDF or picture (for example a reMarkable trim sketch with face lengths
+  and bends) to the whole order or to one line, under "Drawings & files" on the order page.
+  The line shows a 📎 link; pictures print on their own page after the cut sheet. Files are
+  stored in the database (up to 20 MB each) and never appear on the customer copy.
 - **Approving quotes**: a quote needs a Need-by date before it can be approved, and the order
   date becomes the day it was approved.
 - **Shop board** (`/board`): a full-screen page for a TV in the shop. Shows quotes out and

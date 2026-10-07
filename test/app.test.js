@@ -406,3 +406,41 @@ test('sized trim pricing setting picks the width basis', async () => {
     await query("UPDATE app_settings SET value = 'per_inch' WHERE key = 'sized_trim_pricing'");
   }
 });
+
+test('drawings attach to an order line, show on the cut sheet, and stay when the line is removed', async () => {
+  const { rows: [c] } = await query(
+    "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const trim = await productId('TRM-CUST-26');
+  const res = await post('/orders', { customer_id: c.customer_id, job_name: 'Drawing job',
+    sections: [{ area: 'trim', items: [{ product_id: trim, pieces: 3, length_in: 120, width_in: 12, unit_price: 3.40 }] }] });
+  const out = await res.json();
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const { rows: [line] } = await query('SELECT order_item_id FROM order_items WHERE order_id = $1', [id]);
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+
+  const bad = await fetch(`${base}/orders/${id}/attachments`, {
+    method: 'POST', headers: { 'Content-Type': 'image/svg+xml' }, body: '<svg/>' });
+  assert.strictEqual(bad.status, 400);
+
+  const up = await fetch(`${base}/orders/${id}/attachments?line=${line.order_item_id}&note=Bend%20A%20first`, {
+    method: 'POST', headers: { 'Content-Type': 'image/png', 'X-Filename': encodeURIComponent('Eave trim.png') }, body: png });
+  const { attachment_id: aid } = await up.json();
+  assert.ok(aid);
+
+  const page = await (await fetch(`${base}/orders/${id}`)).text();
+  assert.match(page, /📎 Drawing: Eave trim\.png/);
+  assert.match(page, /Line 1: /);
+  assert.match(page, /Bend A first/);
+  const file = await fetch(`${base}/orders/${id}/attachments/${aid}`);
+  assert.strictEqual(file.headers.get('content-type'), 'image/png');
+  assert.deepStrictEqual(Buffer.from(await file.arrayBuffer()), png);
+  assert.doesNotMatch(await (await fetch(`${base}/orders/${id}/customer`)).text(), /Eave trim/);
+
+  await query('DELETE FROM order_items WHERE order_id = $1', [id]);
+  const { rows: [a] } = await query('SELECT order_id, order_item_id FROM order_attachments WHERE attachment_id = $1', [aid]);
+  assert.deepStrictEqual(a, { order_id: id, order_item_id: null });
+
+  await fetch(`${base}/orders/${id}/attachments/${aid}/delete`, { method: 'POST', redirect: 'manual' });
+  assert.strictEqual((await query('SELECT 1 FROM order_attachments WHERE attachment_id = $1', [aid])).rowCount, 0);
+});
