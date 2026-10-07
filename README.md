@@ -41,6 +41,9 @@ works out the square feet, linear feet and price for every line.
   be undone, and the first run moves a confirmed order to In production.
 - **Stock**: panels and trim cut ahead or left over, by product, color and length. Add
   pieces (optionally cut from a coil) and take them out when sold or scrapped.
+- **Trim at other widths**: trim with a flat width on the price list (ridge cap is 13") gets
+  a width box on the order. The price scales by width and length: 10 pieces of 24" ridge cap
+  at 10' bill as 10 x 24/13 = 18.46 x the 13" price.
 - **Shop board** (`/board`): a full-screen page for a TV in the shop. Shows quotes out and
   approved orders (with dollars), jobs in production and ready, this week's coil feet run and
   orders finished, and the next 5 orders by Need-by date (late ones in red) with the coil

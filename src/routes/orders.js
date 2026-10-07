@@ -57,7 +57,7 @@ async function loadOrder(id) {
 async function loadCatalog() {
   const { rows: products } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies,
-           p.is_cut_to_length, p.standard_length_in, p.max_length_in, cp.unit_price AS price,
+           p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max
     FROM products p
     LEFT JOIN v_current_prices cp USING (product_id)
@@ -136,7 +136,10 @@ function parseSections(b, productsById) {
       if (p.category === 'custom_trim' && !(width > 0)) {
         throw new UserError(`${where(ii + 1)}: enter the girth (flat width in inches) for custom trim.`);
       }
-      if (p.category !== 'panel' && p.category !== 'custom_trim') width = null;
+      // Trim with a standard flat width (ridge cap 13") can be made wider or narrower.
+      const sized = p.unit === 'each' && p.girth > 0;
+      if (width !== null && !(width > 0)) throw new UserError(`${where(ii + 1)}: width must be more than zero.`);
+      if (p.category !== 'panel' && p.category !== 'custom_trim' && !sized) width = null;
       const price = blank(it.unit_price) ? null : Number(it.unit_price);
       if (price === null || !(price >= 0)) throw new UserError(`${where(ii + 1)}: ${p.name} needs a price.`);
       return {
@@ -159,7 +162,8 @@ function parseSections(b, productsById) {
 async function saveOrder(orderId, body) {
   const header = parseHeader(body);
   const { rows: prodRows } = await query(`
-    SELECT product_id AS id, name, category, pricing_unit AS unit, taxable, max_length_in FROM products`);
+    SELECT product_id AS id, name, category, pricing_unit AS unit, taxable, max_length_in,
+           girth_in AS girth FROM products`);
   const productsById = new Map(prodRows.map((p) => [p.id, p]));
   const sections = parseSections(body, productsById);
 
@@ -226,7 +230,8 @@ async function saveOrder(orderId, body) {
                                             WHERE p.product_id = $3)),
                    unit_price = $8, description = $9,
                    pricing_unit = p.pricing_unit, taxable = p.taxable,
-                   per_length_in = CASE WHEN p.pricing_unit = 'each' THEN p.standard_length_in END
+                   per_length_in = CASE WHEN p.pricing_unit = 'each' THEN p.standard_length_in END,
+                   per_width_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL THEN p.girth_in END
             FROM products p
             WHERE p.product_id = $3 AND oi.order_item_id = $10 AND oi.order_id = $11`,
           [...vals, itemId, orderId]);
@@ -373,6 +378,7 @@ router.get('/:id(\\d+)', async (req, res) => {
     if (i.pricing_unit === 'sqft' && i.width_in) {
       return `${num(i.width_in, 3)}" ${i.category === 'custom_trim' ? 'girth' : 'cov.'}`;
     }
+    if (i.per_width_in && i.width_in) return `${num(i.width_in, 3)}" wide`;
     return '';
   };
   const sectionTotals = (items) => {
@@ -382,8 +388,13 @@ router.get('/:id(\\d+)', async (req, res) => {
   };
   const nextStatuses = SETTABLE.filter((s) => s !== o.status);
   // Each-priced pieces cut to a length are billed in standard lengths: "7.2 × 10'".
-  const billed = (i) => (i.pricing_unit === 'each' && i.per_length_in && i.length_in
-    ? `${num(i.billable_qty)} × ${num(i.per_length_in / 12)}'` : `${num(i.billable_qty)} ${UNIT_LABEL[i.pricing_unit]}`);
+  // Sized trim adds the standard width: "18.46 × 13" × 10'".
+  const billed = (i) => {
+    if (i.pricing_unit !== 'each') return `${num(i.billable_qty)} ${UNIT_LABEL[i.pricing_unit]}`;
+    const parts = [i.per_width_in && i.width_in ? `${num(i.per_width_in, 3)}"` : '',
+      i.per_length_in && (i.length_in || (i.per_width_in && i.width_in)) ? `${num(i.per_length_in / 12)}'` : ''].filter(Boolean);
+    return parts.length ? `${num(i.billable_qty)} × ${parts.join(' × ')}` : `${num(i.billable_qty)} ${UNIT_LABEL.each}`;
+  };
   const production = await productionSection(o, req);
 
   res.send(layout({
@@ -504,7 +515,7 @@ async function productionSection(o, req) {
       <label class="span2">Line *<select name="order_item_id" required>
         <option value="">Pick a line…</option>
         ${items.map((i) => html`<option value="${i.order_item_id}" data-pieces="${Math.max(0, i.pieces - runPieces(i.order_item_id))}"
-            data-length="${i.length_in ?? i.per_length_in ?? ''}" data-girth="${(i.category === 'custom_trim' ? i.width_in : i.product_girth_in) ?? ''}" data-color="${i.color_id ?? ''}" data-gauge="${i.product_gauge_id ?? ''}"
+            data-length="${i.length_in ?? i.per_length_in ?? ''}" data-girth="${(i.category === 'panel' ? i.product_girth_in : i.width_in ?? i.product_girth_in) ?? ''}" data-color="${i.color_id ?? ''}" data-gauge="${i.product_gauge_id ?? ''}"
 >
           ${i.line_no}. ${AREA_LABEL[i.area]}: ${num(i.pieces)} × ${i.length_display || 'each'} ${i.product_name}${i.color_name ? `, ${i.color_name}` : ''}
           (${runPieces(i.order_item_id)} of ${num(i.pieces)} run)</option>`)}
@@ -565,7 +576,7 @@ router.post('/:id(\\d+)/runs', async (req, res) => {
   const typed = Number(b.lf_used);
   const scrap = Number(b.scrap_lf) || 0;
   // Footage typed in already includes scrap; otherwise it's pieces x length plus scrap.
-  const girth = line.category === 'custom_trim' ? line.width_in : line.product_girth_in;
+  const girth = line.category === 'panel' ? line.product_girth_in : line.width_in ?? line.product_girth_in;
   const used = typed > 0 ? typed : footage(pieces, len, { girth, coilWidth: coil.width_in }) + scrap;
   if (scrap > used) return back('Scrap can\'t be more than the coil feet used.');
   try {

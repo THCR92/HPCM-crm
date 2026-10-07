@@ -45,6 +45,7 @@
     return {
       order_item_id: it.order_item_id || null,
       product_id: it.product_id || null,
+      lastProduct: it.product_id || null,
       color_id: it.color_id || null,
       pieces: it.pieces ?? '',
       ft: len === null ? '' : String(Math.floor(len / 12)),
@@ -89,12 +90,18 @@
     let qty;
     if (p.unit === 'sqft') qty = len > 0 && width > 0 ? round2((pieces * len * width) / 144) : 0;
     else if (p.unit === 'lf') qty = len > 0 ? round2((pieces * len) / 12) : 0;
-    // Each-priced pieces cut to a length are billed in standard lengths (6 @ 12' = 7.2 x 10').
-    else if (p.standard_length_in && len > 0) qty = round2((pieces * len) / p.standard_length_in);
-    else qty = pieces;
-    const per = p.unit === 'each' && p.standard_length_in && len > 0 ? Number(p.standard_length_in) : null;
+    // Each-priced pieces cut to a length are billed in standard lengths (6 @ 12' = 7.2 x 10'),
+    // and sized trim in standard widths (10 @ 24" ridge cap = 18.46 x 13").
+    else {
+      const byLen = p.standard_length_in && len > 0 ? len / p.standard_length_in : 1;
+      const byWidth = p.girth && width > 0 ? width / p.girth : 1;
+      qty = round2(pieces * byLen * byWidth);
+    }
+    const sized = p.unit === 'each' && p.girth && width > 0;
+    const per = p.unit === 'each' && p.standard_length_in && (len > 0 || sized) ? Number(p.standard_length_in) : null;
+    const perWidth = sized ? Number(p.girth) : null;
     const tooLong = !!(p.max_length_in && len > Number(p.max_length_in));
-    return { qty, amount: row.unit_price === '' ? 0 : round2(qty * price), unit: p.unit, per, tooLong };
+    return { qty, amount: row.unit_price === '' ? 0 : round2(qty * price), unit: p.unit, per, perWidth, tooLong };
   }
 
   // ----------------------------------------------------------------- render
@@ -130,6 +137,11 @@
       }
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="${p.cov_min}" max="${p.cov_max}"
                 value="${esc(row.width_in)}" title="Coverage width, ${Number(p.cov_min)}–${Number(p.cov_max)} in"><span class="unit">" cov.</span>`;
+    }
+    if (p.unit === 'each' && p.girth) {
+      return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="0.125"
+                value="${esc(row.width_in)}" placeholder="${Number(p.girth)}"
+                title="Flat width in inches. The price is for ${Number(p.girth)}&quot; wide; other widths scale it."><span class="unit">" wide</span>`;
     }
     if (p.category === 'custom_trim') {
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="0.125"
@@ -251,7 +263,8 @@
         const tr = root.querySelector(`tr[data-s="${si}"][data-i="${ii}"]`);
         const c = compute(row);
         tr.querySelector('.billed').textContent = !c.unit ? ''
-          : c.per ? `${fmt(c.qty)} × ${fmt(c.per / 12)}'` : `${fmt(c.qty)} ${UNIT[c.unit]}`;
+          : c.per || c.perWidth ? `${fmt(c.qty)} × ${[c.perWidth ? `${fmt(c.perWidth)}"` : '', c.per ? `${fmt(c.per / 12)}'` : '']
+            .filter(Boolean).join(' × ')}` : `${fmt(c.qty)} ${UNIT[c.unit]}`;
         tr.querySelector('.ft').classList.toggle('missing', !!c.tooLong);
         tr.querySelector('.ft').title = c.tooLong ? `Longest piece is ${Number(productById.get(Number(row.product_id)).max_length_in) / 12}'` : '';
         tr.querySelector('.amount').textContent = c.unit ? money(c.amount) : '';
@@ -285,9 +298,12 @@
     if (p && p.category === 'panel' && p.unit === 'sqft') {
       const w = Number(row.width_in);
       if (!(w >= Number(p.cov_min) && w <= Number(p.cov_max))) row.width_in = String(Number(p.cov));
+    } else if (p && p.unit === 'each' && p.girth) {
+      if (row.width_in === '' || row.width_in === undefined || row.lastProduct !== p.id) row.width_in = String(Number(p.girth));
     } else if (!p || p.category !== 'custom_trim') {
       row.width_in = '';
     }
+    row.lastProduct = p ? p.id : null;
     row.unit_price = listPrice(p, Number(row.color_id));
   }
 

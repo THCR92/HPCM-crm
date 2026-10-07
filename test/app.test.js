@@ -290,11 +290,49 @@ test('shop board flags an approved job that needs more coil than is on hand', as
   await query(`INSERT INTO coils (coil_tag, gauge_id, color_id, width_in, initial_lf, current_lf)
     VALUES ('BT-' || gen_random_uuid(), $1, $2, 48, 100, 100)`, [g.gauge_id, col.color_id]);
   const { rows: [cust] } = await query(`INSERT INTO customers (display_name) VALUES ('Board ' || gen_random_uuid()) RETURNING customer_id`);
-  const { rows: [o] } = await query(`INSERT INTO orders (customer_id, status, need_by) VALUES ($1, 'confirmed', current_date - 400)
+  const { rows: [o] } = await query(`INSERT INTO orders (customer_id, status, need_by) VALUES ($1, 'confirmed', DATE '2000-01-01' - (SELECT count(*) FROM orders)::int)
     RETURNING order_id`, [cust.customer_id]);
-  // 10 pieces x 20' = 200 ft needed, 100 ft on hand.
+  // 10 pieces x 20' = 200 ft needed, 100 ft on hand. The due date sorts it ahead of
+  // anything earlier test runs left behind.
   await query(`INSERT INTO order_items (order_id, product_id, color_id, pieces, length_in)
     VALUES ($1, $2, $3, 10, 240)`, [o.order_id, await productId('PNL-PBR-26'), col.color_id]);
   const page = await (await fetch(base + '/board')).text();
   assert.match(page, new RegExp(`${col.name}[^<]*<span class="ga">26 ga</span> <b>200 ft</b> <em>short 100 ft</em>`));
+});
+
+test('ridge cap at other widths scales the 13" price; editing keeps the width', async () => {
+  const { rows: [c] } = await query(
+    "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const ridge = await productId('TRM-RIDGE-26');
+  const { rows: [p] } = await query('SELECT girth_in FROM products WHERE product_id = $1', [ridge]);
+  assert.strictEqual(p.girth_in, 13);
+  const order = (items) => ({ customer_id: c.customer_id, sections: [{ area: 'trim', items }] });
+  // 10 @ 24" (10') = 10 x 24/13 = 18.46; 4 @ 24" x 12' = 4 x 1.2 x 24/13 = 8.86; 2 @ 13" = 2.
+  const res = await post('/orders', order([
+    { product_id: ridge, pieces: 10, width_in: 24, unit_price: 44.20 },
+    { product_id: ridge, pieces: 4, length_in: 144, width_in: 24, unit_price: 44.20 },
+    { product_id: ridge, pieces: 2, width_in: 13, unit_price: 44.20 },
+  ]));
+  const out = await res.json();
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const lines = async () => (await query(`SELECT order_item_id, width_in, per_width_in, billable_qty, line_total
+    FROM order_items WHERE order_id = $1 ORDER BY line_no`, [id])).rows;
+  let rows = await lines();
+  assert.deepStrictEqual(rows.map((r) => [r.billable_qty, r.line_total]), [[18.46, 815.93], [8.86, 391.61], [2, 88.4]]);
+  assert.strictEqual(rows[0].per_width_in, 13);
+  const { rows: [inv] } = await query('SELECT qbo_description FROM v_order_invoice_lines WHERE order_id = $1 AND line_no = 1', [id]);
+  assert.match(inv.qbo_description, /10 pcs @ 10' 0" x 24" wide = 18.46 x 13" x 10' 0" pieces/);
+  const page = await (await fetch(`${base}/orders/${id}`)).text();
+  assert.match(page, /24&quot; wide/);
+  assert.match(page, /18\.46 × 13&quot; × 10&#39;/);
+
+  // Saving again (as the edit form does) keeps the same lines and widths.
+  const again = await post(`/orders/${id}`, order(rows.map((r, i) => ({
+    order_item_id: r.order_item_id, product_id: ridge, pieces: [10, 4, 2][i],
+    length_in: i === 1 ? 144 : null, width_in: r.width_in, unit_price: 44.20,
+  }))));
+  assert.ok((await again.json()).ok);
+  rows = await lines();
+  assert.deepStrictEqual(rows.map((r) => r.billable_qty), [18.46, 8.86, 2]);
 });
