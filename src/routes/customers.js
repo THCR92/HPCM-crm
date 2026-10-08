@@ -1,5 +1,6 @@
 const { query } = require('../db');
 const { html, layout, money, date, statusBadge } = require('../html');
+const { can, need } = require('../auth');
 
 const router = require('../async-router')();
 
@@ -69,7 +70,7 @@ router.get('/', async (req, res) => {
     body: html`
     <div class="page-head">
       <h1>Customers</h1>
-      <a class="btn primary" href="/customers/new">+ New customer</a>
+      ${can('customers') ? html`<a class="btn primary" href="/customers/new">+ New customer</a>` : ''}
     </div>
     <form class="search"><input name="q" value="${q}" placeholder="Search by name or phone"><button class="btn">Search</button></form>
     <table class="list">
@@ -83,14 +84,14 @@ router.get('/', async (req, res) => {
   }));
 });
 
-router.get('/new', (req, res) => {
+router.get('/new', need('customers'), (req, res) => {
   res.send(layout({
     title: 'New customer', active: '/customers',
     body: html`<h1>New customer</h1>${customerForm({}, { action: '/customers' })}`,
   }));
 });
 
-router.post('/', async (req, res) => {
+router.post('/', need('customers'), async (req, res) => {
   const c = fromBody(req.body);
   try {
     const { rows } = await query(`
@@ -115,14 +116,15 @@ router.get('/:id(\\d+)', async (req, res) => {
     FROM orders o JOIN v_order_totals t USING (order_id)
     WHERE o.customer_id = $1 ORDER BY o.ordered_on DESC, o.order_id DESC`, [c.customer_id]);
   const row = (label, v) => (v ? html`<dt>${label}</dt><dd>${v}</dd>` : '');
+  const prices = can('prices');
   res.send(layout({
     title: c.display_name, active: '/customers',
     body: html`
     <div class="page-head">
       <h1>${c.display_name}</h1>
       <div>
-        <a class="btn" href="/customers/${c.customer_id}/edit">Edit</a>
-        <a class="btn primary" href="/orders/new?customer_id=${c.customer_id}">+ New quote</a>
+        ${can('customers') ? html`<a class="btn" href="/customers/${c.customer_id}/edit">Edit</a>` : ''}
+        ${can('quotes') ? html`<a class="btn primary" href="/orders/new?customer_id=${c.customer_id}">+ New quote</a>` : ''}
       </div>
     </div>
     <div class="card"><dl class="details">
@@ -135,17 +137,17 @@ router.get('/:id(\\d+)', async (req, res) => {
     </dl></div>
     <h2>Orders</h2>
     <table class="list">
-      <thead><tr><th>Order #</th><th>Job</th><th>PO</th><th>Status</th><th>Date</th><th>Need by</th><th class="num">Total</th></tr></thead>
+      <thead><tr><th>Order #</th><th>Job</th><th>PO</th><th>Status</th><th>Date</th><th>Need by</th>${prices ? html`<th class="num">Total</th>` : ''}</tr></thead>
       <tbody>${orders.length ? orders.map((o) => html`
         <tr><td><a href="/orders/${o.order_id}">${o.order_number}</a></td><td>${o.job_name}</td><td>${o.po_number}</td>
         <td>${statusBadge(o.status)}</td><td>${date(o.ordered_on)}</td><td>${date(o.need_by)}</td>
-        <td class="num">${money(o.grand_total)}</td></tr>`)
+        ${prices ? html`<td class="num">${money(o.grand_total)}</td>` : ''}</tr>`)
       : html`<tr><td colspan="7" class="empty">No orders yet.</td></tr>`}</tbody>
     </table>`,
   }));
 });
 
-router.get('/:id(\\d+)/edit', async (req, res) => {
+router.get('/:id(\\d+)/edit', need('customers'), async (req, res) => {
   const { rows: [c] } = await query('SELECT * FROM customers WHERE customer_id = $1', [req.params.id]);
   if (!c) return res.status(404).send('Customer not found');
   res.send(layout({
@@ -154,7 +156,7 @@ router.get('/:id(\\d+)/edit', async (req, res) => {
   }));
 });
 
-router.post('/:id(\\d+)', async (req, res) => {
+router.post('/:id(\\d+)', need('customers'), async (req, res) => {
   const c = fromBody(req.body);
   try {
     await query(`

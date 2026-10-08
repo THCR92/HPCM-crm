@@ -42,18 +42,24 @@ const AREA_LABEL = { roof: 'Roof', wall: 'Wall', trim: 'Trim', other: 'Other' };
 const statusBadge = (s) => html`<span class="badge badge-${s}">${STATUS_LABEL[s] || s}</span>`;
 
 // ---- page shell ------------------------------------------------------------
+// [href, label, who sees it]
 const NAV = [
   ['/orders', 'Quotes & orders'],
   ['/customers', 'Customers'],
   ['/coils', 'Coils'],
   ['/stock', 'Stock'],
-  ['/products', 'Price list'],
+  ['/products', 'Price list', 'prices'],
   ['/colors', 'Colors'],
   ['/board', 'Shop board'],
+  ['/admin', 'Admin', 'admin'],
 ];
 
-// Returns a plain string, ready for res.send().
-const layout = ({ title, active, body, scripts = [] }) => String(html`<!doctype html>
+// Returns a plain string, ready for res.send(). `bare` leaves out the menu (sign-in page).
+const layout = ({ title, active, body, scripts = [], bare = false }) => {
+  const { currentUser, can, isAdmin } = require('./auth');
+  const user = bare ? null : currentUser();
+  const shown = NAV.filter(([, , perm]) => !perm || (perm === 'admin' ? isAdmin(user) : can(perm, user)));
+  return String(html`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -63,16 +69,19 @@ const layout = ({ title, active, body, scripts = [] }) => String(html`<!doctype 
 <link rel="icon" href="/favicon.svg">
 </head>
 <body>
-<header class="topbar">
+${user ? html`<header class="topbar">
   <a class="brand" href="/orders"><img src="/logo.svg" alt="High Plains Custom Metal"></a>
-  <a class="btn quote-btn" href="/orders/new">+ Quote</a>
-  <nav>${NAV.map(([href, label]) =>
+  ${can('quotes', user) ? html`<a class="btn quote-btn" href="/orders/new">+ Quote</a>` : ''}
+  <nav>${shown.map(([href, label]) =>
     html`<a href="${href}" class="${active === href ? 'active' : ''}">${label}</a>`)}</nav>
-</header>
+  <div class="who"><a href="/account" title="My account">${user.full_name}</a>
+    <form method="post" action="/logout" class="inline"><button class="linkish">Sign out</button></form></div>
+</header>` : ''}
 <main>${body}</main>
 ${scripts.map((src) => html`<script src="${src}"></script>`)}
 </body>
 </html>`);
+};
 
 module.exports = {
   html, raw, money, num, date, layout, statusBadge,

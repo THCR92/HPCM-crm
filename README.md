@@ -57,6 +57,11 @@ works out the square feet, linear feet and price for every line.
 - **Sales tax**: a default rate (set on the Price list page) is copied onto each new order and
   can be changed per order. Tax is on taxable materials after the discount; delivery isn't
   taxed. Tax-exempt customers pay none. Totals everywhere include tax. Default 5% (Cheyenne).
+- **Users and roles**: everyone signs in with their email and own password. Roles are Admin,
+  Manager, Sales and Production; each role ticks a starting set of permissions that an Admin can
+  change per person (Admin > Users). Admins can always do everything: users, prices, sales tax,
+  products, colors, finishes and suppliers (Admin page). Production doesn't see prices. Orders
+  record who wrote, approved and last changed them.
 - **Drawings**: attach a PDF or picture (for example a reMarkable trim sketch with face lengths
   and bends) to the whole order or to one line, under "Drawings & files" on the order page.
   The line shows a 📎 link; pictures print on their own page after the cut sheet. Files are
@@ -99,8 +104,7 @@ Settings (environment variables):
 | --- | --- |
 | `DATABASE_URL` | Where the database is. |
 | `DATABASE_SSL` | `true` when the database host requires SSL (most hosted databases). |
-| `APP_PASSWORD` | Turns on a sign-in prompt. Set this before putting the app online. |
-| `APP_USER` | Sign-in user name (default `hpcm`). |
+| `APP_PASSWORD` | Needed once, to create the first Admin account (see Users below). |
 | `PORT` | Web port (default 3000). |
 
 ## Putting it online (Render)
@@ -108,7 +112,8 @@ Settings (environment variables):
 `render.yaml` sets up the app and its database on [Render](https://render.com):
 in the Render dashboard choose **New → Blueprint**, pick this repository, and enter
 a sign-in password when asked. The tables and price list load on the first start.
-Sign in with user name `hpcm` and that password.
+The first visit asks you to create the Admin account (your name, email and password, plus that
+shared password). Everyone else is added on Admin > Users.
 
 ## Database updates
 

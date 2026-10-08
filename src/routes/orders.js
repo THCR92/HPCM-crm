@@ -4,6 +4,7 @@ const express = require('express');
 const { query, tx } = require('../db');
 const { feetInches } = require('../length');
 const { RUNNABLE, footage, runError } = require('../production');
+const { can, need, userName } = require('../auth');
 const {
   html, raw, layout, money, num, date, statusBadge, UNIT_LABEL, STATUS_LABEL, AREA_LABEL,
 } = require('../html');
@@ -59,7 +60,7 @@ async function loadOrder(id) {
   if (loose.length) sections.push({ section_id: null, area: 'other', label: null, items: loose });
   order.sections = sections;
   const { rows: attachments } = await query(`
-    SELECT a.attachment_id, a.order_item_id, a.filename, a.content_type, a.byte_size, a.note, a.created_at,
+    SELECT a.attachment_id, a.order_item_id, a.filename, a.content_type, a.byte_size, a.note, a.created_at, a.uploaded_by,
            oi.line_no, p.name AS product_name
     FROM order_attachments a
     LEFT JOIN order_items oi USING (order_item_id)
@@ -192,6 +193,8 @@ function parseSections(b, productsById) {
 
 async function saveOrder(orderId, body) {
   const header = parseHeader(body);
+  header.updated_by = userName();
+  if (!orderId) header.created_by = userName();
   const { rows: prodRows } = await query(`
     SELECT product_id AS id, name, category, pricing_unit AS unit, taxable, max_length_in,
            girth_in AS girth FROM products`);
@@ -311,12 +314,13 @@ router.get('/', async (req, res) => {
       AND ($1 = '' OR o.order_number ILIKE '%' || $1 || '%' OR o.job_name ILIKE '%' || $1 || '%'
            OR o.po_number ILIKE '%' || $1 || '%' OR c.display_name ILIKE '%' || $1 || '%')
     ORDER BY o.need_by NULLS LAST, o.order_id DESC`, [q]);
+  const prices = can('prices');
   res.send(layout({
     title: 'Orders', active: '/orders',
     body: html`
     <div class="page-head">
       <h1>Orders</h1>
-      <a class="btn primary" href="/orders/new">+ New quote</a>
+      ${can('quotes') ? html`<a class="btn primary" href="/orders/new">+ New quote</a>` : ''}
     </div>
     <div class="tabs">${Object.entries(TABS).map(([k, t]) =>
       html`<a href="?tab=${k}" class="${k === tab ? 'active' : ''}">${t.label}</a>`)}</div>
@@ -324,12 +328,12 @@ router.get('/', async (req, res) => {
       <input name="q" value="${q}" placeholder="Search order #, job, PO or customer"><button class="btn">Search</button></form>
     <table class="list">
       <thead><tr><th>Order #</th><th>Customer</th><th>Job</th><th>PO</th><th>Status</th>
-        <th>Need by</th><th></th><th class="num">Total</th></tr></thead>
+        <th>Need by</th><th></th>${prices ? html`<th class="num">Total</th>` : ''}</tr></thead>
       <tbody>${rows.length ? rows.map((o) => html`
         <tr><td><a href="/orders/${o.order_id}">${o.order_number}</a></td><td>${o.customer_name}</td>
         <td>${o.job_name}</td><td>${o.po_number}</td><td>${statusBadge(o.status)}</td>
         <td>${date(o.need_by)}</td><td>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</td>
-        <td class="num">${money(o.grand_total)}</td></tr>`)
+        ${prices ? html`<td class="num">${money(o.grand_total)}</td>` : ''}</tr>`)
       : html`<tr><td colspan="8" class="empty">No orders here.</td></tr>`}</tbody>
     </table>`,
   }));
@@ -346,7 +350,7 @@ function formPage(res, { title, order, catalog }) {
   }));
 }
 
-router.get('/new', async (req, res) => {
+router.get('/new', need('quotes'), async (req, res) => {
   const catalog = await loadCatalog();
   const customerId = Number(req.query.customer_id) || null;
   const cust = catalog.customers.find((c) => c.id === customerId);
@@ -366,7 +370,7 @@ router.get('/new', async (req, res) => {
   });
 });
 
-router.get('/:id(\\d+)/edit', async (req, res) => {
+router.get('/:id(\\d+)/edit', need('quotes'), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order) return res.status(404).send('Order not found');
   if (!EDITABLE.includes(order.status)) return res.redirect(`/orders/${order.order_id}`);
@@ -390,8 +394,8 @@ const saveHandler = (getId) => async (req, res) => {
     res.status(400).json({ ok: false, error: msg });
   }
 };
-router.post('/', saveHandler(() => null));
-router.post('/:id(\\d+)', saveHandler((req) => Number(req.params.id)));
+router.post('/', need('quotes'), saveHandler(() => null));
+router.post('/:id(\\d+)', need('quotes'), saveHandler((req) => Number(req.params.id)));
 
 router.post('/:id(\\d+)/status', async (req, res) => {
   const status = req.body.status;
@@ -401,6 +405,9 @@ router.post('/:id(\\d+)/status', async (req, res) => {
   const needBy = isoDate(req.body.need_by);
   const { rows: [cur] } = await query('SELECT status, need_by FROM orders WHERE order_id = $1', [req.params.id]);
   if (!cur) return res.status(404).send('Order not found');
+  if (!allowedStatuses(cur.status).includes(status)) {
+    return res.redirect(`${back}?status_error=${encodeURIComponent('Your account can\'t make that status change. Ask an Admin if you need it.')}`);
+  }
   if (APPROVED.includes(status) && !cur.need_by && !needBy) {
     return res.redirect(`${back}?status_error=${encodeURIComponent('Set a Need-by date to approve this quote.')}`);
   }
@@ -410,13 +417,29 @@ router.post('/:id(\\d+)/status', async (req, res) => {
            -- The order date is the day the quote was approved.
            ordered_on = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
                              THEN current_date ELSE ordered_on END,
+           approved_by = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
+                              THEN $4 ELSE approved_by END,
+           updated_by = $4,
            completed_at = CASE WHEN $1::order_status = 'completed' THEN COALESCE(completed_at, now()) ELSE completed_at END,
            ready_at = CASE WHEN $1::order_status = 'ready' THEN COALESCE(ready_at, now())
                            WHEN $1::order_status IN ('quote', 'confirmed', 'in_production') THEN NULL
                            ELSE ready_at END
-    WHERE order_id = $2 AND status <> 'invoiced'`, [status, req.params.id, needBy]);
+    WHERE order_id = $2 AND status <> 'invoiced'`, [status, req.params.id, needBy, userName()]);
   res.redirect(back);
 });
+
+// Which statuses this person may move an order to from `from`.
+//   Approving a quote: "approve". Moving an approved order along the shop steps:
+//   "production". Anything else (cancel, reopen, back to quote): "status".
+const SHOP_STEPS = ['in_production', 'ready', 'completed'];
+function allowedStatuses(from) {
+  return SETTABLE.filter((to) => {
+    if (to === from) return false;
+    if (can('status')) return true;
+    if (from === 'quote') return APPROVED.includes(to) && can('approve');
+    return APPROVED.includes(from) && SHOP_STEPS.includes(to) && can('production');
+  });
+}
 
 // Width shown on a line: panel coverage, custom trim girth, or sized trim width.
 const sizeCol = (i, { shop = true } = {}) => {
@@ -445,7 +468,7 @@ const totalsRows = (o) => html`
 
 // What the customer sees: one price per piece (the line amount over the pieces),
 // no billing units, no coil supplier. Print it, or save it as a PDF to email.
-router.get('/:id(\\d+)/customer', async (req, res) => {
+router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
   const o = await loadOrder(req.params.id);
   if (!o) return res.status(404).send('Order not found');
   const isQuote = o.status === 'quote';
@@ -533,7 +556,8 @@ router.get('/:id(\\d+)', async (req, res) => {
     const lf = items.filter((i) => i.pricing_unit === 'lf').reduce((a, i) => a + i.billable_qty, 0);
     return [sq ? `${num(sq)} sq ft` : '', lf ? `${num(lf)} LF` : ''].filter(Boolean).join(' · ');
   };
-  const nextStatuses = SETTABLE.filter((s) => s !== o.status);
+  const nextStatuses = allowedStatuses(o.status);
+  const prices = can('prices');
   // Each-priced pieces cut to a length are billed in standard lengths: "7.2 × 10'".
   // Sized trim adds the standard width: "18.46 × 13" × 10'".
   const billed = (i) => {
@@ -551,13 +575,13 @@ router.get('/:id(\\d+)', async (req, res) => {
     <div class="page-head no-print">
       <h1>${docName} ${o.order_number} ${statusBadge(o.status)}</h1>
       <div class="actions">
-        ${editable ? html`<a class="btn primary" href="/orders/${o.order_id}/edit">Edit ${docName.toLowerCase()}</a>` : ''}
-        <a class="btn" href="/orders/${o.order_id}/customer">Customer ${o.status === 'quote' ? 'quote' : 'copy'}</a>
+        ${editable && can('quotes') ? html`<a class="btn primary" href="/orders/${o.order_id}/edit">Edit ${docName.toLowerCase()}</a>` : ''}
+        ${prices ? html`<a class="btn" href="/orders/${o.order_id}/customer">Customer ${o.status === 'quote' ? 'quote' : 'copy'}</a>` : ''}
         <button class="btn" onclick="window.print()">Print cut sheet</button>
-        ${o.status !== 'invoiced' ? html`
+        ${o.status !== 'invoiced' && nextStatuses.length ? html`
         <form method="post" action="/orders/${o.order_id}/status" class="inline">
           <select name="status">${nextStatuses.map((s) => html`<option value="${s}">${STATUS_LABEL[s]}</option>`)}</select>
-          ${o.need_by ? '' : html`<label class="inline-date" title="Needed to approve a quote">Need by
+          ${o.need_by || o.status !== 'quote' ? '' : html`<label class="inline-date" title="Needed to approve a quote">Need by
             <input type="date" name="need_by"></label>`}
           <button class="btn">Change status</button>
         </form>` : ''}
@@ -588,14 +612,14 @@ router.get('/:id(\\d+)', async (req, res) => {
         <span class="area-total">${sectionTotals(s.items)}</span></h3>
       <table class="lines">
         <thead><tr><th class="num">Qty</th><th>Length</th><th>Panel / profile</th><th>Gauge</th><th>Color</th>
-          <th>Width</th><th class="num">Billed</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+          <th>Width</th>${prices ? html`<th class="num">Billed</th><th class="num">Price</th><th class="num">Amount</th>` : ''}</tr></thead>
         <tbody>${s.items.length ? s.items.map((i) => html`
           <tr><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
           <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}
             ${i.attachments.map((a) => html`<div class="small"><a href="#drawing-${a.attachment_id}">📎 Drawing: ${a.filename}</a></div>`)}</td>
           <td>${i.gauge || ''}</td><td>${i.color_name}</td><td>${sizeCol(i)}</td>
-          <td class="num">${billed(i)}</td>
-          <td class="num">${money(i.unit_price)}</td><td class="num">${money(i.line_total)}</td></tr>`)
+          ${prices ? html`<td class="num">${billed(i)}</td>
+          <td class="num">${money(i.unit_price)}</td><td class="num">${money(i.line_total)}</td>` : ''}</tr>`)
         : html`<tr><td colspan="9" class="empty">Nothing in this section.</td></tr>`}</tbody>
       </table>`)}
 
@@ -603,17 +627,20 @@ router.get('/:id(\\d+)', async (req, res) => {
         <div>
           ${o.customer_memo ? html`<p><strong>Note to customer:</strong> ${o.customer_memo}</p>` : ''}
           ${o.internal_notes ? html`<p class="no-print"><strong>Shop notes:</strong> ${o.internal_notes}</p>` : ''}
+          ${o.created_by || o.approved_by ? html`<p class="no-print muted small">${o.created_by ? `Written by ${o.created_by}` : ''}${
+            o.created_by && o.approved_by ? ' · ' : ''}${o.approved_by ? `approved by ${o.approved_by}` : ''}${
+            o.updated_by && o.updated_by !== o.created_by ? ` · last changed by ${o.updated_by}` : ''}</p>` : ''}
           <table class="shop-use">
             <tr><th>Completed by</th><td>${o.completed_by}</td><th>Inspected by</th><td>${o.inspected_by}</td></tr>
             <tr><th>Invoice #</th><td>${o.qbo_doc_number}</td><th>Date</th><td>${date(o.completed_at)}</td></tr>
           </table>
         </div>
-        <table class="totals">
+        ${prices ? html`<table class="totals">
           <tr><th>Materials</th><td>${money(o.lines_subtotal)}</td></tr>
           ${o.delivery_charge ? html`<tr><th>Delivery</th><td>${money(o.delivery_charge)}</td></tr>` : ''}
           ${o.discount_amount ? html`<tr><th>Discount</th><td>−${money(o.discount_amount)}</td></tr>` : ''}
           ${totalsRows(o)}
-        </table>
+        </table>` : ''}
       </div>
     </section>
     ${drawingsSection(o)}
@@ -636,7 +663,8 @@ const fileSize = (n) => (n >= 1024 * 1024 ? `${num(n / 1024 / 1024, 1)} MB` : `$
 function drawingsSection(o) {
   const items = o.sections.flatMap((s) => s.items);
   const lineLabel = (a) => (a.order_item_id ? `Line ${a.line_no}: ${a.product_name}` : 'Whole order');
-  const canEdit = o.status !== 'invoiced';
+  const canEdit = o.status !== 'invoiced' && can('drawings');
+  if (!o.attachments.length && !canEdit) return '';
   return html`
   <section id="drawings" class="drawings${o.attachments.length ? '' : ' no-print'}">
     <h2>Drawings &amp; files</h2>
@@ -648,7 +676,7 @@ function drawingsSection(o) {
     <div class="drawing" id="drawing-${a.attachment_id}">
       <div class="drawing-head">
         <strong>${lineLabel(a)}</strong>
-        <span class="muted small">${a.filename} · ${fileSize(a.byte_size)}</span>
+        <span class="muted small">${a.filename} · ${fileSize(a.byte_size)}${a.uploaded_by ? ` · added by ${a.uploaded_by}` : ''}</span>
         ${a.note ? html`<span>${a.note}</span>` : ''}
         <span class="actions no-print">
           <a class="btn small" href="${url}" target="_blank" rel="noopener">Open full size</a>
@@ -676,7 +704,7 @@ function drawingsSection(o) {
   </section>`;
 }
 
-router.post('/:id(\\d+)/attachments', express.raw({ type: () => true, limit: ATTACH_MAX }), async (req, res) => {
+router.post('/:id(\\d+)/attachments', need('drawings'), express.raw({ type: () => true, limit: ATTACH_MAX }), async (req, res) => {
   const orderId = Number(req.params.id);
   const type = (req.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (!ATTACH_TYPES[type]) return res.status(400).json({ error: 'Attach a PDF or a picture (PNG or JPG).' });
@@ -692,9 +720,9 @@ router.post('/:id(\\d+)/attachments', express.raw({ type: () => true, limit: ATT
     if (!rows.length) return res.status(400).json({ error: 'That line isn\'t on this order.' });
   }
   const { rows: [a] } = await query(`
-    INSERT INTO order_attachments (order_id, order_item_id, filename, content_type, byte_size, data, note)
-    VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING attachment_id`,
-  [orderId, lineId, filename.slice(0, 200), type, req.body.length, req.body, (req.query.note || '').trim() || null]);
+    INSERT INTO order_attachments (order_id, order_item_id, filename, content_type, byte_size, data, note, uploaded_by)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING attachment_id`,
+  [orderId, lineId, filename.slice(0, 200), type, req.body.length, req.body, (req.query.note || '').trim() || null, userName()]);
   res.json({ ok: true, attachment_id: a.attachment_id });
 });
 
@@ -712,7 +740,7 @@ router.get('/:id(\\d+)/attachments/:aid(\\d+)', async (req, res) => {
   res.send(a.data);
 });
 
-router.post('/:id(\\d+)/attachments/:aid(\\d+)/delete', async (req, res) => {
+router.post('/:id(\\d+)/attachments/:aid(\\d+)/delete', need('drawings'), async (req, res) => {
   await query(`DELETE FROM order_attachments a USING orders o
     WHERE a.attachment_id = $1 AND a.order_id = $2 AND o.order_id = a.order_id AND o.status <> 'invoiced'`,
   [req.params.aid, req.params.id]);
@@ -736,7 +764,7 @@ async function productionSection(o, req) {
     JOIN v_coils c USING (coil_id)
     WHERE oi.order_id = $1 ORDER BY r.run_at, r.production_run_id`, [o.order_id]);
   const runPieces = (id) => runs.filter((r) => r.order_item_id === id).reduce((a, r) => a + r.pieces, 0);
-  const canLog = !NO_PRODUCTION.includes(o.status) && o.status !== 'invoiced';
+  const canLog = !NO_PRODUCTION.includes(o.status) && o.status !== 'invoiced' && can('production');
   const { rows: coils } = canLog ? await query(`
     SELECT coil_id, coil_tag, color_id, color_label, gauge_id, gauge, width_in, current_lf
     FROM v_coils WHERE status IN ('received','in_stock','on_machine')
@@ -781,7 +809,7 @@ async function productionSection(o, req) {
         <input name="inch" placeholder="in"><span class="unit">"</span></span></label>
       <label>Coil feet used<input name="lf_used" type="number" step="0.1" min="0"></label>
       <label>Of that, scrap (LF)<input name="scrap_lf" type="number" step="0.1" min="0" placeholder="0"></label>
-      <label>By<input name="operator"></label>
+      <label>By<input name="operator" value="${userName()}"></label>
       <label class="check run-confirm" hidden><input type="checkbox" name="confirm" value="1"> Use this coil anyway</label>
       <div class="span2 actions"><button class="btn primary">Log run</button></div>
       <p class="span2 muted small"><span class="run-across"></span> Coil feet used fills in as pieces × length
@@ -791,7 +819,7 @@ async function productionSection(o, req) {
   </section>`;
 }
 
-router.post('/:id(\\d+)/runs', async (req, res) => {
+router.post('/:id(\\d+)/runs', need('production'), async (req, res) => {
   const orderId = Number(req.params.id);
   const b = req.body;
   const back = (msg) => res.redirect(`/orders/${orderId}?error=${encodeURIComponent(msg)}#production`);

@@ -1,6 +1,7 @@
 // Price list and colors.
 const { query } = require('../db');
 const { html, layout, money, num, date, UNIT_LABEL } = require('../html');
+const { can, need } = require('../auth');
 
 const router = require('../async-router')();
 
@@ -11,7 +12,7 @@ const CATEGORY_LABEL = {
   service: 'Services', delivery: 'Delivery',
 };
 
-router.get('/products', async (req, res) => {
+router.get('/products', need('prices'), async (req, res) => {
   const { rows } = await query(`
     SELECT p.product_id, p.sku, p.name, p.category, p.pricing_unit, p.price_varies,
            p.standard_length_in, p.girth_in, p.flat_extra_in,
@@ -21,16 +22,17 @@ router.get('/products', async (req, res) => {
   const { rows: [tax] } = await query("SELECT value FROM app_settings WHERE key = 'sales_tax_rate'");
   const groups = {};
   for (const r of rows) (groups[r.category] ||= []).push(r);
+  const edit = can('catalog');
   res.send(layout({
     title: 'Price list', active: '/products',
     body: html`
     <div class="page-head"><h1>Price list</h1>
-      <form method="post" action="/settings/tax" class="inline">
+      ${edit ? html`<form method="post" action="/settings/tax" class="inline">
         <label class="inline-date">Sales tax for new quotes
           <input name="sales_tax_rate" type="number" step="0.001" min="0" max="99" value="${tax ? Number(tax.value) : ''}"
             style="width:6rem">%</label>
         <button class="btn small">Save</button>
-      </form></div>
+      </form>` : html`<span>Sales tax for new quotes: ${tax ? Number(tax.value) : ''}%</span>`}</div>
     <p class="muted">Prices are for standard stock colors. Change a price here and new order lines use it
     from today on; orders already written keep the price they were written at.</p>
     <p class="muted">Trim and downspouts are priced per 10' piece; other lengths are billed in proportion
@@ -46,22 +48,22 @@ router.get('/products', async (req, res) => {
         <tbody>${items.map((p) => html`
           <tr><td>${p.name}<div class="muted small">${p.sku}</div></td>
           <td>${p.pricing_unit === 'each' && p.standard_length_in ? `per ${num(p.standard_length_in / 12)}' piece` : UNIT_LABEL[p.pricing_unit]}</td>
-          ${cut ? html`<td><form method="post" action="/products/${p.product_id}/girth" class="inline">
+          ${cut ? html`<td>${edit ? html`<form method="post" action="/products/${p.product_id}/girth" class="inline">
             <input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}" placeholder="inches" style="width:5.5rem">
-            <button class="btn small">Save</button></form>${p.flat_extra_in && p.girth_in ? html`
+            <button class="btn small">Save</button></form>` : (p.girth_in ? `${num(p.girth_in, 3)}"` : '')}${p.flat_extra_in && p.girth_in ? html`
             <div class="muted small">${num(p.girth_in - p.flat_extra_in, 3)}" finished; flat is ${num(p.flat_extra_in, 3)}" wider</div>` : ''}</td>` : ''}
           <td class="num">${p.unit_price !== null ? money(p.unit_price) : html`<span class="muted">${p.price_varies ? 'Varies' : '—'}</span>`}</td>
           <td>${date(p.effective_from)}</td>
-          <td><form method="post" action="/products/${p.product_id}/price" class="inline">
+          <td>${edit ? html`<form method="post" action="/products/${p.product_id}/price" class="inline">
             <input name="unit_price" type="number" step="0.01" min="0" placeholder="New price" required>
-            <button class="btn small">Set</button></form></td></tr>`)}
+            <button class="btn small">Set</button></form>` : ''}</td></tr>`)}
         </tbody>
       </table>`;
   })}`,
   }));
 });
 
-router.post('/products/:id(\\d+)/price', async (req, res) => {
+router.post('/products/:id(\\d+)/price', need('catalog'), async (req, res) => {
   const price = Number(req.body.unit_price);
   if (!(price >= 0)) return res.status(400).send('Enter a valid price');
   await query(`
@@ -107,7 +109,7 @@ const colorError = (err, c) => {
   return err.message;
 };
 
-router.post('/products/:id(\\d+)/girth', async (req, res) => {
+router.post('/products/:id(\\d+)/girth', need('catalog'), async (req, res) => {
   const g = req.body.girth_in === '' ? null : Number(req.body.girth_in);
   if (g !== null && !(g > 0)) return res.status(400).send('Enter the flat width in inches');
   await query('UPDATE products SET girth_in = $2 WHERE product_id = $1', [req.params.id, g]);
@@ -115,7 +117,7 @@ router.post('/products/:id(\\d+)/girth', async (req, res) => {
 });
 
 // Default sales tax percent copied onto new orders (each order can still change it).
-router.post('/settings/tax', async (req, res) => {
+router.post('/settings/tax', need('catalog'), async (req, res) => {
   const r = Number(req.body.sales_tax_rate);
   if (req.body.sales_tax_rate === '' || !(r >= 0 && r < 100)) return res.status(400).send('Enter a percent from 0 to 99');
   await query(`INSERT INTO app_settings (key, value) VALUES ('sales_tax_rate', $1)
@@ -134,6 +136,7 @@ router.get('/colors', async (req, res) => {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(c);
   }
+  const edit = can('catalog');
   res.send(layout({
     title: 'Colors', active: '/colors',
     body: html`
@@ -143,7 +146,7 @@ router.get('/colors', async (req, res) => {
     ordered in that color (use it for textured, metallic, PVDF and special-order colors). The same color name can be listed
     more than once for a supplier if it comes in more than one finish..</p>
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
-    <h2>Add a supplier</h2>
+    ${edit ? html`<h2>Add a supplier</h2>
     <form method="post" action="/suppliers" class="card form-row">
       <label>Supplier name<input name="name" required></label>
       <label>Phone<input name="phone" type="tel"></label>
@@ -162,7 +165,7 @@ router.get('/colors', async (req, res) => {
         <label>New finish name<input name="label" required></label>
         <button class="btn">Add finish</button>
       </form>
-    </details>
+    </details>` : ''}
     ${[...groups].map(([supplier, list]) => html`
       <h2>${supplier}</h2>
       <table class="list">
@@ -172,14 +175,14 @@ router.get('/colors', async (req, res) => {
           <td>${c.manufacturer_code}</td><td>${c.finish_label}</td>
           <td>${c.is_stock_color ? 'Stock' : 'Special order'}</td>
           <td class="num">${Number(c.upcharge_pct) ? `${Number(c.upcharge_pct)}%` : ''}</td>
-          <td class="num"><a href="/colors/${c.color_id}/edit">Edit</a></td></tr>`)}
+          <td class="num">${edit ? html`<a href="/colors/${c.color_id}/edit">Edit</a>` : ''}</td></tr>`)}
         </tbody>
       </table>`)}
     ${colors.length ? '' : html`<p class="muted">No colors yet.</p>`}`,
   }));
 });
 
-router.post('/suppliers', async (req, res) => {
+router.post('/suppliers', need('catalog'), async (req, res) => {
   const name = (req.body.name || '').trim();
   try {
     await query('INSERT INTO suppliers (name, phone, email) VALUES ($1, $2, $3)',
@@ -191,7 +194,7 @@ router.post('/suppliers', async (req, res) => {
   }
 });
 
-router.post('/finishes', async (req, res) => {
+router.post('/finishes', need('catalog'), async (req, res) => {
   const label = (req.body.label || '').trim();
   const finish = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
   if (!finish) return res.redirect('/colors');
@@ -204,7 +207,7 @@ router.post('/finishes', async (req, res) => {
   }
 });
 
-router.post('/colors', async (req, res) => {
+router.post('/colors', need('catalog'), async (req, res) => {
   const c = colorFromBody(req.body);
   try {
     await query(`INSERT INTO colors (supplier_id, name, manufacturer_code, finish, upcharge_pct, is_stock_color)
@@ -216,7 +219,7 @@ router.post('/colors', async (req, res) => {
   }
 });
 
-router.get('/colors/:id(\\d+)/edit', async (req, res) => {
+router.get('/colors/:id(\\d+)/edit', need('catalog'), async (req, res) => {
   const { rows: [c] } = await query('SELECT * FROM colors WHERE color_id = $1', [req.params.id]);
   if (!c) return res.status(404).send('Color not found');
   const { rows: suppliers } = await query('SELECT * FROM suppliers ORDER BY name');
@@ -236,7 +239,7 @@ router.get('/colors/:id(\\d+)/edit', async (req, res) => {
   }));
 });
 
-router.post('/colors/:id(\\d+)', async (req, res) => {
+router.post('/colors/:id(\\d+)', need('catalog'), async (req, res) => {
   const c = colorFromBody(req.body);
   try {
     await query(`UPDATE colors SET supplier_id = $1, name = $2, manufacturer_code = $3, finish = $4,

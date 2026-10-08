@@ -4,6 +4,7 @@ const { query, tx } = require('../db');
 const { html, layout, money, num, date } = require('../html');
 const { feetInches } = require('../length');
 const { footage, undoRun, runError } = require('../production');
+const { can, need, userName } = require('../auth');
 
 const router = require('../async-router')();
 
@@ -54,7 +55,7 @@ router.get('/coils', async (req, res) => {
     body: html`
     <div class="page-head"><h1>Coils</h1></div>
     ${alert(req)}
-    <details class="card" ${coils.length ? '' : 'open'}>
+    ${can('inventory') ? html`<details class="card" ${coils.length ? '' : 'open'}>
       <summary><strong>Receive a coil</strong></summary>
       <form method="post" action="/coils" class="form-grid" style="margin-top:.8rem">
         <label>Coil tag *<input name="coil_tag" required></label>
@@ -63,7 +64,7 @@ router.get('/coils', async (req, res) => {
           html`<option value="${g.gauge_id}" ${g.gauge === 26 ? 'selected' : ''}>${g.gauge} ga</option>`)}</select></label>
         <label>Width (in) *<input name="width_in" type="number" step="0.001" min="1" required></label>
         <label>Linear feet *<input name="initial_lf" type="number" step="0.1" min="1" required></label>
-        <label>Cost per LF<input name="cost_per_lf" type="number" step="0.0001" min="0"></label>
+        ${can('prices') ? html`<label>Cost per LF<input name="cost_per_lf" type="number" step="0.0001" min="0"></label>` : ''}
         <label>Weight on tag (lb, optional)<input name="initial_weight_lb" type="number" step="0.1" min="0"></label>
         <label>Received on<input name="received_on" type="date"></label>
         <label>Supplier PO #<input name="supplier_po"></label>
@@ -71,7 +72,7 @@ router.get('/coils', async (req, res) => {
         <label class="span2">Notes<input name="notes"></label>
         <div class="span2 actions"><button class="btn primary">Add coil</button></div>
       </form>
-    </details>
+    </details>` : ''}
 
     ${summary.length ? html`
     <h2>On hand by color</h2>
@@ -100,7 +101,7 @@ router.get('/coils', async (req, res) => {
   }));
 });
 
-router.post('/coils', async (req, res) => {
+router.post('/coils', need('inventory'), async (req, res) => {
   const b = req.body;
   const tag = (b.coil_tag || '').trim();
   const feet = Number(b.initial_lf);
@@ -159,11 +160,11 @@ router.get('/coils/:id(\\d+)', async (req, res) => {
       <dt>Gauge / width</dt><dd>${c.gauge} ga, ${num(c.width_in, 3)}" wide</dd>
       <dt>Feet left</dt><dd><strong>${lf(c.current_lf)}</strong> of ${lf(c.initial_lf)}</dd>
       ${c.initial_weight_lb ? html`<dt>Weight on tag</dt><dd>${num(c.initial_weight_lb, 1)} lb</dd>` : ''}
-      ${c.cost_per_lf ? html`<dt>Cost</dt><dd>${money(c.cost_per_lf)}/LF · ${money(c.current_lf * c.cost_per_lf)} left</dd>` : ''}
+      ${c.cost_per_lf && can('prices') ? html`<dt>Cost</dt><dd>${money(c.cost_per_lf)}/LF · ${money(c.current_lf * c.cost_per_lf)} left</dd>` : ''}
       <dt>Received</dt><dd>${date(c.received_on)}${c.supplier_po ? ` · PO ${c.supplier_po}` : ''}${c.heat_number ? ` · heat ${c.heat_number}` : ''}</dd>
       ${c.notes ? html`<dt>Notes</dt><dd>${c.notes}</dd>` : ''}
     </dl></div>
-    ${onHand ? html`
+    ${onHand && can('inventory') ? html`
     <div class="form-row">
       <form method="post" action="/coils/${c.coil_id}/correct" class="card form-row">
         <label>Measured it? Actual feet left<input name="actual_lf" type="number" step="0.1" min="0" required></label>
@@ -190,7 +191,7 @@ router.get('/coils/:id(\\d+)', async (req, res) => {
   }));
 });
 
-router.post('/coils/:id(\\d+)/correct', async (req, res) => {
+router.post('/coils/:id(\\d+)/correct', need('inventory'), async (req, res) => {
   const id = Number(req.params.id);
   const actual = Number(req.body.actual_lf);
   if (!(actual >= 0)) return back(res, `/coils/${id}`, 'Enter the feet left on the coil.');
@@ -210,7 +211,7 @@ router.post('/coils/:id(\\d+)/correct', async (req, res) => {
   }
 });
 
-router.post('/coils/:id(\\d+)/close', async (req, res) => {
+router.post('/coils/:id(\\d+)/close', need('inventory'), async (req, res) => {
   const id = Number(req.params.id);
   const returned = req.body.reason === 'returned';
   await tx(async (db) => {
@@ -249,7 +250,7 @@ router.get('/stock', async (req, res) => {
     <div class="page-head"><h1>Finished stock</h1></div>
     <p class="muted">Panels and trim already cut: run ahead to stock, or remnants left over from a job.</p>
     ${alert(req)}
-    <details class="card" ${stock.length ? '' : 'open'}>
+    ${can('inventory') ? html`<details class="card" ${stock.length ? '' : 'open'}>
       <summary><strong>Add to stock</strong></summary>
       <form method="post" action="/stock" class="form-grid" style="margin-top:.8rem">
         <label class="span2">Product *<select name="product_id" required><option value="">Pick a product…</option>
@@ -264,26 +265,26 @@ router.get('/stock', async (req, res) => {
           <select name="coil_id"><option value="">Not from a coil / already counted</option>
           ${coils.map((c) => html`<option value="${c.coil_id}">${c.coil_tag}: ${c.color_label}, ${c.gauge} ga (${num(c.current_lf, 0)} LF left)</option>`)}</select></label>
         <label>Coil feet used<input name="lf_used" type="number" step="0.1" min="0" placeholder="pieces × length"></label>
-        <label>By<input name="operator"></label>
+        <label>By<input name="operator" value="${userName()}"></label>
         <div class="span2 actions"><button class="btn primary">Add to stock</button></div>
       </form>
-    </details>
+    </details>` : ''}
     <table class="list">
       <thead><tr><th>Product</th><th>Color</th><th>Length</th><th class="num">On hand</th><th></th><th></th></tr></thead>
       <tbody>${stock.length ? stock.map((s) => html`
         <tr><td>${s.product_name}</td><td>${s.color_label}</td><td>${s.length_display}</td>
         <td class="num">${s.qty_on_hand}</td><td>${s.is_remnant ? 'Remnant' : ''}</td>
-        <td class="num"><form method="post" action="/stock/${s.finished_good_id}/remove" class="inline">
+        <td class="num">${can('inventory') ? html`<form method="post" action="/stock/${s.finished_good_id}/remove" class="inline">
           <input name="qty" type="number" min="1" max="${s.qty_on_hand}" step="1" placeholder="Pieces" required style="width:5.5rem">
           <select name="reason"><option value="sell">Sold / used on a job</option><option value="scrap">Scrapped</option>
             <option value="adjust">Count correction</option></select>
-          <button class="btn small">Take out</button></form></td></tr>`)
+          <button class="btn small">Take out</button></form>` : ''}</td></tr>`)
       : html`<tr><td colspan="6" class="empty">Nothing in stock.</td></tr>`}</tbody>
     </table>`,
   }));
 });
 
-router.post('/stock', async (req, res) => {
+router.post('/stock', need('inventory'), async (req, res) => {
   const b = req.body;
   const qty = Number(b.qty);
   const len = feetInches(b.ft, b.inch);
@@ -322,7 +323,7 @@ router.post('/stock', async (req, res) => {
   }
 });
 
-router.post('/stock/:id(\\d+)/remove', async (req, res) => {
+router.post('/stock/:id(\\d+)/remove', need('inventory'), async (req, res) => {
   const qty = Number(req.body.qty);
   const reason = ['sell', 'scrap', 'adjust'].includes(req.body.reason) ? req.body.reason : 'adjust';
   if (!(qty > 0) || !Number.isInteger(qty)) return back(res, '/stock', 'Enter a whole number of pieces.');
@@ -336,7 +337,7 @@ router.post('/stock/:id(\\d+)/remove', async (req, res) => {
 });
 
 // Undo a run logged by mistake (from the coil or order page).
-router.post('/runs/:id(\\d+)/undo', async (req, res) => {
+router.post('/runs/:id(\\d+)/undo', need('production'), async (req, res) => {
   const backTo = typeof req.body.back === 'string' && req.body.back.startsWith('/') ? req.body.back : '/coils';
   try {
     await tx((db) => undoRun(db, Number(req.params.id)));

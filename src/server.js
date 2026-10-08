@@ -1,5 +1,4 @@
 const path = require('path');
-const crypto = require('crypto');
 const express = require('express');
 
 const app = express();
@@ -8,26 +7,21 @@ app.disable('x-powered-by');
 // Health check for the hosting service; answers without signing in.
 app.get('/healthz', (req, res) => res.send(`ok ${(process.env.RENDER_GIT_COMMIT || '').slice(0, 7)}`.trim()));
 
-// Optional sign-in: set APP_PASSWORD (and optionally APP_USER) once the app is online.
-const { APP_USER = 'hpcm', APP_PASSWORD } = process.env;
-if (APP_PASSWORD) {
-  const expected = Buffer.from(`${APP_USER}:${APP_PASSWORD}`);
-  app.use((req, res, next) => {
-    const [scheme, encoded] = (req.headers.authorization || '').split(' ');
-    const given = Buffer.from(scheme === 'Basic' && encoded ? Buffer.from(encoded, 'base64').toString() : '');
-    if (given.length === expected.length && crypto.timingSafeEqual(given, expected)) return next();
-    res.set('WWW-Authenticate', 'Basic realm="HPCM CRM"').status(401).send('Sign in required');
-  });
-}
-
+// Render sits in front of the app; trust it so secure cookies work.
+app.set('trust proxy', 1);
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: '1mb' }));
+
+// Everyone signs in with their own account (see src/auth.js).
+app.use(require('./auth').middleware());
+app.use('/', require('./routes/users'));
 
 app.get('/', (req, res) => res.redirect('/orders'));
 app.use('/orders', require('./routes/orders'));
 app.use('/customers', require('./routes/customers'));
 app.use('/board', require('./routes/board'));
+app.use('/', require('./routes/admin'));
 app.use('/', require('./routes/catalog'));
 app.use('/', require('./routes/inventory'));
 

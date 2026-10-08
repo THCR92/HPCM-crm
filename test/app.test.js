@@ -6,11 +6,30 @@ const { query, pool } = require('../src/db');
 
 let base;
 let server;
+// Every page needs a sign-in: tests run as an Admin unless they pass their own cookie.
+const realFetch = global.fetch;
+const sessions = {};
+async function signIn(role, permissions) {
+  const { ROLE_DEFAULTS } = require('../src/auth');
+  const { rows: [u] } = await query(`INSERT INTO users (email, full_name, role, permissions, password_hash)
+    VALUES ('test-' || gen_random_uuid() || '@example.com', 'Test ' || $1, $1, $2, 'x') RETURNING user_id`,
+  [role, permissions || ROLE_DEFAULTS[role]]);
+  const sid = `test-${u.user_id}-${Date.now()}`;
+  await query("INSERT INTO user_sessions (session_id, user_id, expires_at) VALUES ($1, $2, now() + interval '1 day')", [sid, u.user_id]);
+  return `hpcm_session=${sid}`;
+}
 test.before(async () => {
   server = app.listen(0);
   base = `http://localhost:${server.address().port}`;
+  sessions.admin = await signIn('admin');
+  global.fetch = (url, opts = {}) => {
+    const headers = new Headers(opts.headers || {});
+    if (String(url).startsWith(base) && !headers.has('cookie') && !opts.anonymous) headers.set('cookie', sessions.admin);
+    return realFetch(url, { ...opts, headers });
+  };
 });
 test.after(async () => {
+  global.fetch = realFetch;
   server.close();
   await pool.end();
 });
@@ -443,4 +462,82 @@ test('drawings attach to an order line, show on the cut sheet, and stay when the
 
   await fetch(`${base}/orders/${id}/attachments/${aid}/delete`, { method: 'POST', redirect: 'manual' });
   assert.strictEqual((await query('SELECT 1 FROM order_attachments WHERE attachment_id = $1', [aid])).rowCount, 0);
+});
+
+test('sign-in: pages need an account, email + password signs in, wrong password does not', async () => {
+  const anon = await fetch(`${base}/orders`, { anonymous: true, redirect: 'manual' });
+  assert.strictEqual(anon.status, 302);
+  assert.match(anon.headers.get('location'), /^\/login\?next=%2Forders/);
+  assert.strictEqual((await fetch(`${base}/healthz`, { anonymous: true })).status, 200);
+
+  const email = `Person-${Date.now()}@Example.com`;
+  const form = (o) => new URLSearchParams(o).toString();
+  const formPost = (path, o, extra = {}) => fetch(base + path, { method: 'POST', redirect: 'manual', ...extra,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(extra.headers || {}) }, body: form(o) });
+  const add = await formPost('/users', { full_name: 'Pat Sales', email, role: 'sales', password: 'longenough1', perm: 'quotes' });
+  assert.strictEqual(add.status, 302);
+  const { rows: [u] } = await query('SELECT * FROM users WHERE email = lower($1)', [email]);
+  assert.deepStrictEqual(u.permissions, ['quotes']);
+
+  const bad = await formPost('/login', { email, password: 'wrong-password' }, { anonymous: true });
+  assert.strictEqual(bad.status, 401);
+  const good = await formPost('/login', { email: email.toUpperCase(), password: 'longenough1', next: '/customers' }, { anonymous: true });
+  assert.strictEqual(good.status, 302);
+  assert.strictEqual(good.headers.get('location'), '/customers');
+  const cookie = good.headers.get('set-cookie').split(';')[0];
+  const page = await (await fetch(`${base}/orders`, { headers: { cookie } })).text();
+  assert.match(page, /Pat Sales/);
+  assert.doesNotMatch(page, /href="\/admin"/);
+  assert.strictEqual((await fetch(`${base}/users`, { headers: { cookie } })).status, 403);
+
+  // Turning the account off signs them out.
+  await formPost(`/users/${u.user_id}`, { full_name: 'Pat Sales', email, role: 'sales' });
+  assert.strictEqual((await fetch(`${base}/orders`, { headers: { cookie }, redirect: 'manual' })).status, 302);
+});
+
+test('roles: production sees no prices and only moves orders along the shop steps', async () => {
+  const prod = await signIn('production');
+  const sales = await signIn('sales');
+  const { rows: [c] } = await query(
+    "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01',
+    sections: [{ area: 'wall', items: [{ product_id: await productId('PNL-PBR-26'), pieces: 4, length_in: 150, unit_price: 5.65 }] }] });
+  const id = Number((await res.json()).redirect.split('/').pop());
+  const as = (cookie, path, body) => fetch(base + path, { headers: { cookie }, redirect: 'manual',
+    ...(body ? { method: 'POST', headers: { cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() } : {}) });
+  const status = async () => (await query('SELECT status, approved_by FROM orders WHERE order_id = $1', [id])).rows[0];
+
+  const page = await (await as(prod, `/orders/${id}`)).text();
+  assert.doesNotMatch(page, /\$282\.50|Sales tax|Billed/);
+  assert.doesNotMatch(page, /Edit quote|Customer quote/);
+  for (const p of ['/orders/new', `/orders/${id}/customer`, '/products', '/admin']) {
+    assert.strictEqual((await as(prod, p)).status, 403, p);
+  }
+  assert.strictEqual((await as(prod, '/settings/tax', { sales_tax_rate: '9' })).status, 403);
+  assert.doesNotMatch(await (await as(prod, '/board')).text(), /quoted/);
+
+  await as(prod, `/orders/${id}/status`, { status: 'confirmed' });
+  assert.strictEqual((await status()).status, 'quote');
+  await as(sales, `/orders/${id}/status`, { status: 'confirmed' });
+  assert.deepStrictEqual(await status(), { status: 'confirmed', approved_by: 'Test sales' });
+  await as(sales, `/orders/${id}/status`, { status: 'cancelled' });
+  assert.strictEqual((await status()).status, 'confirmed');
+  await as(prod, `/orders/${id}/status`, { status: 'in_production' });
+  assert.strictEqual((await status()).status, 'in_production');
+  await as(prod, `/orders/${id}/status`, { status: 'quote' });
+  assert.strictEqual((await status()).status, 'in_production');
+});
+
+test('admin can add a product with a price and remove it', async () => {
+  const name = `Test Gable ${Date.now()}`;
+  const res = await fetch(`${base}/admin/products`, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ name, category: 'trim', pricing_unit: 'each', standard_ft: '10', max_ft: '20',
+      girth_in: '9', unit_price: '31.5', taxable: '1' }).toString() });
+  assert.strictEqual(res.status, 302);
+  const { rows: [p] } = await query(`SELECT p.*, cp.unit_price FROM products p LEFT JOIN v_current_prices cp USING (product_id)
+    WHERE name = $1`, [name]);
+  assert.deepStrictEqual([p.standard_length_in, p.max_length_in, p.girth_in, p.unit_price], [120, 240, 9, 31.5]);
+  await fetch(`${base}/admin/products/${p.product_id}/remove`, { method: 'POST', redirect: 'manual' });
+  assert.strictEqual((await query('SELECT 1 FROM products WHERE product_id = $1', [p.product_id])).rowCount, 0);
 });

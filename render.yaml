@@ -16,9 +16,8 @@ services:
         fromDatabase:
           name: hpcm-db
           property: connectionString
-      - key: APP_USER
-        value: hpcm
-      # Render asks for this password when the Blueprint is created.
+      # Render asks for this password when the Blueprint is created. It's needed
+      # once, to create the first Admin account; after that everyone has their own.
       - key: APP_PASSWORD
         sync: false
 

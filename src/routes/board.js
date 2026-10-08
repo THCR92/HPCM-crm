@@ -4,6 +4,7 @@ const router = require('../async-router')();
 const { query } = require('../db');
 const { html, money, num, date } = require('../html');
 const { RUNNABLE, footage } = require('../production');
+const { can } = require('../auth');
 
 const TZ = 'America/Denver';
 const NEXT_COUNT = 5;
@@ -130,6 +131,7 @@ router.get('/', async (req, res) => {
   const now = new Date().toLocaleString('en-US', {
     timeZone: TZ, weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
+  const prices = can('prices');
   const tile = (n, label, cls, extra) => html`
     <div class="tile ${cls}"><div class="n">${n}</div><div class="label">${label}</div>
       ${extra ? html`<div class="extra">${extra}</div>` : ''}</div>`;
@@ -162,8 +164,8 @@ router.get('/', async (req, res) => {
   <div class="clock">${now}</div>
 </header>
 <section class="tiles">
-  ${tile(counts.quotes, 'Quotes out', 'quote', `${money(counts.quotes_value)} quoted`)}
-  ${tile(counts.confirmed, 'Approved, waiting', 'confirmed', `${money(counts.confirmed_value)} approved`)}
+  ${tile(counts.quotes, 'Quotes out', 'quote', prices ? `${money(counts.quotes_value)} quoted` : '')}
+  ${tile(counts.confirmed, 'Approved, waiting', 'confirmed', prices ? `${money(counts.confirmed_value)} approved` : '')}
   ${tile(counts.in_production, 'In production', 'in_production')}
   ${tile(counts.ready, 'Ready to go', 'ready')}
 </section>
