@@ -78,7 +78,7 @@ async function loadCatalog() {
            p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
            p.flat_extra_in AS flat_extra, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
-           pp.fastening
+           pp.fastening, p.profile_id, pp.name AS profile_name
     FROM products p
     LEFT JOIN v_current_prices cp USING (product_id)
     LEFT JOIN panel_profiles pp USING (profile_id)
@@ -100,10 +100,11 @@ async function loadCatalog() {
 // Which screw goes with which panels and framing (Admin > Screws).
 async function loadScrewRules(db = { query }) {
   const { rows } = await db.query(`
-    SELECT r.fastening::text AS fastening, r.framing, r.length_label, r.product_id, r.per_square, r.is_default,
-           p.name AS product_name, p.pack_size, cp.unit_price AS price
+    SELECT r.profile_id, r.framing, r.length_label, r.product_id, r.basis, r.qty, r.spacing_in, r.color_match,
+           r.is_default, p.name AS product_name, p.pricing_unit::text AS unit, p.category::text AS category,
+           p.pack_size, cp.unit_price AS price
     FROM screw_rules r JOIN products p USING (product_id) LEFT JOIN v_current_prices cp USING (product_id)
-    ORDER BY r.fastening, r.framing, r.sort_order, r.screw_rule_id`);
+    ORDER BY r.profile_id, r.framing, r.sort_order, r.screw_rule_id`);
   return rows;
 }
 
@@ -229,6 +230,9 @@ async function withScrews(sections, header, productsById) {
     if (l.unit_price === '') {
       throw new UserError(`${p.name} has no price yet. Set it on the Price list, or untick "Figure screws automatically".`);
     }
+    if (!(l.pieces > 0)) {
+      throw new UserError(`Couldn't figure ${p.name}. Untick "Figure screws automatically" and add them as lines.`);
+    }
     return {
       order_item_id: null, product: p, color_id: l.color_id, pieces: l.pieces, length_in: null, width_in: null,
       unit_price: l.unit_price, description: l.description,
@@ -246,7 +250,7 @@ async function saveOrder(orderId, body) {
   if (!orderId) header.created_by = userName();
   const { rows: prodRows } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.taxable, p.max_length_in,
-           p.girth_in AS girth, pp.fastening::text AS fastening, pp.coverage_width_in AS cov
+           p.girth_in AS girth, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov
     FROM products p LEFT JOIN panel_profiles pp USING (profile_id)`);
   const productsById = new Map(prodRows.map((p) => [p.id, p]));
   const sections = await withScrews(parseSections(body, productsById), header, productsById);

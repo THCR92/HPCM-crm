@@ -277,9 +277,8 @@
 
   function screwControlsHtml() {
     const h = state.header;
-    const lengths = window.Screws.lengths(screwRules, h.framing);
-    const def = window.Screws.pickRule(screwRules, 'through_fastened', h.framing, h.screw_length);
-    const current = lengths.includes(h.screw_length) ? h.screw_length : def ? def.length_label : '';
+    const { options: lengths, usual } = window.Screws.lengths(screwRules, h.framing);
+    const current = lengths.includes(h.screw_length) ? h.screw_length : usual;
     return `<div class="section-head screws-head">
         <strong>Screws</strong>
         <label class="check"><input type="checkbox" data-h="auto_screws" ${h.auto_screws ? 'checked' : ''}> Figure screws automatically</label>
@@ -295,18 +294,19 @@
 
   function screwLinesHtml() {
     const { lines, missing } = state.screws;
-    const warn = missing.length ? `<p class="alert small">No screw is set up for ${esc(missing.join(' or '))} on
-      ${state.header.framing === 'steel' ? 'steel' : 'wood'} framing, so those panels have no screws. An Admin can add one under Admin &gt; Screws.</p>` : '';
+    const warn = missing.length ? `<p class="alert small">No screws are set up for ${esc(missing.join(' or '))} on
+      ${state.header.framing === 'steel' ? 'steel' : 'wood'} framing, so those panels get none. Add them as lines, or an Admin can set them up under Admin &gt; Screws.</p>` : '';
     if (!state.header.auto_screws) {
       return '<p class="muted small">Add screws as lines yourself, or tick the box to figure them from the panels.</p>';
     }
-    if (!lines.length) return `${warn}<p class="muted small">Screws are added here when the quote has PBR or Tuff Rib panels.</p>`;
+    if (!lines.length) return `${warn}<p class="muted small">Screws and clips are added here from the panels on this quote.</p>`;
     return `${warn}<table class="lines edit">
       <thead><tr><th>Qty</th><th>Screws</th><th>Color</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
       <tbody>${lines.map((l) => {
         const p = productById.get(l.product_id);
         const c = colorById.get(l.color_id);
-        return `<tr><td>${l.pieces} ${l.pieces === 1 ? 'bag' : 'bags'}</td>
+        const unit = p && p.unit === 'bag' ? (l.pieces === 1 ? 'bag' : 'bags') : '';
+        return `<tr><td>${l.pieces} ${unit}</td>
           <td>${esc(p ? p.name : '')}<div class="muted small">${esc(l.description)}</div></td>
           <td>${esc(c ? c.label || c.name : '')}</td>
           <td class="num">${l.unit_price === '' ? '<span class="missing-text">no price set</span>' : money(Number(l.unit_price))}</td>
