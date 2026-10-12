@@ -541,3 +541,62 @@ test('admin can add a product with a price and remove it', async () => {
   await fetch(`${base}/admin/products/${p.product_id}/remove`, { method: 'POST', redirect: 'manual' });
   assert.strictEqual((await query('SELECT 1 FROM products WHERE product_id = $1', [p.product_id])).rowCount, 0);
 });
+
+test('screws: PBR/Tuff Rib get color-matched woodgrips at 90 per square, rounded up to bags', async () => {
+  const { rows: [c] } = await query(
+    "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const [red, tan] = (await query(`INSERT INTO colors (name, finish) VALUES ('Screw Red ' || gen_random_uuid(), 'smooth'),
+    ('Screw Tan ' || gen_random_uuid(), 'smooth') RETURNING color_id`)).rows.map((r) => r.color_id);
+  const pbr = await productId('PNL-PBR-26');
+  const tuff = await productId('PNL-TR-26').catch(() => pbr);
+  const snap = await productId('PNL-SL-26');
+  const short = await productId('SCR-10-1-5-WOODTITE-SCREWS');
+  const order = (extra = {}) => ({
+    customer_id: c.customer_id, auto_screws: true, framing: 'wood', ...extra,
+    sections: [
+      // 20 @ 16'8" x 36" = 1000 sq ft = 10 squares -> 900 screws -> 4 bags
+      { area: 'roof', items: [{ product_id: pbr, color_id: red, pieces: 20, length_in: 200, unit_price: 5.65 },
+        // concealed panels: no rule yet, no screws
+        { product_id: snap, color_id: red, pieces: 10, length_in: 120, width_in: 16, unit_price: 3.65 }] },
+      // 4 @ 12'6" x 36" = 150 sq ft = 1.5 squares -> 135 screws -> 1 bag
+      { area: 'wall', items: [{ product_id: tuff, color_id: tan, pieces: 4, length_in: 150, unit_price: 5.65 }] },
+      ...(extra.sections || []),
+    ],
+  });
+  let res = await post('/orders', order());
+  let out = await res.json();
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const screws = async () => (await query(`SELECT oi.product_id, oi.color_id, oi.pieces::int, oi.unit_price, s.section_id, s.is_auto
+    FROM order_items oi JOIN order_sections s USING (section_id)
+    WHERE oi.order_id = $1 AND oi.product_id IN (SELECT product_id FROM products WHERE category = 'fastener')
+    ORDER BY oi.line_no`, [id])).rows;
+  let rows = await screws();
+  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.color_id, r.pieces, r.unit_price, r.is_auto]),
+    [[short, red, 4, 30, true], [short, tan, 1, 30, true]]);
+  const sectionId = rows[0].section_id;
+
+  // The 2" screw has no price yet, so the save says so.
+  res = await post(`/orders/${id}`, order({ screw_length: '2"' }));
+  out = await res.json();
+  assert.match(out.error, /2" Woodgrip Screws has no price yet/);
+
+  // Steel framing has no rule: no screws.
+  res = await post(`/orders/${id}`, order({ framing: 'steel', sections: [{ section_id: sectionId, area: 'other', label: 'Screws', auto: true, items: [] }] }));
+  assert.ok((await res.json()).ok);
+  assert.deepStrictEqual(await screws(), []);
+
+  // Back to wood: same section kept; with it off, lines the form sends are kept as typed.
+  res = await post(`/orders/${id}`, order());
+  assert.ok((await res.json()).ok);
+  rows = await screws();
+  assert.strictEqual(rows.length, 2);
+  res = await post(`/orders/${id}`, order({ auto_screws: false, sections: [{ area: 'other', label: 'Screws',
+    items: [{ product_id: short, color_id: red, pieces: 6, unit_price: 28 }] }] }));
+  assert.ok((await res.json()).ok);
+  rows = await screws();
+  assert.deepStrictEqual(rows.map((r) => [r.pieces, r.unit_price, r.is_auto]), [[6, 28, false]]);
+
+  const page = await (await fetch(`${base}/orders/${id}`)).text();
+  assert.match(page, /#10 1\.5&quot; Woodgrip Screws/);
+});

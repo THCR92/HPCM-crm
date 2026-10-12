@@ -5,6 +5,7 @@ const { query, tx } = require('../db');
 const { feetInches } = require('../length');
 const { RUNNABLE, footage, runError } = require('../production');
 const { can, need, userName } = require('../auth');
+const Screws = require('../../public/screws');
 const {
   html, raw, layout, money, num, date, statusBadge, UNIT_LABEL, STATUS_LABEL, AREA_LABEL,
 } = require('../html');
@@ -76,7 +77,8 @@ async function loadCatalog() {
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies, p.taxable,
            p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
            p.flat_extra_in AS flat_extra, cp.unit_price AS price,
-           pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max
+           pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
+           pp.fastening
     FROM products p
     LEFT JOIN v_current_prices cp USING (product_id)
     LEFT JOIN panel_profiles pp USING (profile_id)
@@ -89,7 +91,20 @@ async function loadCatalog() {
     SELECT customer_id AS id, display_name AS name, phone, email, default_fulfillment, tax_exempt
     FROM customers WHERE active ORDER BY lower(display_name)`);
   const { rows: [sp] } = await query("SELECT value FROM app_settings WHERE key = 'sized_trim_pricing'");
-  return { products, colors, customers, default_tax_rate: await defaultTaxRate(), sized_pricing: sp ? sp.value : 'per_inch' };
+  return {
+    products, colors, customers, default_tax_rate: await defaultTaxRate(), sized_pricing: sp ? sp.value : 'per_inch',
+    screw_rules: await loadScrewRules(),
+  };
+}
+
+// Which screw goes with which panels and framing (Admin > Screws).
+async function loadScrewRules(db = { query }) {
+  const { rows } = await db.query(`
+    SELECT r.fastening::text AS fastening, r.framing, r.length_label, r.product_id, r.per_square, r.is_default,
+           p.name AS product_name, p.pack_size, cp.unit_price AS price
+    FROM screw_rules r JOIN products p USING (product_id) LEFT JOIN v_current_prices cp USING (product_id)
+    ORDER BY r.fastening, r.framing, r.sort_order, r.screw_rule_id`);
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +149,9 @@ function parseHeader(b) {
     contact_email: text(b.contact_email),
     fulfillment: b.fulfillment === 'delivery' ? 'delivery' : 'pickup',
     need_by: isoDate(b.need_by),
+    auto_screws: b.auto_screws === true || b.auto_screws === 'true',
+    framing: b.framing === 'steel' ? 'steel' : 'wood',
+    screw_length: text(b.screw_length),
     delivery_charge: amount(b.delivery_charge, 'Delivery charge'),
     discount_amount: amount(b.discount_amount, 'Discount'),
     deposit_amount: amount(b.deposit_amount, 'Deposit'),
@@ -187,8 +205,39 @@ function parseSections(b, productsById) {
     });
     return {
       section_id: Number(s.section_id) || null, area, label: text(s.label), sort_order: si + 1, items,
+      is_auto: s.auto === true,
     };
   });
+}
+
+// With automatic screws on, the Screws section is rebuilt from the panel lines
+// every save (whatever the form sent for it). With it off, the screw lines are
+// ordinary lines the person can change.
+async function withScrews(sections, header, productsById) {
+  const auto = sections.find((s) => s.is_auto);
+  const rest = sections.filter((s) => !s.is_auto);
+  if (!header.auto_screws) {
+    if (auto) rest.push({ ...auto, is_auto: false });
+    return rest;
+  }
+  const lines = rest.flatMap((s) => s.items).map((i) => ({ ...i, product_id: i.product.id }));
+  const { lines: screws } = Screws.figure(lines, productsById, await loadScrewRules(),
+    { framing: header.framing, length: header.screw_length });
+  if (!screws.length) return rest;
+  const items = screws.map((l) => {
+    const p = productsById.get(l.product_id);
+    if (l.unit_price === '') {
+      throw new UserError(`${p.name} has no price yet. Set it on the Price list, or untick "Figure screws automatically".`);
+    }
+    return {
+      order_item_id: null, product: p, color_id: l.color_id, pieces: l.pieces, length_in: null, width_in: null,
+      unit_price: l.unit_price, description: l.description,
+    };
+  });
+  return [...rest, {
+    section_id: auto ? auto.section_id : null, area: 'other', label: 'Screws',
+    sort_order: rest.length + 1, items, is_auto: true,
+  }];
 }
 
 async function saveOrder(orderId, body) {
@@ -196,10 +245,11 @@ async function saveOrder(orderId, body) {
   header.updated_by = userName();
   if (!orderId) header.created_by = userName();
   const { rows: prodRows } = await query(`
-    SELECT product_id AS id, name, category, pricing_unit AS unit, taxable, max_length_in,
-           girth_in AS girth FROM products`);
+    SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.taxable, p.max_length_in,
+           p.girth_in AS girth, pp.fastening::text AS fastening, pp.coverage_width_in AS cov
+    FROM products p LEFT JOIN panel_profiles pp USING (profile_id)`);
   const productsById = new Map(prodRows.map((p) => [p.id, p]));
-  const sections = parseSections(body, productsById);
+  const sections = await withScrews(parseSections(body, productsById), header, productsById);
 
   return tx(async (db) => {
     const cols = Object.keys(header);
@@ -239,15 +289,15 @@ async function saveOrder(orderId, body) {
     for (const s of sections) {
       let sectionId = s.section_id;
       if (sectionId) {
-        const r = await db.query(`UPDATE order_sections SET area = $1, label = $2, sort_order = $3
+        const r = await db.query(`UPDATE order_sections SET area = $1, label = $2, sort_order = $3, is_auto = $6
                                   WHERE section_id = $4 AND order_id = $5`,
-        [s.area, s.label, s.sort_order, sectionId, orderId]);
+        [s.area, s.label, s.sort_order, sectionId, orderId, !!s.is_auto]);
         if (!r.rowCount) sectionId = null;
       }
       if (!sectionId) {
-        const { rows: [r] } = await db.query(`INSERT INTO order_sections (order_id, area, label, sort_order)
-                                              VALUES ($1, $2, $3, $4) RETURNING section_id`,
-        [orderId, s.area, s.label, s.sort_order]);
+        const { rows: [r] } = await db.query(`INSERT INTO order_sections (order_id, area, label, sort_order, is_auto)
+                                              VALUES ($1, $2, $3, $4, $5) RETURNING section_id`,
+        [orderId, s.area, s.label, s.sort_order, !!s.is_auto]);
         sectionId = r.section_id;
       }
       for (const it of s.items) {
@@ -346,7 +396,7 @@ function formPage(res, { title, order, catalog }) {
     <h1>${title}</h1>
     <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
     <script>window.ORDER_FORM = ${jsonForScript({ order, ...catalog })};</script>`,
-    scripts: ['/order-form.js'],
+    scripts: ['/screws.js', '/order-form.js'],
   }));
 }
 
@@ -363,6 +413,8 @@ router.get('/new', need('quotes'), async (req, res) => {
       fulfillment: cust ? cust.default_fulfillment : 'pickup',
       tax_rate: catalog.default_tax_rate,
       tax_exempt: cust ? cust.tax_exempt : false,
+      auto_screws: true,
+      framing: 'wood',
       contact_phone: cust?.phone || null,
       contact_email: cust?.email || null,
       sections: [{ area: 'roof', items: [] }, { area: 'wall', items: [] }, { area: 'trim', items: [] }],
@@ -518,7 +570,7 @@ router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
         <dt>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</dt><dd>${o.fulfillment === 'delivery' ? 'Delivered' : 'Customer pickup'}</dd>
       </dl>
       ${sections.map((sec) => html`
-      <h3 class="area">${AREA_LABEL[sec.area] || sec.area}${sec.label ? ` · ${sec.label}` : ''}</h3>
+      <h3 class="area">${sec.is_auto ? 'Screws' : html`${AREA_LABEL[sec.area] || sec.area}${sec.label ? ` · ${sec.label}` : ''}`}</h3>
       <table class="lines">
         <thead><tr><th class="num">Qty</th><th>Length</th><th>Item</th><th>Color</th><th>Size</th>
           <th class="num">Price each</th><th class="num">Amount</th></tr></thead>
@@ -608,7 +660,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       </dl>
 
       ${o.sections.map((s) => html`
-      <h3 class="area">${AREA_LABEL[s.area]}${s.label ? `: ${s.label}` : ''}
+      <h3 class="area">${s.is_auto ? 'Screws' : html`${AREA_LABEL[s.area]}${s.label ? `: ${s.label}` : ''}`}
         <span class="area-total">${sectionTotals(s.items)}</span></h3>
       <table class="lines">
         <thead><tr><th class="num">Qty</th><th>Length</th><th>Panel / profile</th><th>Gauge</th><th>Color</th>

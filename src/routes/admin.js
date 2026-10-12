@@ -29,6 +29,7 @@ router.get('/admin', need('admin'), async (req, res) => {
       ${card('/products', 'Prices and sales tax', `Change prices and flat widths. Sales tax for new quotes: ${num(c.tax, 3)}%.`)}
       ${card('/admin/products', 'Products', `${c.products} products. Add new ones, rename, change units, or remove.`)}
       ${card('/colors', 'Colors and finishes', `${c.colors} colors. Add colors, premiums and finishes.`)}
+      ${card('/admin/screws', 'Screws', 'Which screws go with which panels and framing, and how many per square.')}
       ${card('/admin/suppliers', 'Suppliers', `${c.suppliers} suppliers. Edit contact details or remove.`)}
     </div>`,
   }));
@@ -190,6 +191,99 @@ router.post('/admin/products/:id(\\d+)/remove', need('catalog'), async (req, res
     await query('UPDATE products SET active = false WHERE product_id = $1', [req.params.id]);
     res.redirect(`/admin/products?error=${encodeURIComponent('That product is on existing orders or stock, so it was hidden from new quotes instead.')}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Screw rules: which screw quotes get for each kind of panel and framing
+// ---------------------------------------------------------------------------
+const FASTENING = { through_fastened: 'Through-fastener (PBR, Tuff Rib)', concealed: 'Standing seam, Board & Batten' };
+const FRAMING = { wood: 'Wood framing', steel: 'Steel framing' };
+
+router.get('/admin/screws', need('catalog'), async (req, res) => {
+  const { rows: rules } = await query(`
+    SELECT r.*, p.name AS product_name, p.pack_size, cp.unit_price
+    FROM screw_rules r JOIN products p USING (product_id) LEFT JOIN v_current_prices cp USING (product_id)
+    ORDER BY r.fastening, r.framing, r.sort_order, r.screw_rule_id`);
+  const { rows: screws } = await query(`SELECT product_id, name FROM products
+    WHERE category = 'fastener' AND active ORDER BY name`);
+  const opt = (v, cur, label) => html`<option value="${v}" ${String(v) === String(cur ?? '') ? 'selected' : ''}>${label}</option>`;
+  const fields = (r = {}) => html`
+      <label>Panels<select name="fastening">${Object.entries(FASTENING).map(([k, v]) => opt(k, r.fastening, v))}</select></label>
+      <label>Framing<select name="framing">${Object.entries(FRAMING).map(([k, v]) => opt(k, r.framing, v))}</select></label>
+      <label>Length<input name="length_label" value="${r.length_label}" required placeholder='1.5"' style="width:5rem"></label>
+      <label>Screw<select name="product_id" required>${screws.map((p) => opt(p.product_id, r.product_id, p.name))}</select></label>
+      <label>Per square<input name="per_square" type="number" step="1" min="1" value="${r.per_square ?? 90}" required style="width:5rem"></label>
+      <label>Per bag<input name="pack_size" type="number" step="1" min="1" value="${r.pack_size ?? 250}" required style="width:5rem"></label>
+      <label class="check"><input type="checkbox" name="is_default" value="1" ${r.is_default ? 'checked' : ''}> Usual length</label>`;
+  res.send(layout({
+    title: 'Screws', active: '/admin',
+    body: html`
+    <h1>Screws</h1>
+    ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
+    ${req.query.saved ? html`<div class="notice">Saved.</div>` : ''}
+    <p class="muted">New quotes figure screws from their panels: square feet of panel ÷ 100 × screws per square,
+      rounded up to whole bags, in the panel's color. The quote picks wood or steel framing and the length;
+      the usual length is picked unless someone changes it. Panels with no rule for the framing get no screws.
+      "Per bag" is saved on the screw product.</p>
+    ${rules.map((r) => html`
+    <form method="post" action="/admin/screws/${r.screw_rule_id}" class="card form-row">
+      ${fields(r)}
+      <span class="muted small">${r.unit_price === null ? html`<span class="missing-text">No price</span>` : `${money(r.unit_price)}/bag`}</span>
+      <button class="btn">Save</button>
+      <button class="btn danger" name="remove" value="1" onclick="return confirm('Remove this screw rule?')">Remove</button>
+    </form>`)}
+    <h2>Add a rule</h2>
+    <form method="post" action="/admin/screws" class="card form-row">${fields()}<button class="btn primary">Add</button></form>
+    <p class="muted">A screw that isn't listed yet? Add it as a product (type "Screws / fasteners", priced per bag) first.</p>`,
+  }));
+});
+
+async function saveScrewRule(id, b) {
+  const r = {
+    fastening: FASTENING[b.fastening] ? b.fastening : 'through_fastened',
+    framing: FRAMING[b.framing] ? b.framing : 'wood',
+    length_label: String(b.length_label || '').trim(),
+    product_id: Number(b.product_id),
+    per_square: Number(b.per_square),
+    pack: Math.round(Number(b.pack_size)),
+    is_default: b.is_default === '1',
+  };
+  if (!r.length_label || !(r.per_square > 0) || !(r.pack > 0) || !r.product_id) return 'Fill in the length, screw, per square and per bag.';
+  try {
+    await tx(async (db) => {
+      const { rows: [row] } = id
+        ? await db.query(`UPDATE screw_rules SET fastening = $2, framing = $3, length_label = $4, product_id = $5,
+            per_square = $6, is_default = $7 WHERE screw_rule_id = $1 RETURNING screw_rule_id`,
+        [id, r.fastening, r.framing, r.length_label, r.product_id, r.per_square, r.is_default])
+        : await db.query(`INSERT INTO screw_rules (fastening, framing, length_label, product_id, per_square, is_default, sort_order)
+            VALUES ($1, $2, $3, $4, $5, $6, (SELECT COALESCE(max(sort_order), 0) + 1 FROM screw_rules)) RETURNING screw_rule_id`,
+        [r.fastening, r.framing, r.length_label, r.product_id, r.per_square, r.is_default]);
+      // One usual length per kind of panel and framing.
+      if (r.is_default) {
+        await db.query(`UPDATE screw_rules SET is_default = false
+          WHERE fastening = $1 AND framing = $2 AND screw_rule_id <> $3`, [r.fastening, r.framing, row.screw_rule_id]);
+      }
+      await db.query('UPDATE products SET pack_size = $2 WHERE product_id = $1', [r.product_id, r.pack]);
+    });
+  } catch (err) {
+    if (err.code === '23505') return 'There is already a rule for that panel type, framing and length.';
+    throw err;
+  }
+  return null;
+}
+
+router.post('/admin/screws', need('catalog'), async (req, res) => {
+  const err = await saveScrewRule(null, req.body);
+  res.redirect(`/admin/screws?${err ? `error=${encodeURIComponent(err)}` : 'saved=1'}`);
+});
+
+router.post('/admin/screws/:id(\\d+)', need('catalog'), async (req, res) => {
+  if (req.body.remove === '1') {
+    await query('DELETE FROM screw_rules WHERE screw_rule_id = $1', [req.params.id]);
+    return res.redirect('/admin/screws?saved=1');
+  }
+  const err = await saveScrewRule(Number(req.params.id), req.body);
+  res.redirect(`/admin/screws?${err ? `error=${encodeURIComponent(err)}` : 'saved=1'}`);
 });
 
 // ---------------------------------------------------------------------------

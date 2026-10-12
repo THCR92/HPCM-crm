@@ -2,7 +2,9 @@
 // and posts the whole order back as JSON. Billable sq ft / LF are previewed
 // here with the same rules the database uses; the database is the final word.
 (function () {
-  const { order, products, colors, customers, sized_pricing: sizedPricing = 'per_inch' } = window.ORDER_FORM;
+  const {
+    order, products, colors, customers, sized_pricing: sizedPricing = 'per_inch', screw_rules: screwRules = [],
+  } = window.ORDER_FORM;
   const root = document.getElementById('order-form');
   const productById = new Map(products.map((p) => [p.id, p]));
   const colorById = new Map(colors.map((c) => [c.id, c]));
@@ -56,14 +58,20 @@
       description: it.description || '',
     };
   };
+  const autoSection = (order.sections || []).find((s) => s.is_auto);
   const state = {
     header: { ...order },
-    sections: (order.sections || []).map((s) => ({
+    // The automatic Screws section isn't edited by hand; it's figured from the panels.
+    sections: (order.sections || []).filter((s) => !s.is_auto).map((s) => ({
       section_id: s.section_id || null, area: s.area, label: s.label || '',
       items: (s.items || []).map(toRow),
     })),
+    screwSectionId: autoSection ? autoSection.section_id : null,
+    screws: { lines: [], missing: [] },
   };
   delete state.header.sections;
+  // Opening an older order that already has screws typed in: leave them alone.
+  if (state.header.auto_screws === undefined) state.header.auto_screws = false;
   let dirty = false;
 
   function lengthIn(row) {
@@ -258,11 +266,60 @@
     </div>`;
   }
 
+  // ----------------------------------------------------------------- screws
+  function figureScrews() {
+    const lines = state.sections.flatMap((s) => s.items).map((row) => ({
+      product_id: row.product_id, color_id: row.color_id, pieces: row.pieces, length_in: lengthIn(row), width_in: row.width_in,
+    }));
+    return window.Screws.figure(lines, productById, screwRules,
+      { framing: state.header.framing, length: state.header.screw_length });
+  }
+
+  function screwControlsHtml() {
+    const h = state.header;
+    const lengths = window.Screws.lengths(screwRules, h.framing);
+    const def = window.Screws.pickRule(screwRules, 'through_fastened', h.framing, h.screw_length);
+    const current = lengths.includes(h.screw_length) ? h.screw_length : def ? def.length_label : '';
+    return `<div class="section-head screws-head">
+        <strong>Screws</strong>
+        <label class="check"><input type="checkbox" data-h="auto_screws" ${h.auto_screws ? 'checked' : ''}> Figure screws automatically</label>
+        ${h.auto_screws ? `<label>Framing <select data-h="framing">
+            <option value="wood" ${h.framing !== 'steel' ? 'selected' : ''}>Wood</option>
+            <option value="steel" ${h.framing === 'steel' ? 'selected' : ''}>Steel</option></select></label>
+          ${lengths.length ? `<label>Length <select data-h="screw_length">${lengths.map((l) =>
+            `<option ${l === current ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>` : ''}` : ''}
+        <span class="section-total"></span>
+      </div>
+      <div id="screws-lines"></div>`;
+  }
+
+  function screwLinesHtml() {
+    const { lines, missing } = state.screws;
+    const warn = missing.length ? `<p class="alert small">No screw is set up for ${esc(missing.join(' or '))} on
+      ${state.header.framing === 'steel' ? 'steel' : 'wood'} framing, so those panels have no screws. An Admin can add one under Admin &gt; Screws.</p>` : '';
+    if (!state.header.auto_screws) {
+      return '<p class="muted small">Add screws as lines yourself, or tick the box to figure them from the panels.</p>';
+    }
+    if (!lines.length) return `${warn}<p class="muted small">Screws are added here when the quote has PBR or Tuff Rib panels.</p>`;
+    return `${warn}<table class="lines edit">
+      <thead><tr><th>Qty</th><th>Screws</th><th>Color</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+      <tbody>${lines.map((l) => {
+        const p = productById.get(l.product_id);
+        const c = colorById.get(l.color_id);
+        return `<tr><td>${l.pieces} ${l.pieces === 1 ? 'bag' : 'bags'}</td>
+          <td>${esc(p ? p.name : '')}<div class="muted small">${esc(l.description)}</div></td>
+          <td>${esc(c ? c.label || c.name : '')}</td>
+          <td class="num">${l.unit_price === '' ? '<span class="missing-text">no price set</span>' : money(Number(l.unit_price))}</td>
+          <td class="num">${l.unit_price === '' ? '' : money(round2(l.pieces * l.unit_price))}</td></tr>`;
+      }).join('')}</tbody></table>`;
+  }
+
   function render() {
     root.innerHTML = `<div id="form-error" class="alert" hidden></div>
       ${headerHtml()}
       <div id="sections">${state.sections.map(sectionHtml).join('')}</div>
       <button type="button" class="btn" data-act="add-section">+ Add section</button>
+      <fieldset class="section screws" id="screws-box">${screwControlsHtml()}</fieldset>
       ${footerHtml()}`;
     recompute();
   }
@@ -290,6 +347,17 @@
       root.querySelector(`fieldset[data-s="${si}"] .section-total`).textContent =
         [sSq ? `${fmt(round2(sSq))} sq ft` : '', sLf ? `${fmt(round2(sLf))} LF` : ''].filter(Boolean).join(' · ');
     });
+    state.screws = state.header.auto_screws ? figureScrews() : { lines: [], missing: [] };
+    let screwTotal = 0;
+    for (const l of state.screws.lines) {
+      if (l.unit_price === '') continue;
+      const amt = round2(l.pieces * l.unit_price);
+      screwTotal += amt;
+      lines += amt;
+      if (productById.get(l.product_id)?.taxable !== false) taxable += amt;
+    }
+    root.querySelector('#screws-lines').innerHTML = screwLinesHtml();
+    root.querySelector('#screws-box .section-total').textContent = screwTotal ? money(round2(screwTotal)) : '';
     const delivery = Number(state.header.delivery_charge) || 0;
     const discount = Number(state.header.discount_amount) || 0;
     root.querySelector('#t-sqft').textContent = fmt(round2(sqft));
@@ -342,6 +410,10 @@
         r.tr.outerHTML = rowHtml(r.row, s, i);
       }
     }
+    if (t.dataset.h === 'auto_screws') { toggleScrews(t.checked); return; }
+    if (t.dataset.h === 'framing') {
+      root.querySelector('#screws-box').innerHTML = screwControlsHtml();
+    }
     if (t.dataset.h === 'customer_id') {
       const c = customers.find((x) => x.id === Number(t.value));
       if (c) {
@@ -355,6 +427,30 @@
     }
     recompute();
   });
+
+  // Turning automatic screws off keeps the screws figured so far as ordinary
+  // lines; turning it on replaces a hand-made Screws section.
+  function toggleScrews(on) {
+    if (on) {
+      const i = state.sections.findIndex((s) => s.label === 'Screws');
+      if (i >= 0 && (!state.sections[i].items.some((r) => r.product_id)
+          || window.confirm('Replace the Screws section you typed with screws figured from the panels?'))) {
+        state.sections.splice(i, 1);
+      }
+      state.header.auto_screws = true;
+    } else {
+      const figured = state.screws.lines;
+      state.header.auto_screws = false;
+      if (figured.length) {
+        state.sections.push({
+          section_id: state.screwSectionId, area: 'other', label: 'Screws',
+          items: figured.map((l) => toRow({ ...l, unit_price: l.unit_price === '' ? '' : Number(l.unit_price).toFixed(2) })),
+        });
+        state.screwSectionId = null;
+      }
+    }
+    render();
+  }
 
   function addRow(si) {
     const items = state.sections[si].items;
@@ -433,6 +529,8 @@
       }
       sections.push({ section_id: s.section_id, area: s.area, label: s.label, items });
     }
+    // The server figures the screws itself; this only keeps the section's place.
+    if (state.header.auto_screws) sections.push({ section_id: state.screwSectionId, area: 'other', label: 'Screws', auto: true, items: [] });
     button.disabled = true;
     try {
       const res = await fetch(state.header.order_id ? `/orders/${state.header.order_id}` : '/orders', {
