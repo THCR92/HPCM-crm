@@ -604,3 +604,54 @@ test('screws: per-profile rules for through-fastener, nail flange and snap lock 
   assert.match(page, /#10 1\.5 Woodtite Screws/);
   assert.strictEqual((await fetch(`${base}/admin/screws`)).status, 200);
 });
+
+test('trim screws: own lines in the trim color, choice per line, quote picks the screw type', async () => {
+  const { rows: [c] } = await query(
+    "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const [red, tan] = (await query(`INSERT INTO colors (name, finish) VALUES ('Trim Red ' || gen_random_uuid(), 'smooth'),
+    ('Trim Tan ' || gen_random_uuid(), 'smooth') RETURNING color_id`)).rows.map((r) => r.color_id);
+  const [pbr, ridge, gable, woodtite, selfDrill] = await Promise.all(['PNL-PBR-26', 'TRM-RIDGE-26', 'TRM-GBL-2X4',
+    'SCR-10-1-5-WOODTITE-SCREWS', 'SCR-SD-125'].map((s) => productId(s)));
+  const trim = (ridgeOption) => ({ area: 'trim', items: [
+    // 10 ridge cap @ 10': 2 every 18" -> 7 spots x 2 = 14 each = 140 (every 9": 14 x 2 = 28 each = 280)
+    { product_id: ridge, color_id: tan, pieces: 10, width_in: 13, unit_price: 44.20, screw_option: ridgeOption },
+    // 5 gable @ 10': 2 every 2' -> 10 each = 50
+    { product_id: gable, color_id: tan, pieces: 5, length_in: 120, unit_price: 30 }] });
+  const panels = { area: 'roof', items: [{ product_id: pbr, color_id: red, pieces: 20, length_in: 200, unit_price: 5.65 }] };
+  const save = async (id, o) => (await post(id ? `/orders/${id}` : '/orders',
+    { customer_id: c.customer_id, auto_screws: true, framing: 'wood', ...o })).json();
+  let out = await save(null, { sections: [panels, trim()] });
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const screws = async () => (await query(`SELECT product_id, color_id, pieces::int, description FROM order_items
+    WHERE order_id = $1 AND product_id IN (SELECT product_id FROM products WHERE category = 'fastener') ORDER BY line_no`, [id])).rows;
+  let rows = await screws();
+  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.color_id, r.pieces]), [[woodtite, red, 4], [woodtite, tan, 1]]);
+  assert.match(rows[1].description, /^190 screws for 10 Ridge Cap 26 GA, 5 Gable 2x4, 250 per bag$/);
+
+  out = await save(id, { sections: [panels, trim('every 9"')] });
+  assert.ok(out.ok, out.error);
+  rows = await screws();
+  assert.match(rows[1].description, /^330 screws/);
+  assert.strictEqual(rows[1].pieces, 2);
+  assert.strictEqual((await query("SELECT screw_option FROM order_items WHERE order_id = $1 AND product_id = $2", [id, ridge])).rows[0].screw_option, 'every 9"');
+
+  out = await save(id, { framing: 'steel', sections: [panels, trim()] });
+  assert.deepStrictEqual((await screws()).map((r) => [r.product_id, r.color_id]), [[selfDrill, red], [selfDrill, tan]]);
+
+  // Trim with no panels: someone has to pick.
+  out = await save(id, { sections: [trim()] });
+  assert.match(out.error, /Pick which screws the trim gets/);
+  out = await save(id, { trim_screws_for: 'through_fastened', sections: [trim()] });
+  assert.ok(out.ok, out.error);
+  assert.deepStrictEqual((await screws()).map((r) => [r.product_id, r.color_id, r.pieces]), [[woodtite, tan, 1]]);
+  out = await save(id, { trim_screws_for: 'none', sections: [trim()] });
+  assert.deepStrictEqual(await screws(), []);
+  out = await save(id, { trim_screws_for: 'concealed', sections: [trim()] });
+  assert.deepStrictEqual(await screws(), []); // no standing seam rules for these yet
+
+  const manager = await signIn('manager');
+  const sales = await signIn('sales');
+  assert.strictEqual((await fetch(`${base}/admin/screws?for=i:${ridge}`, { headers: { cookie: manager } })).status, 200);
+  assert.strictEqual((await fetch(`${base}/admin/screws`, { headers: { cookie: sales } })).status, 403);
+});

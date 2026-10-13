@@ -78,7 +78,7 @@ async function loadCatalog() {
            p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
            p.flat_extra_in AS flat_extra, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
-           pp.fastening, p.profile_id, pp.name AS profile_name
+           pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name
     FROM products p
     LEFT JOIN v_current_prices cp USING (product_id)
     LEFT JOIN panel_profiles pp USING (profile_id)
@@ -100,11 +100,12 @@ async function loadCatalog() {
 // Which screw goes with which panels and framing (Admin > Screws).
 async function loadScrewRules(db = { query }) {
   const { rows } = await db.query(`
-    SELECT r.profile_id, r.framing, r.length_label, r.product_id, r.basis, r.qty, r.spacing_in, r.color_match,
-           r.is_default, p.name AS product_name, p.pricing_unit::text AS unit, p.category::text AS category,
+    SELECT r.profile_id, r.item_product_id, r.framing, r.panel_system, r.length_label, r.option_label, r.product_id,
+           r.basis, r.qty, r.spacing_in, r.color_match, r.is_default,
+           p.name AS product_name, p.pricing_unit::text AS unit, p.category::text AS category,
            p.pack_size, cp.unit_price AS price
-    FROM screw_rules r JOIN products p USING (product_id) LEFT JOIN v_current_prices cp USING (product_id)
-    ORDER BY r.profile_id, r.framing, r.sort_order, r.screw_rule_id`);
+    FROM screw_rules r LEFT JOIN products p USING (product_id) LEFT JOIN v_current_prices cp USING (product_id)
+    ORDER BY r.profile_id, r.item_product_id, r.framing, r.sort_order, r.screw_rule_id`);
   return rows;
 }
 
@@ -153,6 +154,7 @@ function parseHeader(b) {
     auto_screws: b.auto_screws === true || b.auto_screws === 'true',
     framing: b.framing === 'steel' ? 'steel' : 'wood',
     screw_length: text(b.screw_length),
+    trim_screws_for: ['through_fastened', 'concealed', 'none'].includes(b.trim_screws_for) ? b.trim_screws_for : null,
     delivery_charge: amount(b.delivery_charge, 'Delivery charge'),
     discount_amount: amount(b.discount_amount, 'Discount'),
     deposit_amount: amount(b.deposit_amount, 'Deposit'),
@@ -202,6 +204,7 @@ function parseSections(b, productsById) {
         width_in: width,
         unit_price: price,
         description: text(it.description, 4000),
+        screw_option: text(it.screw_option),
       };
     });
     return {
@@ -222,8 +225,11 @@ async function withScrews(sections, header, productsById) {
     return rest;
   }
   const lines = rest.flatMap((s) => s.items).map((i) => ({ ...i, product_id: i.product.id }));
-  const { lines: screws } = Screws.figure(lines, productsById, await loadScrewRules(),
-    { framing: header.framing, length: header.screw_length });
+  const { lines: screws, needsTrimChoice } = Screws.figure(lines, productsById, await loadScrewRules(),
+    { framing: header.framing, length: header.screw_length, trimFor: header.trim_screws_for });
+  if (needsTrimChoice) {
+    throw new UserError('Pick which screws the trim gets ("Trim screws for", in the Screws section at the bottom).');
+  }
   if (!screws.length) return rest;
   const items = screws.map((l) => {
     const p = productsById.get(l.product_id);
@@ -235,7 +241,7 @@ async function withScrews(sections, header, productsById) {
     }
     return {
       order_item_id: null, product: p, color_id: l.color_id, pieces: l.pieces, length_in: null, width_in: null,
-      unit_price: l.unit_price, description: l.description,
+      unit_price: l.unit_price, description: l.description, screw_option: null,
     };
   });
   return [...rest, {
@@ -250,7 +256,8 @@ async function saveOrder(orderId, body) {
   if (!orderId) header.created_by = userName();
   const { rows: prodRows } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.taxable, p.max_length_in,
-           p.girth_in AS girth, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov
+           p.girth_in AS girth, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov,
+           pp.fastening::text AS fastening, p.standard_length_in
     FROM products p LEFT JOIN panel_profiles pp USING (profile_id)`);
   const productsById = new Map(prodRows.map((p) => [p.id, p]));
   const sections = await withScrews(parseSections(body, productsById), header, productsById);
@@ -307,7 +314,7 @@ async function saveOrder(orderId, body) {
       for (const it of s.items) {
         lineNo += 1;
         const vals = [sectionId, lineNo, it.product.id, it.color_id, it.pieces, it.length_in,
-          it.width_in, it.unit_price, it.description];
+          it.width_in, it.unit_price, it.description, it.screw_option];
         let itemId = it.order_item_id;
         if (itemId) {
           const r = await db.query(`
@@ -316,7 +323,7 @@ async function saveOrder(orderId, body) {
                    width_in = COALESCE($7, (SELECT pp.coverage_width_in FROM products p
                                             JOIN panel_profiles pp USING (profile_id)
                                             WHERE p.product_id = $3)),
-                   unit_price = $8, description = $9,
+                   unit_price = $8, description = $9, screw_option = $10,
                    pricing_unit = p.pricing_unit, taxable = p.taxable,
                    per_length_in = CASE WHEN p.pricing_unit = 'each' THEN p.standard_length_in END,
                    per_width_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
@@ -324,15 +331,15 @@ async function saveOrder(orderId, body) {
                    width_add_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
                                        THEN (fn_sized_trim_basis(p.product_id, $7::numeric)).width_add END
             FROM products p
-            WHERE p.product_id = $3 AND oi.order_item_id = $10 AND oi.order_id = $11`,
+            WHERE p.product_id = $3 AND oi.order_item_id = $11 AND oi.order_id = $12`,
           [...vals, itemId, orderId]);
           if (!r.rowCount) itemId = null;
         }
         if (!itemId) {
           const { rows: [r] } = await db.query(`
             INSERT INTO order_items (order_id, section_id, line_no, product_id, color_id, pieces,
-                                     length_in, width_in, unit_price, description)
-            VALUES ($10, $1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING order_item_id`, [...vals, orderId]);
+                                     length_in, width_in, unit_price, description, screw_option)
+            VALUES ($11, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING order_item_id`, [...vals, orderId]);
           itemId = r.order_item_id;
         }
         if (it.product.category === 'custom_trim') {

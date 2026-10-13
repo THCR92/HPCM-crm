@@ -95,7 +95,8 @@ async function productForm(res, p, error) {
       <div class="span2 actions"><button class="btn primary">${isNew ? 'Add product' : 'Save'}</button>
         <a class="btn" href="/admin/products">Cancel</a></div>
     </form>
-    ${isNew ? '' : html`<p class="muted">Change the price on the <a href="/products">Price list</a> page so the price history is kept.</p>
+    ${isNew ? '' : html`<p class="muted">Change the price on the <a href="/products">Price list</a> page so the price history is kept.
+      Screws for this product: <a href="/admin/screws?for=${p.category === 'panel' && p.profile_id ? `p:${p.profile_id}` : `i:${p.product_id}`}">screw rules</a>.</p>
     <form method="post" action="/admin/products/${p.product_id}/remove"
       onsubmit="return confirm('Remove this product?')"><button class="btn danger">Remove product</button></form>`}`,
   }));
@@ -196,81 +197,124 @@ router.post('/admin/products/:id(\\d+)/remove', need('catalog'), async (req, res
 // ---------------------------------------------------------------------------
 // Screw rules: which screw quotes get for each kind of panel and framing
 // ---------------------------------------------------------------------------
-const FRAMING = { wood: 'Wood framing', steel: 'Steel framing', any: 'Any framing' };
+const FRAMING = { any: 'Any framing', wood: 'Wood framing', steel: 'Steel framing' };
+const SYSTEM = { any: 'Any panels', through_fastened: 'Through-fastener panels', concealed: 'Standing seam' };
+const PER = [['square', 'square (100 sq ft)'], ['each', 'piece (each)'],
+  ...[6, 9, 12, 18, 24, 36, 48].map((n) => [String(n), `every ${n % 12 ? `${n}"` : `${n / 12}'`}`])];
 
-router.get('/admin/screws', need('catalog'), async (req, res) => {
+router.get('/admin/screws', need('screws'), async (req, res) => {
+  const [kind, forId] = String(req.query.for || '').split(':');
+  const only = ['p', 'i'].includes(kind) && Number(forId) ? { kind, id: Number(forId) } : null;
   const { rows: rules } = await query(`
-    SELECT r.*, pp.name AS profile_name, p.name AS product_name, p.pricing_unit, p.pack_size, cp.unit_price
-    FROM screw_rules r JOIN panel_profiles pp USING (profile_id) JOIN products p ON p.product_id = r.product_id
+    SELECT r.*, pp.name AS profile_name, ip.name AS item_name, ip.category AS item_category,
+           p.name AS product_name, p.pricing_unit, p.pack_size, cp.unit_price
+    FROM screw_rules r
+    LEFT JOIN panel_profiles pp ON pp.profile_id = r.profile_id
+    LEFT JOIN products ip ON ip.product_id = r.item_product_id
+    LEFT JOIN products p ON p.product_id = r.product_id
     LEFT JOIN v_current_prices cp ON cp.product_id = r.product_id
-    ORDER BY pp.name, r.framing, r.sort_order, r.screw_rule_id`);
+    WHERE ($1::text IS NULL OR ($1 = 'p' AND r.profile_id = $2) OR ($1 = 'i' AND r.item_product_id = $2))
+    ORDER BY r.profile_id IS NULL, pp.name, ip.name, r.framing, r.panel_system, r.sort_order, r.screw_rule_id`,
+  [only ? only.kind : null, only ? only.id : null]);
   const { rows: profiles } = await query('SELECT profile_id, name FROM panel_profiles WHERE active ORDER BY name');
+  const { rows: items } = await query(`SELECT product_id, name FROM products
+    WHERE active AND category NOT IN ('panel', 'fastener', 'service', 'delivery')
+    ORDER BY array_position(enum_range(NULL::product_category), category), name`);
   const { rows: parts } = await query(`SELECT product_id, name FROM products
     WHERE category IN ('fastener', 'accessory') AND active ORDER BY category DESC, name`);
   const opt = (v, cur, label) => html`<option value="${v}" ${String(v) === String(cur ?? '') ? 'selected' : ''}>${label}</option>`;
+  const forOf = (r) => (r.profile_id ? `p:${r.profile_id}` : r.item_product_id ? `i:${r.item_product_id}` : '');
+  const perOf = (r) => (r.basis === 'spacing' ? String(Number(r.spacing_in)) : r.basis || 'square');
   const fields = (r = {}) => html`
-      <label>Panel<select name="profile_id">${profiles.map((p) => opt(p.profile_id, r.profile_id, p.name))}</select></label>
-      <label>Framing<select name="framing">${Object.entries(FRAMING).map(([k, v]) => opt(k, r.framing || 'any', v))}</select></label>
-      <label>Screw or clip<select name="product_id" required>${parts.map((p) => opt(p.product_id, r.product_id, p.name))}</select></label>
-      <label>How many<input name="qty" type="number" step="0.01" min="0.01" value="${r.qty ?? ''}" required style="width:5rem"></label>
-      <label>Per<select name="per">
-        ${opt('square', r.basis === 'square' ? 'square' : '', 'square (100 sq ft)')}
-        ${[12, 24, 36, 48].map((n) => opt(n, r.basis === 'spacing' ? Number(r.spacing_in) : '', `every ${n / 12}' of panel`))}
+      <label>For<select name="for" required>
+        <optgroup label="Panels">${profiles.map((p) => opt(`p:${p.profile_id}`, forOf(r), p.name))}</optgroup>
+        <optgroup label="Trim and accessories">${items.map((p) => opt(`i:${p.product_id}`, forOf(r), p.name))}</optgroup>
       </select></label>
-      <label>Length choice<input name="length_label" value="${r.length_label}" placeholder="none" style="width:6rem"></label>
+      <label>Framing<select name="framing">${Object.entries(FRAMING).map(([k, v]) => opt(k, r.framing || 'any', v))}</select></label>
+      <label>With<select name="panel_system">${Object.entries(SYSTEM).map(([k, v]) => opt(k, r.panel_system || 'any', v))}</select></label>
+      <label>Screw or clip<select name="product_id">
+        <option value="" ${r.product_id || !r.item_product_id ? '' : 'selected'}>Same screw as the panels</option>
+        ${parts.map((p) => opt(p.product_id, r.product_id, p.name))}</select></label>
+      <label>How many<input name="qty" type="number" step="0.01" min="0.01" value="${r.qty ?? ''}" required style="width:5rem"></label>
+      <label>Per<select name="per">${PER.map(([k, v]) => opt(k, perOf(r), v))}</select></label>
+      <label>Choice name<input name="choice" value="${r.length_label || r.option_label}" placeholder='none' style="width:7rem"></label>
       <label>Per bag<input name="pack_size" type="number" step="1" min="1" value="${r.pack_size ?? ''}" placeholder="each" style="width:5rem"></label>
-      <label class="check"><input type="checkbox" name="color_match" value="1" ${r.color_match !== false ? 'checked' : ''}> Match panel color</label>
-      <label class="check"><input type="checkbox" name="is_default" value="1" ${r.is_default ? 'checked' : ''}> Usual length</label>`;
+      <label class="check"><input type="checkbox" name="color_match" value="1" ${r.color_match !== false ? 'checked' : ''}> Match color</label>
+      <label class="check"><input type="checkbox" name="is_default" value="1" ${r.is_default ? 'checked' : ''}> Usual choice</label>`;
   const groups = new Map();
   for (const r of rules) {
-    if (!groups.has(r.profile_name)) groups.set(r.profile_name, []);
-    groups.get(r.profile_name).push(r);
+    const name = r.profile_name || r.item_name;
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(r);
   }
-  const noRules = profiles.filter((p) => !groups.has(p.name)).map((p) => p.name);
+  const noRules = only ? [] : profiles.filter((p) => !rules.some((r) => r.profile_id === p.profile_id)).map((p) => p.name);
+  const back = only ? `?for=${only.kind}:${only.id}` : '';
   res.send(layout({
     title: 'Screws', active: '/admin',
     body: html`
-    <h1>Screws and clips</h1>
+    <div class="page-head"><h1>Screws and clips${only && groups.size ? `: ${[...groups.keys()][0]}` : ''}</h1>
+      ${only ? html`<div class="actions"><a class="btn" href="/admin/screws">All rules</a></div>` : ''}</div>
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
     ${req.query.saved ? html`<div class="notice">Saved.</div>` : ''}
-    <p class="muted">New quotes add screws and clips from their panels using these rules. "Per square" counts
-      square feet of panel ÷ 100; "every 2'" counts along each panel, rounding each panel up. Rules with a
-      <strong>length choice</strong> are alternatives: the quote picks one (the usual one unless someone changes it).
-      Rules without one always apply. Amounts round up to whole bags.</p>
+    <details class="card"><summary>How these rules work</summary>
+      <ul class="muted">
+        <li>New quotes add screws and clips from their panels, trim and accessories using these rules.
+          Each piece is rounded up (a 10' piece with screws every 18" gets 7 spots), then totals round up to whole bags.</li>
+        <li><strong>Panels:</strong> "Framing" picks wood or steel; a <strong>choice name</strong> (like 1.5") makes it one of the
+          lengths the quote can pick, and "Usual choice" is the one picked unless someone changes it.</li>
+        <li><strong>Trim and accessories:</strong> "With" says which panels the rule goes with; the quote picks which screws its trim
+          gets. "Same screw as the panels" follows the quote's framing and length. A <strong>choice name</strong> (like every 18")
+          puts a choice on the quote line.</li>
+        <li>Screws match the color of the line they're for. Trim screws are their own lines.</li>
+      </ul></details>
     ${noRules.length ? html`<div class="alert">No rules yet for ${noRules.join(', ')}: those panels get no screws.</div>` : ''}
     ${[...groups].map(([name, list]) => html`
     <h2>${name}</h2>
     ${list.map((r) => html`
-    <form method="post" action="/admin/screws/${r.screw_rule_id}" class="card form-row">
+    <form method="post" action="/admin/screws/${r.screw_rule_id}${back}" class="card form-row">
       ${fields(r)}
-      <span class="muted small">${r.unit_price === null ? html`<span class="missing-text">No price</span>`
+      <span class="muted small">${!r.product_id ? '' : r.unit_price === null ? html`<span class="missing-text">No price</span>`
     : `${money(r.unit_price)}${r.pricing_unit === 'bag' ? '/bag' : ' each'}`}</span>
       <button class="btn">Save</button>
       <button class="btn danger" name="remove" value="1" onclick="return confirm('Remove this rule?')">Remove</button>
     </form>`)}`)}
+    ${only && !groups.size ? html`<p class="muted">No screw rules for this product yet.</p>` : ''}
     <h2>Add a rule</h2>
-    <form method="post" action="/admin/screws" class="card form-row">${fields()}<button class="btn primary">Add</button></form>
-    <p class="muted">A screw or clip that isn't listed? Add it as a product first (Admin &gt; Products).</p>`,
+    <form method="post" action="/admin/screws${back}" class="card form-row">${fields(only ? {
+    profile_id: only.kind === 'p' ? only.id : null, item_product_id: only.kind === 'i' ? only.id : null,
+    panel_system: only.kind === 'i' ? 'through_fastened' : 'any', basis: only.kind === 'i' ? 'spacing' : 'square', spacing_in: 24,
+  } : {})}<button class="btn primary">Add</button></form>
+    <p class="muted">A screw or clip that isn't listed? An Admin can add it as a product first (Admin &gt; Products).</p>`,
   }));
 });
 
 async function saveScrewRule(id, b) {
-  const spacing = b.per === 'square' ? null : Number(b.per);
+  const [kind, forId] = String(b.for || '').split(':');
+  const per = String(b.per || 'square');
+  const choice = String(b.choice || '').trim() || null;
+  const isPanel = kind === 'p';
   const r = {
-    profile_id: Number(b.profile_id),
+    profile_id: isPanel ? Number(forId) : null,
+    item_product_id: kind === 'i' ? Number(forId) : null,
     framing: FRAMING[b.framing] ? b.framing : 'any',
-    length_label: String(b.length_label || '').trim() || null,
-    product_id: Number(b.product_id),
-    basis: spacing ? 'spacing' : 'square',
+    panel_system: !isPanel && SYSTEM[b.panel_system] ? b.panel_system : 'any',
+    length_label: isPanel ? choice : null,
+    option_label: isPanel ? null : choice,
+    product_id: Number(b.product_id) || null,
+    basis: per === 'square' || per === 'each' ? per : 'spacing',
     qty: Number(b.qty),
-    spacing_in: spacing,
+    spacing_in: per === 'square' || per === 'each' ? null : Number(per),
     color_match: b.color_match === '1',
-    is_default: b.is_default === '1' && Boolean(String(b.length_label || '').trim()),
+    is_default: b.is_default === '1' && Boolean(choice),
     pack: String(b.pack_size || '').trim() === '' ? null : Math.round(Number(b.pack_size)),
   };
-  if (!r.profile_id || !r.product_id || !(r.qty > 0)) return 'Pick the panel and the screw, and enter how many.';
+  if (!(r.profile_id || r.item_product_id) || !(r.qty > 0)) return 'Pick what the rule is for and enter how many.';
+  if (isPanel && !r.product_id) return 'Panel rules need a screw or clip picked.';
+  if (isPanel && r.basis === 'each') return 'Panel rules count per square or along the panel, not per piece.';
+  if (!isPanel && r.basis === 'square') return 'Trim and accessory rules count along each piece or per piece, not per square.';
   if (r.pack !== null && !(r.pack > 0)) return 'Per bag must be a whole number.';
-  const cols = ['profile_id', 'framing', 'length_label', 'product_id', 'basis', 'qty', 'spacing_in', 'color_match', 'is_default'];
+  const cols = ['profile_id', 'item_product_id', 'framing', 'panel_system', 'length_label', 'option_label', 'product_id',
+    'basis', 'qty', 'spacing_in', 'color_match', 'is_default'];
   try {
     await tx(async (db) => {
       const { rows: [row] } = id
@@ -279,32 +323,39 @@ async function saveScrewRule(id, b) {
         : await db.query(`INSERT INTO screw_rules (${cols.join(', ')}, sort_order)
             VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')}, (SELECT COALESCE(max(sort_order), 0) + 1 FROM screw_rules))
             RETURNING screw_rule_id`, cols.map((c) => r[c]));
-      // One usual length per panel and framing.
+      // One usual choice per panel (and framing) or product (and panels).
       if (r.is_default) {
         await db.query(`UPDATE screw_rules SET is_default = false
-          WHERE profile_id = $1 AND framing = $2 AND screw_rule_id <> $3`, [r.profile_id, r.framing, row.screw_rule_id]);
+          WHERE screw_rule_id <> $1 AND COALESCE(profile_id, 0) = COALESCE($2, 0) AND COALESCE(item_product_id, 0) = COALESCE($3, 0)
+            AND framing = $4 AND panel_system = $5`,
+        [row.screw_rule_id, r.profile_id, r.item_product_id, r.framing, r.panel_system]);
       }
-      if (r.pack) await db.query('UPDATE products SET pack_size = $2 WHERE product_id = $1', [r.product_id, r.pack]);
+      if (r.pack && r.product_id) await db.query('UPDATE products SET pack_size = $2 WHERE product_id = $1', [r.product_id, r.pack]);
     });
   } catch (err) {
-    if (err.code === '23505') return 'That panel already has that screw for that framing and length.';
+    if (err.code === '23505') return 'That rule is already there.';
     throw err;
   }
   return null;
 }
 
-router.post('/admin/screws', need('catalog'), async (req, res) => {
-  const err = await saveScrewRule(null, req.body);
-  res.redirect(`/admin/screws?${err ? `error=${encodeURIComponent(err)}` : 'saved=1'}`);
+const screwsBack = (req, err) => {
+  const params = new URLSearchParams();
+  if (req.query.for) params.set('for', req.query.for);
+  params.set(err ? 'error' : 'saved', err || '1');
+  return `/admin/screws?${params}`;
+};
+
+router.post('/admin/screws', need('screws'), async (req, res) => {
+  res.redirect(screwsBack(req, await saveScrewRule(null, req.body)));
 });
 
-router.post('/admin/screws/:id(\\d+)', need('catalog'), async (req, res) => {
+router.post('/admin/screws/:id(\\d+)', need('screws'), async (req, res) => {
   if (req.body.remove === '1') {
     await query('DELETE FROM screw_rules WHERE screw_rule_id = $1', [req.params.id]);
-    return res.redirect('/admin/screws?saved=1');
+    return res.redirect(screwsBack(req));
   }
-  const err = await saveScrewRule(Number(req.params.id), req.body);
-  res.redirect(`/admin/screws?${err ? `error=${encodeURIComponent(err)}` : 'saved=1'}`);
+  res.redirect(screwsBack(req, await saveScrewRule(Number(req.params.id), req.body)));
 });
 
 // ---------------------------------------------------------------------------

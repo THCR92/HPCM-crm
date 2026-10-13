@@ -62,11 +62,14 @@ works out the square feet, linear feet and price for every line.
   change per person (Admin > Users). Admins can always do everything: users, prices, sales tax,
   products, colors, finishes and suppliers (Admin page). Production doesn't see prices. Orders
   record who wrote, approved and last changed them.
-- **Screws and clips**: new quotes figure them from the panels (Screws section at the bottom), by
-  panel profile and framing (Admin > Screws and clips): PBR and Tuff Rib on wood use #10 1.5 Woodtite
-  (or 2 1/2" Woodtite) and on steel 1.25" Self Drilling, 90 per square; 1" Nail Flange uses 1" Panhead,
-  1 every 2' of panel; Snap Lock uses 1 clip and 2 panheads every 2'. Screws match the panel color and
-  round up to whole bags of 250. Untick "Figure screws automatically" to type them in instead.
+- **Screws and clips**: new quotes figure them from the panels, trim and accessories (Screws section
+  at the bottom). Rules live in Admin > Screws and clips (Admins and Managers; also linked from the
+  Price list). Panels: PBR and Tuff Rib on wood use #10 1.5 Woodtite (or 2 1/2" Woodtite) and on steel
+  1.25" Self Drilling, 90 per square; 1" Nail Flange uses 1" Panhead, 1 every 2'; Snap Lock uses 1 clip
+  and 2 panheads every 2'. Trim: ridge cap 2 every 18" (or 9", picked on the line), gable trim 2 every
+  2', using the same screw as the panels. Trim screws match the trim color and are their own lines;
+  the quote picks which screws trim gets (starting from its panels). Totals round up to bags of 250.
+  Untick "Figure screws automatically" to type them in instead.
 - **Drawings**: attach a PDF or picture (for example a reMarkable trim sketch with face lengths
   and bends) to the whole order or to one line, under "Drawings & files" on the order page.
   The line shows a 📎 link; pictures print on their own page after the cut sheet. Files are

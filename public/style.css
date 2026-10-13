@@ -196,3 +196,5 @@ tr.inactive td { color: var(--muted); }
 .section.screws .screws-head label { display: flex; flex-direction: row; align-items: center; gap: .4rem; }
 .section.screws .screws-head select { width: auto; text-transform: none; font-weight: 400; }
 .missing-text { color: #a12a2a; font-weight: 600; }
+.screw-opt { display: flex; flex-direction: row; align-items: center; gap: .35rem; font-size: .8rem; color: var(--muted); margin-top: .2rem; }
+.screw-opt select { width: auto; padding: .1rem .3rem; font-size: .8rem; }

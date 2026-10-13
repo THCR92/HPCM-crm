@@ -28,11 +28,12 @@ const PERMISSIONS = {
   production: 'Log production runs and move orders to In production, Ready or Completed',
   inventory: 'Receive and adjust coils and stock',
   catalog: 'Change prices, sales tax, products, colors, finishes and suppliers',
+  screws: 'Edit which screws and clips go with panels, trim and accessories',
 };
 
 const ROLE_DEFAULTS = {
   admin: Object.keys(PERMISSIONS),
-  manager: ['prices', 'quotes', 'approve', 'status', 'customers', 'drawings', 'production', 'inventory'],
+  manager: ['prices', 'quotes', 'approve', 'status', 'customers', 'drawings', 'production', 'inventory', 'screws'],
   sales: ['prices', 'quotes', 'approve', 'customers', 'drawings'],
   production: ['drawings', 'production', 'inventory'],
 };

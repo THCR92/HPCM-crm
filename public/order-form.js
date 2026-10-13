@@ -56,6 +56,7 @@
       width_in: it.width_in ?? '',
       unit_price: it.unit_price ?? '',
       description: it.description || '',
+      screw_option: it.screw_option || '',
     };
   };
   const autoSection = (order.sections || []).find((s) => s.is_auto);
@@ -167,6 +168,16 @@
     return '';
   }
 
+  // A choice of screw spacing on the line, e.g. ridge cap every 18" or every 9".
+  function screwOptionHtml(row, p) {
+    if (!p) return '';
+    const { options, usual } = window.Screws.lineOptions(screwRules, p.id);
+    if (options.length < 2) return '';
+    const cur = options.includes(row.screw_option) ? row.screw_option : usual;
+    return `<label class="screw-opt">Screws <select data-f="screw_option">${options.map((o) =>
+      `<option ${o === cur ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
+  }
+
   function rowHtml(row, si, ii) {
     const p = productById.get(Number(row.product_id));
     const needsLength = p && (p.unit === 'sqft' || p.unit === 'lf');
@@ -179,7 +190,7 @@
         <input class="in" data-f="inch" value="${esc(row.inch)}" aria-label="Inches"><span class="unit">"</span>
       </td>
       <td><select data-f="product_id" class="product">${productOptions(row.product_id)}</select>
-        <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)"></td>
+        <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${screwOptionHtml(row, p)}</td>
       <td><select data-f="color_id" class="color">${colorOptions(row.color_id)}</select></td>
       <td class="width">${widthCell(row, p)}</td>
       <td class="num billed"></td>
@@ -270,9 +281,10 @@
   function figureScrews() {
     const lines = state.sections.flatMap((s) => s.items).map((row) => ({
       product_id: row.product_id, color_id: row.color_id, pieces: row.pieces, length_in: lengthIn(row), width_in: row.width_in,
+      screw_option: row.screw_option,
     }));
     return window.Screws.figure(lines, productById, screwRules,
-      { framing: state.header.framing, length: state.header.screw_length });
+      { framing: state.header.framing, length: state.header.screw_length, trimFor: state.header.trim_screws_for || '' });
   }
 
   function screwControlsHtml() {
@@ -286,10 +298,25 @@
             <option value="wood" ${h.framing !== 'steel' ? 'selected' : ''}>Wood</option>
             <option value="steel" ${h.framing === 'steel' ? 'selected' : ''}>Steel</option></select></label>
           ${lengths.length ? `<label>Length <select data-h="screw_length">${lengths.map((l) =>
-            `<option ${l === current ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>` : ''}` : ''}
+            `<option ${l === current ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>` : ''}
+          ${trimScrewsHtml()}` : ''}
         <span class="section-total"></span>
       </div>
       <div id="screws-lines"></div>`;
+  }
+
+  // "Trim screws for": shown when a line has trim with screw rules. Blank means
+  // "from the panels on the quote"; with no panels someone has to pick.
+  function trimScrewsHtml() {
+    const hasTrim = state.sections.some((s) => s.items.some((r) => r.product_id && window.Screws.hasRules(screwRules, r.product_id)));
+    if (!hasTrim) return '';
+    const h = state.header;
+    const inferred = state.screws.trimFor && !h.trim_screws_for ? state.screws.trimFor : '';
+    const opt = (v, label) => `<option value="${v}" ${(h.trim_screws_for || '') === v ? 'selected' : ''}>${label}</option>`;
+    return `<label>Trim screws for <select data-h="trim_screws_for" class="${state.screws.needsTrimChoice ? 'missing' : ''}">
+        ${opt('', inferred ? `${window.Screws.SYSTEMS[inferred]} (from the panels)` : 'Pick one…')}
+        ${opt('through_fastened', 'Through-fastener panels')}${opt('concealed', 'Standing seam')}${opt('none', 'No trim screws')}
+      </select></label>`;
   }
 
   function screwLinesHtml() {
@@ -297,10 +324,12 @@
     const warn = missing.length ? `<p class="alert small">No screws are set up for ${esc(missing.join(' or '))} on
       ${state.header.framing === 'steel' ? 'steel' : 'wood'} framing, so those panels get none. Add them as lines, or an Admin can set them up under Admin &gt; Screws.</p>` : '';
     if (!state.header.auto_screws) {
-      return '<p class="muted small">Add screws as lines yourself, or tick the box to figure them from the panels.</p>';
+      return '<p class="muted small">Add screws as lines yourself, or tick the box to figure them from the panels and trim.</p>';
     }
-    if (!lines.length) return `${warn}<p class="muted small">Screws and clips are added here from the panels on this quote.</p>`;
-    return `${warn}<table class="lines edit">
+    const pick = state.screws.needsTrimChoice
+      ? '<p class="alert small">This quote has trim but no panels. Pick which screws the trim gets ("Trim screws for").</p>' : '';
+    if (!lines.length) return `${pick}${warn}<p class="muted small">Screws and clips are added here from the panels and trim on this quote.</p>`;
+    return `${pick}${warn}<table class="lines edit">
       <thead><tr><th>Qty</th><th>Screws</th><th>Color</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
       <tbody>${lines.map((l) => {
         const p = productById.get(l.product_id);
@@ -356,6 +385,10 @@
       lines += amt;
       if (productById.get(l.product_id)?.taxable !== false) taxable += amt;
     }
+    const box = root.querySelector('#screws-box');
+    const focused = document.activeElement && box.contains(document.activeElement) ? document.activeElement.dataset.h : null;
+    box.innerHTML = screwControlsHtml();
+    if (focused) box.querySelector(`[data-h="${focused}"]`)?.focus();
     root.querySelector('#screws-lines').innerHTML = screwLinesHtml();
     root.querySelector('#screws-box .section-total').textContent = screwTotal ? money(round2(screwTotal)) : '';
     const delivery = Number(state.header.delivery_charge) || 0;
@@ -411,9 +444,6 @@
       }
     }
     if (t.dataset.h === 'auto_screws') { toggleScrews(t.checked); return; }
-    if (t.dataset.h === 'framing') {
-      root.querySelector('#screws-box').innerHTML = screwControlsHtml();
-    }
     if (t.dataset.h === 'customer_id') {
       const c = customers.find((x) => x.id === Number(t.value));
       if (c) {
@@ -525,6 +555,7 @@
           width_in: row.width_in,
           unit_price: row.unit_price,
           description: row.description,
+          screw_option: row.screw_option || null,
         });
       }
       sections.push({ section_id: s.section_id, area: s.area, label: s.label, items });
