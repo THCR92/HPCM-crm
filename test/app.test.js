@@ -827,3 +827,57 @@ test('supply costs: receipts blend into an average cost; orders carry that cost 
   assert.match(row, /,4,each,12,24,50$/);
   assert.match(await (await fetch(`${base}/reports`)).text(), /Inventory at cost/);
 });
+
+test('barcodes: labels print, scans open the right page, pack and check catches wrong bundles', async () => {
+  const form = (path, body, cookie) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(cookie ? { cookie } : {}) }, body: new URLSearchParams(body).toString() });
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Packer ' || gen_random_uuid()) RETURNING customer_id");
+  const make = async () => {
+    const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'wall', items: [
+      { product_id: await productId('PNL-PBR-26'), pieces: 4, length_in: 150, unit_price: 5 },
+      { product_id: await productId('BOOT-1-ZIP'), pieces: 2, unit_price: 20 }] }] });
+    const id = Number((await res.json()).redirect.split('/').pop());
+    const { rows } = await query('SELECT order_item_id FROM order_items WHERE order_id = $1 ORDER BY line_no', [id]);
+    const { rows: [o] } = await query('SELECT order_number FROM orders WHERE order_id = $1', [id]);
+    return { id, number: o.order_number, lines: rows.map((r) => r.order_item_id) };
+  };
+  const a = await make();
+  const b = await make();
+
+  const labels = await (await fetch(`${base}/labels/order/${a.id}`)).text();
+  assert.match(labels, /<svg/);
+  assert.ok(labels.includes(`<div class="code">L${a.lines[0]}</div>`));
+  for (const p of ['/labels/coils', '/labels/supplies', '/labels/tools']) assert.strictEqual((await fetch(base + p)).status, 200, p);
+
+  let res = await fetch(`${base}/scan?code=${encodeURIComponent(`https://www.hpcmcrm.net/s/${a.number}`)}`, { redirect: 'manual' });
+  assert.strictEqual(res.headers.get('location'), `/orders/${a.id}`);
+  res = await fetch(`${base}/s/L${a.lines[1]}`, { redirect: 'manual' });
+  assert.strictEqual(res.headers.get('location'), `/orders/${a.id}/pack`);
+  assert.strictEqual((await fetch(`${base}/scan?code=nope-123`)).status, 404);
+
+  const pack = (code, extra = {}) => form(`/orders/${a.id}/pack`, { code, ...extra }).then((r) => decodeURIComponent(r.headers.get('location')));
+  assert.match(await pack(`L${a.lines[0]}`), /isn't open for packing/); // still a quote
+  await form(`/orders/${a.id}/status`, { status: 'confirmed' });
+  assert.match(await pack(`L${b.lines[0]}`), new RegExp(`WRONG ORDER.*${b.number}`));
+  assert.match(await pack(`https://www.hpcmcrm.net/s/L${a.lines[0]}`), /ok=Line 1.*1 to go/);
+  assert.match(await pack(`L${a.lines[0]}`), /already checked/);
+  res = await form(`/orders/${a.id}/pack/complete`, {});
+  assert.match(decodeURIComponent(res.headers.get('location')), /aren't checked/);
+  assert.match(await pack(`L${a.lines[1]}`), /All lines checked/);
+  assert.match(await (await fetch(`${base}/orders/${a.id}/pack`)).text(), /Mark order completed/);
+  assert.strictEqual((await form(`/orders/${a.id}/pack`, { code: `L${a.lines[1]}` }, await signIn('sales'))).status, 403);
+  await form(`/orders/${a.id}/pack/complete`, {});
+  const { rows: [done] } = await query('SELECT status, inspected_by FROM orders WHERE order_id = $1', [a.id]);
+  assert.strictEqual(done.status, 'completed');
+  assert.ok(done.inspected_by);
+  const { rows: [took] } = await query("SELECT count(*)::int AS n FROM supply_transactions WHERE order_id = $1 AND txn_type = 'order'", [a.id]);
+  assert.strictEqual(took.n, 1);
+
+  // Editing an order clears its checks.
+  await form(`/orders/${b.id}/status`, { status: 'confirmed' });
+  await form(`/orders/${b.id}/pack`, { code: `L${b.lines[0]}` });
+  await post(`/orders/${b.id}`, { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'wall', items: [
+    { order_item_id: b.lines[0], product_id: await productId('PNL-PBR-26'), pieces: 5, length_in: 150, unit_price: 5 }] }] });
+  const { rows: [cleared] } = await query('SELECT count(*)::int AS n FROM order_items WHERE order_id = $1 AND packed_at IS NOT NULL', [b.id]);
+  assert.strictEqual(cleared.n, 0);
+});

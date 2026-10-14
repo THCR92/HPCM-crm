@@ -82,6 +82,7 @@ router.get('/supplies', async (req, res) => {
       <div class="actions">
         <a class="btn ${lowOnly ? '' : 'primary'}" href="/supplies">Everything</a>
         <a class="btn ${lowOnly ? 'primary' : ''}" href="/supplies?show=low">Running low (${lowCount})</a>
+        <a class="btn" href="/labels/supplies">Print shelf labels</a>
       </div></div>
     <p class="muted">Boots, jacks, screws and accessories. Supplies on an order come out of stock when the order is
       marked Completed, and go back if it's reopened. "On orders" is what approved orders still need. Screws are counted
@@ -185,7 +186,8 @@ router.get('/supplies/:id(\\d+)', async (req, res) => {
     title: s.name, active: '/supplies',
     body: html`
     <p><a href="/supplies">← Supplies</a></p>
-    <h1>${s.name}${s.color ? html` <span class="muted">${s.color}</span>` : ''}</h1>
+    <div class="page-head"><h1>${s.name}${s.color ? html` <span class="muted">${s.color}</span>` : ''}</h1>
+      <a class="btn" href="/labels/supplies?id=${s.supply_id}">Print label</a></div>
     ${alert(req)}
     <div class="rtiles">
       <div class="rtile"><div class="n">${qty(s.qty_on_hand, u) || '0'}</div><div class="label">On hand</div></div>
@@ -291,7 +293,7 @@ router.get('/tools', async (req, res) => {
     title: 'Tools', active: '/tools',
     body: html`
     <div class="page-head"><h1>Tools</h1>
-      <div class="actions"><a class="btn" href="/tools${req.query.show === 'all' ? '' : '?show=all'}">${req.query.show === 'all' ? 'Hide retired' : 'Show retired'}</a></div></div>
+      <div class="actions"><a class="btn" href="/labels/tools">Print tool labels</a><a class="btn" href="/tools${req.query.show === 'all' ? '' : '?show=all'}">${req.query.show === 'all' ? 'Hide retired' : 'Show retired'}</a></div></div>
     <p class="muted">Every tool the shop owns. To rent one out, put its rental item on a quote (the quantity is the
       number of days). Once the quote is approved, check the tool out and back in at the bottom of the order.</p>
     ${alert(req)}
@@ -389,7 +391,8 @@ router.get('/tools/:id(\\d+)', async (req, res) => {
     title: t.name, active: '/tools',
     body: html`
     <p><a href="/tools">← Tools</a></p>
-    <h1>${t.name}${t.tag ? html` <span class="muted">#${t.tag}</span>` : ''}</h1>
+    <div class="page-head"><h1>${t.name}${t.tag ? html` <span class="muted">#${t.tag}</span>` : ''}</h1>
+      <a class="btn" href="/labels/tools?id=${t.tool_id}">Print label</a></div>
     ${alert(req)}
     <p>${toolState(t)}</p>
     ${can('prices') && (t.purchase_cost || earned.amount) ? html`<div class="rtiles" style="margin-bottom:1rem">

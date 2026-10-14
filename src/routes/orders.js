@@ -352,6 +352,8 @@ async function saveOrder(orderId, body) {
         }
       }
     }
+    // Lines may have changed, so any pack checks have to be done again.
+    await db.query('UPDATE order_items SET packed_at = NULL, packed_by = NULL WHERE order_id = $1 AND packed_at IS NOT NULL', [orderId]);
     return orderId;
   });
 }
@@ -652,6 +654,8 @@ router.get('/:id(\\d+)', async (req, res) => {
         ${editable && can('quotes') ? html`<a class="btn primary" href="/orders/${o.order_id}/edit">Edit ${docName.toLowerCase()}</a>` : ''}
         ${prices ? html`<a class="btn" href="/orders/${o.order_id}/customer">Customer ${o.status === 'quote' ? 'quote' : 'copy'}</a>` : ''}
         <button class="btn" onclick="window.print()">Print cut sheet</button>
+        ${o.status !== 'quote' && o.status !== 'cancelled' ? html`<a class="btn" href="/labels/order/${o.order_id}">Labels</a>` : ''}
+        ${['confirmed', 'in_production', 'ready'].includes(o.status) && can('production') ? html`<a class="btn" href="/orders/${o.order_id}/pack">Pack &amp; check</a>` : ''}
         ${o.status !== 'invoiced' && nextStatuses.length ? html`
         <form method="post" action="/orders/${o.order_id}/status" class="inline">
           <select name="status">${nextStatuses.map((s) => html`<option value="${s}">${STATUS_LABEL[s]}</option>`)}</select>

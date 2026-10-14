@@ -98,6 +98,16 @@ works out the square feet, linear feet and price for every line.
   with the quantity as the number of days, and once the quote is approved check the tool out
   ("Picked up", with a due-back date) and back in ("Returned", with a note) at the bottom of
   the order. Overdue tools are flagged, and the order shows when a tool was out longer than billed.
+- **Barcodes**: every label has a QR code holding a link (`/s/<code>`), so a phone camera opens
+  the page, and a 2D barcode scanner (it types what it reads) works in the "Scan or type a code"
+  box on every page. Codes: `HP-10023` order, `L<id>` order line, `C<id>` coil, `S<id>` supply
+  shelf, `T<id>` tool (coil and tool tags typed by hand work too). Labels print from the order
+  (one for the whole order and one per line), Coils, Supplies and Tools pages, on Avery 5163
+  sheets (4" x 2", 10 per page) or label printers (4" x 2" or 2.25" x 1.25").
+- **Pack and check** (`/orders/:id/pack`, Production permission): scan each line's label as its
+  bundle is checked against the order. Labels from another order are flagged, and a line can be
+  checked without its label. When every line is checked the order can be marked Completed
+  (inspected by = whoever checked). Editing the order clears its checks.
 - **Reports** (`/reports`, Admins and Managers): pick a date range (or a preset like This
   year) and see sales, quotes written, quote win rate (by count and dollars), average order,
   days from quote to approval, open quotes and work in the shop, quoted vs sold by week or

@@ -82,6 +82,7 @@ ${user ? html`<header class="topbar">
   ${can('quotes', user) ? html`<a class="btn quote-btn" href="/orders/new">+ Quote</a>` : ''}
   <nav>${shown.map(([href, label]) =>
     html`<a href="${href}" class="${active === href ? 'active' : ''}">${label}</a>`)}</nav>
+  <form class="scan-box" method="get" action="/scan" role="search"><input name="code" placeholder="Scan or type a code" aria-label="Scan or type a code" autocomplete="off"></form>
   <div class="who"><a href="/account" title="My account">${user.full_name}</a>
     <form method="post" action="/logout" class="inline"><button class="linkish">Sign out</button></form></div>
 </header>` : ''}

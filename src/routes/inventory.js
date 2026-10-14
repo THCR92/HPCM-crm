@@ -53,7 +53,7 @@ router.get('/coils', async (req, res) => {
   res.send(layout({
     title: 'Coils', active: '/coils',
     body: html`
-    <div class="page-head"><h1>Coils</h1></div>
+    <div class="page-head"><h1>Coils</h1><div class="actions"><a class="btn" href="/labels/coils">Print coil labels</a></div></div>
     ${alert(req)}
     ${can('inventory') ? html`<details class="card" ${coils.length ? '' : 'open'}>
       <summary><strong>Receive a coil</strong></summary>
@@ -152,7 +152,7 @@ router.get('/coils/:id(\\d+)', async (req, res) => {
     title: `Coil ${c.coil_tag}`, active: '/coils',
     body: html`
     <div class="page-head"><h1>Coil ${c.coil_tag} <span class="badge">${COIL_STATUS[c.status]}</span></h1>
-      <a href="/coils">All coils</a></div>
+      <div class="actions"><a class="btn" href="/labels/coils?id=${c.coil_id}">Print label</a> <a href="/coils">All coils</a></div></div>
     ${alert(req)}
     <div class="card"><dl class="details">
       <dt>Color</dt><dd>${c.color_label}</dd>
