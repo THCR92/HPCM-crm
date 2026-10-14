@@ -38,7 +38,7 @@ router.get('/supplies', async (req, res) => {
     SELECT p.product_id, p.name, p.category, p.pricing_unit, p.stock_by_color, p.pack_size,
            s.supply_id, s.color_id, col.label AS color, COALESCE(s.qty_on_hand, 0) AS on_hand,
            COALESCE(c.qty, 0) AS committed, COALESCE(s.qty_on_hand, 0) - COALESCE(c.qty, 0) AS available,
-           s.reorder_at, s.location
+           s.reorder_at, s.location, s.avg_cost, COALESCE(s.qty_on_hand, 0) * s.avg_cost AS value
     FROM products p
     LEFT JOIN supply_stock s USING (product_id)
     LEFT JOIN v_colors col ON col.color_id = s.color_id
@@ -49,7 +49,8 @@ router.get('/supplies', async (req, res) => {
   const { rows: uncounted } = await query(`
     WITH committed AS (${COMMITTED})
     SELECT p.product_id, p.name, p.category, p.pricing_unit, p.stock_by_color, NULL::int AS supply_id,
-           c.color_id, col.label AS color, 0 AS on_hand, c.qty AS committed, -c.qty AS available
+           c.color_id, col.label AS color, 0 AS on_hand, c.qty AS committed, -c.qty AS available,
+           NULL::numeric AS reorder_at, NULL AS location, NULL::numeric AS avg_cost, NULL::numeric AS value
     FROM committed c JOIN products p USING (product_id) LEFT JOIN v_colors col ON col.color_id = c.color_id
     WHERE p.active AND p.stock_by_color AND NOT EXISTS (SELECT 1 FROM supply_stock s
       WHERE s.product_id = c.product_id AND s.color_id IS NOT DISTINCT FROM c.color_id)`);
@@ -70,6 +71,9 @@ router.get('/supplies', async (req, res) => {
     ORDER BY array_position(enum_range(NULL::product_category), category), name`);
   const { rows: colors } = await query(`SELECT color_id, label FROM v_colors WHERE active ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
   const lowCount = all.filter(low).length;
+  const prices = can('prices');
+  const totalValue = all.reduce((a, r) => a + (r.value > 0 ? r.value : 0), 0);
+  const noCost = all.filter((r) => r.on_hand > 0 && r.avg_cost === null).length;
 
   res.send(layout({
     title: 'Supplies', active: '/supplies',
@@ -83,6 +87,11 @@ router.get('/supplies', async (req, res) => {
       marked Completed, and go back if it's reopened. "On orders" is what approved orders still need. Screws are counted
       by color. To count something else (caulking, sealant), tick "Count on hand" on the product in Admin &gt; Products.</p>
     ${alert(req)}
+    <div class="rtiles" style="margin-bottom:1rem">
+      ${prices ? html`<div class="rtile"><div class="n">${money(totalValue)}</div><div class="label">Value on hand</div>
+        <div class="sub">at your average cost${noCost ? html`; <span class="low-text">${noCost} item${noCost === 1 ? '' : 's'} on hand with no cost yet</span>` : ''}</div></div>` : ''}
+      <div class="rtile ${lowCount ? 'warn' : ''}"><div class="n">${lowCount}</div><div class="label">Running low or short</div></div>
+    </div>
     ${can('inventory') ? html`<details class="card" ${all.some((r) => r.on_hand) ? '' : 'open'}>
       <summary><strong>Receive, count or take out</strong></summary>
       <form method="post" action="/supplies" class="form-grid" style="margin-top:.8rem">
@@ -99,6 +108,9 @@ router.get('/supplies', async (req, res) => {
           <option value="count">Counted (this is what's on the shelf)</option>
           <option value="adjust">Used, damaged or lost (take out)</option></select></label>
         <label>How many *<input name="qty" type="number" step="0.01" min="0" required></label>
+        ${prices ? html`<label>Cost each (per bag, roll or piece)<input name="unit_cost" type="number" step="0.0001" min="0"
+          placeholder="what you paid"></label><span class="muted small" style="align-self:end">Received: blends into the average cost.
+          Counted: sets the average cost.</span>` : ''}
         <label class="span2">Note<input name="note" placeholder="PO number, supplier, reason…"></label>
         <div class="span2 actions"><button class="btn primary">Save</button></div>
       </form>
@@ -110,7 +122,7 @@ router.get('/supplies', async (req, res) => {
     <h2>${h}</h2>
     <table class="list supplies">
       <thead><tr><th>Item</th><th>Color</th><th class="num">On hand</th><th class="num">On orders</th>
-        <th class="num">Available</th><th class="num">Reorder at</th><th>Where</th></tr></thead>
+        <th class="num">Available</th><th class="num">Reorder at</th><th>Where</th>${prices ? html`<th class="num">Cost each</th><th class="num">Value</th>` : ''}</tr></thead>
       <tbody>${list.map((r) => html`<tr class="${low(r) ? 'low' : ''}">
         <td>${r.supply_id ? html`<a href="/supplies/${r.supply_id}">${r.name}</a>` : r.name}</td>
         <td>${r.color || (r.stock_by_color ? html`<span class="muted">No color</span>` : '')}</td>
@@ -118,7 +130,8 @@ router.get('/supplies', async (req, res) => {
         <td class="num">${r.committed ? qty(r.committed, r.pricing_unit) : ''}</td>
         <td class="num"><strong>${qty(r.available, r.pricing_unit)}</strong>${low(r) ? html` <span class="low-tag">${r.available < 0 ? 'short' : 'low'}</span>` : ''}</td>
         <td class="num">${r.reorder_at === null ? '' : qty(r.reorder_at, r.pricing_unit)}</td>
-        <td>${r.location}</td></tr>`)}</tbody>
+        <td>${r.location}</td>${prices ? html`<td class="num">${r.avg_cost === null ? '' : money(r.avg_cost)}</td>
+        <td class="num">${r.value ? money(r.value) : ''}</td>` : ''}</tr>`)}</tbody>
     </table>`) : html`<p class="muted">${lowOnly ? 'Nothing is running low.' : 'Nothing is being counted yet.'}</p>`}
     ${noColorsYet.length && !lowOnly ? html`<p class="muted small">No colors counted yet: ${noColorsYet.map((r) => r.name).join(', ')}.</p>` : ''}`,
   }));
@@ -133,13 +146,15 @@ router.post('/supplies', need('inventory'), async (req, res) => {
   if (!(n >= 0) || String(b.qty).trim() === '') return back(res, '/supplies', 'Enter how many.');
   if (!TXN_LABEL[b.what] || b.what === 'order') return back(res, '/supplies', 'Pick what happened.');
   const colorId = p.stock_by_color ? Number(b.color_id) || null : null;
+  const cost = can('prices') && ['receive', 'count'].includes(b.what) ? optNum(b.unit_cost) : null;
+  if (cost !== null && !(cost >= 0)) return back(res, '/supplies', 'Cost must be zero or more.');
   const id = await tx(async (db) => {
     const supplyId = await supplyRow(db, p.product_id, colorId);
     const { rows: [s] } = await db.query('SELECT qty_on_hand FROM supply_stock WHERE supply_id = $1 FOR UPDATE', [supplyId]);
     const delta = b.what === 'receive' ? n : b.what === 'adjust' ? -n : n - s.qty_on_hand;
     if (delta !== 0 || b.what === 'count') {
-      await db.query(`INSERT INTO supply_transactions (supply_id, txn_type, qty_delta, performed_by, note)
-        VALUES ($1, $2, $3, $4, $5)`, [supplyId, b.what, delta, userName(), clean(b.note)]);
+      await db.query(`INSERT INTO supply_transactions (supply_id, txn_type, qty_delta, performed_by, note, unit_cost)
+        VALUES ($1, $2, $3, $4, $5, $6)`, [supplyId, b.what, delta, userName(), clean(b.note), cost]);
     }
     return supplyId;
   });
@@ -149,8 +164,9 @@ router.post('/supplies', need('inventory'), async (req, res) => {
 router.get('/supplies/:id(\\d+)', async (req, res) => {
   const { rows: [s] } = await query(`
     WITH committed AS (${COMMITTED})
-    SELECT s.*, p.name, p.pricing_unit, col.label AS color, COALESCE(c.qty, 0) AS committed
+    SELECT s.*, p.name, p.pricing_unit, col.label AS color, COALESCE(c.qty, 0) AS committed, cp.unit_price AS price
     FROM supply_stock s JOIN products p USING (product_id) LEFT JOIN v_colors col ON col.color_id = s.color_id
+    LEFT JOIN v_current_prices cp ON cp.product_id = s.product_id
     LEFT JOIN committed c ON c.product_id = s.product_id AND c.color_id IS NOT DISTINCT FROM s.color_id
     WHERE s.supply_id = $1`, [req.params.id]);
   if (!s) return res.status(404).send('Not found');
@@ -164,6 +180,7 @@ router.get('/supplies/:id(\\d+)', async (req, res) => {
       AND o.status IN ('confirmed', 'in_production', 'ready')
     GROUP BY o.order_id, c.display_name ORDER BY o.need_by NULLS LAST`, [s.product_id, s.color_id]);
   const u = s.pricing_unit;
+  const prices = can('prices');
   res.send(layout({
     title: s.name, active: '/supplies',
     body: html`
@@ -174,10 +191,16 @@ router.get('/supplies/:id(\\d+)', async (req, res) => {
       <div class="rtile"><div class="n">${qty(s.qty_on_hand, u) || '0'}</div><div class="label">On hand</div></div>
       <div class="rtile"><div class="n">${qty(s.committed, u) || '0'}</div><div class="label">On open orders</div></div>
       <div class="rtile"><div class="n">${qty(s.qty_on_hand - s.committed, u)}</div><div class="label">Available</div></div>
+      ${prices ? html`<div class="rtile"><div class="n">${s.avg_cost === null ? '–' : money(s.avg_cost)}</div><div class="label">Average cost each</div>
+        <div class="sub">${s.avg_cost === null ? 'no cost entered yet' : `${money(Math.max(s.qty_on_hand, 0) * s.avg_cost)} on hand`}</div></div>
+      <div class="rtile"><div class="n">${s.price === null ? '–' : money(s.price)}</div><div class="label">Price list</div>
+        <div class="sub">${s.price && s.avg_cost !== null ? `${Math.round(100 * (s.price - s.avg_cost) / s.price)}% margin` : ''}</div></div>` : ''}
     </div>
     ${can('inventory') ? html`<form method="post" action="/supplies/${s.supply_id}/settings" class="card form-grid" style="margin-top:1rem;max-width:760px">
       <label>Reorder when available drops to<input name="reorder_at" type="number" step="0.01" min="0" value="${s.reorder_at ?? ''}"></label>
       <label>Where it's kept<input name="location" value="${s.location}"></label>
+      ${prices ? html`<label>Average cost each<input name="avg_cost" type="number" step="0.0001" min="0" value="${s.avg_cost ?? ''}"></label>
+      <span class="muted small" style="align-self:end">Changes the cost of what's on the shelf now. Usually it's set for you when you receive stock at a cost.</span>` : ''}
       <div class="span2 actions"><button class="btn">Save</button></div>
     </form>` : ''}
     ${open.length ? html`<h2>Needed for open orders</h2>
@@ -185,19 +208,23 @@ router.get('/supplies/:id(\\d+)', async (req, res) => {
       <tbody>${open.map((o) => html`<tr><td><a href="/orders/${o.order_id}">${o.order_number}</a></td><td>${o.customer}</td>
         <td>${o.job_name}</td><td>${date(o.need_by)}</td><td class="num">${qty(o.qty, u)}</td></tr>`)}</tbody></table>` : ''}
     <h2>History</h2>
-    <table class="list"><thead><tr><th>When</th><th>What</th><th class="num">Change</th><th>By</th><th>Note</th></tr></thead>
+    <table class="list"><thead><tr><th>When</th><th>What</th><th class="num">Change</th>${prices ? html`<th class="num">Cost each</th>` : ''}<th>By</th><th>Note</th></tr></thead>
       <tbody>${history.length ? history.map((t) => html`<tr><td>${date(t.occurred_at)}</td>
         <td>${TXN_LABEL[t.txn_type]}${t.order_id ? html` <a href="/orders/${t.order_id}">${t.order_number}</a>` : ''}</td>
-        <td class="num">${t.qty_delta > 0 ? '+' : ''}${num(t.qty_delta)}</td><td>${t.performed_by}</td><td>${t.note}</td></tr>`)
-      : html`<tr><td colspan="5" class="empty">Nothing yet.</td></tr>`}</tbody></table>`,
+        <td class="num">${t.qty_delta > 0 ? '+' : ''}${num(t.qty_delta)}</td>${prices ? html`<td class="num">${t.unit_cost === null ? '' : money(t.unit_cost)}</td>` : ''}
+        <td>${t.performed_by}</td><td>${t.note}</td></tr>`)
+      : html`<tr><td colspan="6" class="empty">Nothing yet.</td></tr>`}</tbody></table>`,
   }));
 });
 
 router.post('/supplies/:id(\\d+)/settings', need('inventory'), async (req, res) => {
   const r = optNum(req.body.reorder_at);
   if (r !== null && !(r >= 0)) return back(res, `/supplies/${req.params.id}`, 'Reorder point must be zero or more.');
-  await query('UPDATE supply_stock SET reorder_at = $2, location = $3 WHERE supply_id = $1',
-    [req.params.id, r, clean(req.body.location)]);
+  const cost = optNum(req.body.avg_cost);
+  if (cost !== null && !(cost >= 0)) return back(res, `/supplies/${req.params.id}`, 'Cost must be zero or more.');
+  await query(`UPDATE supply_stock SET reorder_at = $2, location = $3,
+      avg_cost = CASE WHEN $5 THEN $4 ELSE avg_cost END WHERE supply_id = $1`,
+  [req.params.id, r, clean(req.body.location), cost, can('prices') && 'avg_cost' in req.body]);
   res.redirect(`/supplies/${req.params.id}?saved=1`);
 });
 
@@ -258,6 +285,7 @@ router.get('/tools', async (req, res) => {
   const { rows: tools } = await query(`${TOOLS} WHERE t.status <> 'retired' OR $1 ORDER BY t.name, t.tag NULLS LAST, t.tool_id`,
     [req.query.show === 'all']);
   const out = tools.filter((t) => t.rental_id);
+  const toolValue = tools.filter((t) => t.status !== 'retired').reduce((a, t) => a + (t.purchase_cost || 0), 0);
   const late = out.filter((t) => t.overdue);
   res.send(layout({
     title: 'Tools', active: '/tools',
@@ -271,6 +299,7 @@ router.get('/tools', async (req, res) => {
       <div class="rtile"><div class="n">${tools.filter((t) => t.status === 'available' && !t.rental_id).length}</div><div class="label">In the shop</div></div>
       <div class="rtile"><div class="n">${out.length}</div><div class="label">Rented out</div></div>
       <div class="rtile ${late.length ? 'warn' : ''}"><div class="n">${late.length}</div><div class="label">Overdue</div></div>
+      ${can('prices') ? html`<div class="rtile"><div class="n">${money(toolValue)}</div><div class="label">Tools at cost</div></div>` : ''}
     </div>
     ${can('inventory') ? html`<details class="card" style="margin-top:1rem" ${tools.length ? '' : 'open'}>
       <summary><strong>Add a tool</strong></summary>
@@ -352,6 +381,10 @@ router.get('/tools/:id(\\d+)', async (req, res) => {
            (COALESCE(r.returned_at, now()) AT TIME ZONE '${TZ}')::date - (r.out_at AT TIME ZONE '${TZ}')::date AS days
     FROM tool_rentals r JOIN orders o USING (order_id) JOIN customers c USING (customer_id)
     WHERE r.tool_id = $1 ORDER BY r.out_at DESC`, [t.tool_id]);
+  // Rent billed on the orders this tool went out on (cancelled orders left out).
+  const { rows: [earned] } = await query(`
+    SELECT COALESCE(sum(oi.line_total), 0) AS amount FROM order_items oi JOIN orders o USING (order_id)
+    WHERE o.status <> 'cancelled' AND oi.order_item_id IN (SELECT order_item_id FROM tool_rentals WHERE tool_id = $1)`, [t.tool_id]);
   res.send(layout({
     title: t.name, active: '/tools',
     body: html`
@@ -359,6 +392,12 @@ router.get('/tools/:id(\\d+)', async (req, res) => {
     <h1>${t.name}${t.tag ? html` <span class="muted">#${t.tag}</span>` : ''}</h1>
     ${alert(req)}
     <p>${toolState(t)}</p>
+    ${can('prices') && (t.purchase_cost || earned.amount) ? html`<div class="rtiles" style="margin-bottom:1rem">
+      <div class="rtile"><div class="n">${money(earned.amount)}</div><div class="label">Rent billed</div>
+        <div class="sub">${history.length} rental${history.length === 1 ? '' : 's'}</div></div>
+      ${t.purchase_cost ? html`<div class="rtile"><div class="n">${money(t.purchase_cost)}</div><div class="label">Cost</div>
+        <div class="sub">${earned.amount >= t.purchase_cost ? 'paid for itself' : `${money(t.purchase_cost - earned.amount)} to pay for itself`}</div></div>` : ''}
+    </div>` : ''}
     ${can('inventory') ? html`<div class="card">${toolForm(t, await rentalItems())}</div>` : ''}
     <h2>Rentals</h2>
     <table class="list"><thead><tr><th>Order</th><th>Customer</th><th>Out</th><th>Due back</th><th>Returned</th><th class="num">Days</th><th>Note</th></tr></thead>

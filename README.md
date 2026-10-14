@@ -87,6 +87,11 @@ works out the square feet, linear feet and price for every line.
   lists anything at or under its reorder point or short for open orders. Supplies on an order
   come out of stock when the order is marked Completed and go back if it is reopened. Any
   product can be counted by ticking "Count on hand" in Admin > Products.
+  Costs: enter what you paid each when receiving (it blends into an average cost per item) or
+  counting (it sets the average); it can also be set on the item's page. The page shows cost
+  each, value on hand and margin against the price list; supplies used on orders carry their
+  cost into Reports (Inventory: value at cost of coil, supplies and tools, and supplies used
+  with cost, sold-for and margin). Tools show their cost and the rent billed against it.
 - **Tools** (`/tools`): every tool the shop owns, with tag and serial numbers, cost and where
   it's kept, and its status (available, in for repair, retired, or out with a customer). A
   tool can be rented as a price list item ("Hand seamer rental (per day)"); put it on a quote

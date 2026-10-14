@@ -274,6 +274,36 @@ const stock = () => rowsOf(`
   WHERE c.status IN ('received', 'in_stock', 'on_machine')
   GROUP BY col.label, g.gauge ORDER BY weeks_left NULLS LAST, lf_on_hand DESC`);
 
+// Supplies taken out for orders in the range: how many, what they cost us
+// (average cost at the time) and what they sold for on those orders.
+const supplyUse = ({ from, to }) => rowsOf(`
+  WITH used AS (
+    SELECT s.product_id, -sum(t.qty_delta) AS qty, -sum(t.qty_delta * t.unit_cost) AS cost,
+           count(*) FILTER (WHERE t.unit_cost IS NULL AND t.qty_delta <> 0) AS uncosted,
+           array_agg(DISTINCT t.order_id) AS orders
+    FROM supply_transactions t JOIN supply_stock s USING (supply_id)
+    WHERE t.txn_type = 'order' AND (t.occurred_at AT TIME ZONE '${TZ}')::date BETWEEN $1 AND $2
+    GROUP BY s.product_id)
+  SELECT p.name AS product, p.category, p.pricing_unit, u.qty, u.cost, u.uncosted,
+         (SELECT sum(oi.line_total) FROM order_items oi JOIN orders o USING (order_id)
+           WHERE oi.product_id = u.product_id AND oi.order_id = ANY (u.orders) AND o.status IN ('completed', 'invoiced')) AS sales
+  FROM used u JOIN products p USING (product_id)
+  WHERE u.qty <> 0
+  ORDER BY sales DESC NULLS LAST, qty DESC`, [from, to]);
+
+// What's on the shelf right now, at cost.
+async function stockValue() {
+  const [r] = await rowsOf(`
+    SELECT (SELECT COALESCE(sum(current_lf * cost_per_lf), 0) FROM coils
+             WHERE status IN ('received', 'in_stock', 'on_machine')) AS coils,
+           (SELECT count(*) FROM coils WHERE status IN ('received', 'in_stock', 'on_machine')
+             AND current_lf > 0 AND cost_per_lf IS NULL) AS coils_uncosted,
+           (SELECT COALESCE(sum(greatest(qty_on_hand, 0) * avg_cost), 0) FROM supply_stock) AS supplies,
+           (SELECT count(*) FROM supply_stock WHERE qty_on_hand > 0 AND avg_cost IS NULL) AS supplies_uncosted,
+           (SELECT COALESCE(sum(purchase_cost), 0) FROM tools WHERE status <> 'retired') AS tools`);
+  return r;
+}
+
 const received = ({ from, to }) => rowsOf(`
   SELECT s.name AS supplier, count(*) AS coils, sum(c.initial_lf) AS lf, sum(c.initial_lf * c.cost_per_lf) AS cost
   FROM coils c LEFT JOIN suppliers s USING (supplier_id)
@@ -406,11 +436,11 @@ router.get('/reports', need('reports'), async (req, res) => {
   const range = pickRange(req.query);
   const prices = can('prices');
   const qs = range.preset ? `range=${range.preset}` : `from=${range.from}&to=${range.to}`;
-  const [cur, prev, now, tr, cust, col, prof, gau, cat, top, tm, lostRows, typ, ful, ops, coil, lateRows, stk, rec] = await Promise.all([
+  const [cur, prev, now, tr, cust, col, prof, gau, cat, top, tm, lostRows, typ, ful, ops, coil, lateRows, stk, rec, sup, val] = await Promise.all([
     headline(range.from, range.to), headline(range.prevFrom, range.prevTo), snapshot(), trend(range),
     customers(range), colors(range), profiles(range), gauges(range), categories(range), items(range),
     team(range), lost(range), types(range), fulfillment(range), operators(range), coilUse(range),
-    late(), stock(), received(range),
+    late(), stock(), received(range), supplyUse(range), stockValue(),
   ]);
   const N = (rows, keys) => rows.map((r) => {
     for (const k of keys) if (r[k] !== null && r[k] !== undefined) r[k] = Number(r[k]);
@@ -570,6 +600,19 @@ router.get('/reports', need('reports'), async (req, res) => {
       ],
       rows: N(stk, ['gauge', 'coils', 'lf_on_hand', 'lf_per_week', 'weeks_left', 'value']),
     },
+    supplies: {
+      title: 'Supplies used on orders',
+      note: 'Boots, jacks, screws and accessories taken out of stock for orders completed in this date range. Cost is your average cost when they went out.',
+      cols: [
+        { key: 'product', label: 'Item' }, { key: 'qty', label: 'Used', type: 'num' }, { key: 'unit', label: 'Unit' },
+        { key: 'cost', label: 'Cost', type: 'money0' }, { key: 'sales', label: 'Sold for', type: 'money0' },
+        { key: 'margin', label: 'Margin', type: 'pct' },
+      ],
+      rows: N(sup, ['qty', 'cost', 'sales', 'uncosted']).map((r) => ({
+        ...r, unit: { each: 'each', bag: 'bags', roll: 'rolls', lf: 'feet', sqft: 'sq ft' }[r.pricing_unit],
+        cost: r.uncosted ? null : r.cost, margin: r.uncosted || !r.sales ? null : pct(r.sales - r.cost, r.sales),
+      })),
+    },
     received: {
       title: 'Coil received',
       cols: [
@@ -603,7 +646,7 @@ router.get('/reports', need('reports'), async (req, res) => {
   const vs = html`<span class="muted">vs ${date(range.prevFrom)} to ${date(range.prevTo)}</span>`;
 
   const nav = [['sales', 'Sales and quotes'], ['customers', 'Customers'], ['products', 'Colors and products'],
-    ['team', 'Sales team'], ['production', 'Production'], ['inventory', 'Coil stock']];
+    ['team', 'Sales team'], ['production', 'Production'], ['inventory', 'Inventory']];
 
   res.send(layout({
     title: 'Reports',
@@ -682,9 +725,16 @@ router.get('/reports', need('reports'), async (req, res) => {
     ${table(tables.operators, prices)}
     ${table(tables.coil, prices)}
 
-    <h2 id="inventory">Coil stock</h2>
+    <h2 id="inventory">Inventory</h2>
+    ${prices ? html`<div class="rtiles" style="margin-bottom:1rem">
+      ${tile(money(Number(val.coils) + Number(val.supplies) + Number(val.tools)), 'Inventory at cost', { sub: 'coil, supplies and tools on hand now' })}
+      ${tile(money(val.coils), 'Coil', { sub: Number(val.coils_uncosted) ? `${val.coils_uncosted} coils have no cost entered` : '' })}
+      ${tile(money(val.supplies), 'Supplies', { sub: Number(val.supplies_uncosted) ? `${val.supplies_uncosted} items have no cost entered` : '' })}
+      ${tile(money(val.tools), 'Tools', { sub: 'at purchase cost' })}
+    </div>` : ''}
     ${table(tables.stock, prices)}
     ${table(tables.received, prices)}
+    ${table(tables.supplies, prices)}
     `,
   }));
 });

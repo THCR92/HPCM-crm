@@ -796,3 +796,34 @@ test('tools: add a tool with a new rental item, rent it on a quote, check it out
   assert.match(page, /Available/);
   assert.match(page, /Good shape/);
 });
+
+test('supply costs: receipts blend into an average cost; orders carry that cost into Reports', async () => {
+  const form = (path, body, cookie) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(cookie ? { cookie } : {}) }, body: new URLSearchParams(body).toString() });
+  const { rows: [p] } = await query(`INSERT INTO products (sku, name, category, pricing_unit, taxable, track_stock)
+    VALUES ('CAULK-' || gen_random_uuid(), 'Caulk ' || gen_random_uuid(), 'accessory', 'each', true, true) RETURNING product_id, name`);
+  await query("INSERT INTO product_prices (product_id, unit_price, effective_from) VALUES ($1, 6, current_date - 1)", [p.product_id]);
+  const stock = async () => (await query('SELECT supply_id, qty_on_hand, avg_cost FROM supply_stock WHERE product_id = $1', [p.product_id])).rows[0];
+  await form('/supplies', { product_id: p.product_id, what: 'receive', qty: '10', unit_cost: '2' });
+  await form('/supplies', { product_id: p.product_id, what: 'receive', qty: '10', unit_cost: '4' });
+  assert.deepStrictEqual(await stock().then((s) => [s.qty_on_hand, s.avg_cost]), [20, 3]);
+  // Production can count but can't set costs.
+  await form('/supplies', { product_id: p.product_id, what: 'count', qty: '20', unit_cost: '99' }, await signIn('production'));
+  assert.strictEqual((await stock()).avg_cost, 3);
+
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Caulk ' || gen_random_uuid()) RETURNING customer_id");
+  const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'other', items: [
+    { product_id: p.product_id, pieces: 4, unit_price: 6 }] }] });
+  const id = Number((await res.json()).redirect.split('/').pop());
+  await form(`/orders/${id}/status`, { status: 'confirmed' });
+  await form(`/orders/${id}/status`, { status: 'completed' });
+  const { rows: [t] } = await query("SELECT qty_delta, unit_cost FROM supply_transactions WHERE order_id = $1", [id]);
+  assert.deepStrictEqual([t.qty_delta, t.unit_cost], [-4, 3]);
+
+  const s = await stock();
+  assert.match(await (await fetch(`${base}/supplies/${s.supply_id}`)).text(), /50% margin/);
+  const csv = await (await fetch(`${base}/reports?range=month&csv=supplies`)).text();
+  const row = csv.split('\r\n').find((r) => r.startsWith(p.name));
+  assert.match(row, /,4,each,12,24,50$/);
+  assert.match(await (await fetch(`${base}/reports`)).text(), /Inventory at cost/);
+});
