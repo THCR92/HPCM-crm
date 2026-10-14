@@ -29,11 +29,12 @@ const PERMISSIONS = {
   inventory: 'Receive and adjust coils and stock',
   catalog: 'Change prices, sales tax, products, colors, finishes and suppliers',
   screws: 'Edit which screws and clips go with panels, trim and accessories',
+  reports: 'See the Reports page (sales, customers, colors, production)',
 };
 
 const ROLE_DEFAULTS = {
   admin: Object.keys(PERMISSIONS),
-  manager: ['prices', 'quotes', 'approve', 'status', 'customers', 'drawings', 'production', 'inventory', 'screws'],
+  manager: ['prices', 'quotes', 'approve', 'status', 'customers', 'drawings', 'production', 'inventory', 'screws', 'reports'],
   sales: ['prices', 'quotes', 'approve', 'customers', 'drawings'],
   production: ['drawings', 'production', 'inventory'],
 };

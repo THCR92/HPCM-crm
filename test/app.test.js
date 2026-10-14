@@ -655,3 +655,46 @@ test('trim screws: own lines in the trim color, choice per line, quote picks the
   assert.strictEqual((await fetch(`${base}/admin/screws?for=i:${ridge}`, { headers: { cookie: manager } })).status, 200);
   assert.strictEqual((await fetch(`${base}/admin/screws`, { headers: { cookie: sales } })).status, 403);
 });
+
+test('reports: Admins and Managers only; status changes are logged; lost reasons and win rate count', async () => {
+  const manager = await signIn('manager');
+  const sales = await signIn('sales');
+  const prod = await signIn('production');
+  const as = (cookie, path, body) => fetch(base + path, { redirect: 'manual', ...(body
+    ? { method: 'POST', headers: { cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() }
+    : { headers: { cookie } }) });
+  assert.strictEqual((await as(manager, '/reports')).status, 200);
+  assert.strictEqual((await as(sales, '/reports')).status, 403);
+  assert.strictEqual((await as(prod, '/reports')).status, 403);
+
+  const name = `Report Co ${Date.now()}`;
+  const { rows: [c] } = await query('INSERT INTO customers (display_name) VALUES ($1) RETURNING customer_id', [name]);
+  const quote = async () => {
+    const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01',
+      sections: [{ area: 'wall', items: [{ product_id: await productId('PNL-PBR-26'), pieces: 4, length_in: 150, unit_price: 5 }] }] });
+    return Number((await res.json()).redirect.split('/').pop());
+  };
+  const won = await quote();
+  const lostId = await quote();
+  await as(manager, `/orders/${won}/status`, { status: 'confirmed' });
+  await as(manager, `/orders/${lostId}/status`, { status: 'cancelled', lost_reason: 'price' });
+
+  const { rows: hist } = await query(
+    'SELECT from_status, to_status FROM order_status_history WHERE order_id = $1 ORDER BY history_id', [won]);
+  assert.deepStrictEqual(hist, [{ from_status: null, to_status: 'quote' }, { from_status: 'quote', to_status: 'confirmed' }]);
+  const { rows: [l] } = await query('SELECT lost_reason, approved_at, cancelled_at FROM orders WHERE order_id = $1', [lostId]);
+  assert.strictEqual(l.lost_reason, 'price');
+  assert.strictEqual(l.approved_at, null);
+  assert.ok(l.cancelled_at);
+  assert.ok((await query('SELECT approved_at FROM orders WHERE order_id = $1', [won])).rows[0].approved_at);
+
+  const page = await (await as(manager, '/reports?range=month')).text();
+  assert.match(page, /Quote win rate/);
+  assert.match(page, /Price/);
+  const csv = await (await as(manager, '/reports?range=month&csv=customers')).text();
+  const row = csv.split('\r\n').find((r) => r.startsWith(name));
+  // 4 panels x 12.5' = 50 ft at $5 = $250; 1 of 2 answered quotes won.
+  assert.match(row, /,250,/);
+  assert.match(row, /,50,/);
+  assert.match((await as(manager, '/reports?range=month&csv=lost')).headers.get('content-type'), /text\/csv/);
+});

@@ -82,6 +82,16 @@ works out the square feet, linear feet and price for every line.
   each still needs. A coil check flags approved jobs that need more footage of a color than
   is on hand (jobs are served in due-date order; trim assumes 48" coil), and a list shows
   finished orders waiting on pickup or delivery and for how many days. Refreshes every minute.
+- **Reports** (`/reports`, Admins and Managers): pick a date range (or a preset like This
+  year) and see sales, quotes written, quote win rate (by count and dollars), average order,
+  days from quote to approval, open quotes and work in the shop, quoted vs sold by week or
+  month, why quotes were lost, pickup vs delivery, biggest customers (with new customers
+  marked), sales by customer type, most popular colors, panels by profile and gauge, sales by
+  product type, top items, the sales team, coil feet run, scrap, on-time finishing, lead time,
+  late orders, production by person, coil used by color, coil on hand with weeks left, and
+  coil received. Headline numbers show the change from the same number of days before.
+  Click a column to sort; every table downloads as a spreadsheet (CSV). Every status change
+  is recorded (`order_status_history`), and cancelling a quote asks why it was lost.
 
 Coming next: sending completed orders to QuickBooks as invoices (see the QuickBooks
 mapping guide).

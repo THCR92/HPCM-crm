@@ -7,7 +7,7 @@ const { RUNNABLE, footage, runError } = require('../production');
 const { can, need, userName } = require('../auth');
 const Screws = require('../../public/screws');
 const {
-  html, raw, layout, money, num, date, statusBadge, UNIT_LABEL, STATUS_LABEL, AREA_LABEL,
+  html, raw, layout, money, num, date, statusBadge, UNIT_LABEL, STATUS_LABEL, AREA_LABEL, LOST_REASONS,
 } = require('../html');
 
 const router = require('../async-router')();
@@ -474,9 +474,13 @@ router.post('/:id(\\d+)/status', async (req, res) => {
   if (APPROVED.includes(status) && !cur.need_by && !needBy) {
     return res.redirect(`${back}?status_error=${encodeURIComponent('Set a Need-by date to approve this quote.')}`);
   }
+  // Why a quote was lost, for the Reports page.
+  const lostReason = cur.status === 'quote' && status === 'cancelled' && LOST_REASONS[req.body.lost_reason]
+    ? req.body.lost_reason : null;
   await query(`
     UPDATE orders SET status = $1::order_status,
            need_by = COALESCE($3::date, need_by),
+           lost_reason = $5,
            -- The order date is the day the quote was approved.
            ordered_on = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
                              THEN current_date ELSE ordered_on END,
@@ -487,7 +491,7 @@ router.post('/:id(\\d+)/status', async (req, res) => {
            ready_at = CASE WHEN $1::order_status = 'ready' THEN COALESCE(ready_at, now())
                            WHEN $1::order_status IN ('quote', 'confirmed', 'in_production') THEN NULL
                            ELSE ready_at END
-    WHERE order_id = $2 AND status <> 'invoiced'`, [status, req.params.id, needBy, userName()]);
+    WHERE order_id = $2 AND status <> 'invoiced'`, [status, req.params.id, needBy, userName(), lostReason]);
   res.redirect(back);
 });
 
@@ -636,7 +640,7 @@ router.get('/:id(\\d+)', async (req, res) => {
     title: `Order ${o.order_number}`, active: '/orders',
     body: html`
     <div class="page-head no-print">
-      <h1>${docName} ${o.order_number} ${statusBadge(o.status)}</h1>
+      <h1>${docName} ${o.order_number} ${statusBadge(o.status)}${o.lost_reason ? html` <span class="muted small">Lost: ${LOST_REASONS[o.lost_reason]}</span>` : ''}</h1>
       <div class="actions">
         ${editable && can('quotes') ? html`<a class="btn primary" href="/orders/${o.order_id}/edit">Edit ${docName.toLowerCase()}</a>` : ''}
         ${prices ? html`<a class="btn" href="/orders/${o.order_id}/customer">Customer ${o.status === 'quote' ? 'quote' : 'copy'}</a>` : ''}
@@ -646,6 +650,11 @@ router.get('/:id(\\d+)', async (req, res) => {
           <select name="status">${nextStatuses.map((s) => html`<option value="${s}">${STATUS_LABEL[s]}</option>`)}</select>
           ${o.need_by || o.status !== 'quote' ? '' : html`<label class="inline-date" title="Needed to approve a quote">Need by
             <input type="date" name="need_by"></label>`}
+          ${o.status === 'quote' && nextStatuses.includes('cancelled') ? html`<label class="inline-date lost-reason" hidden>Why lost
+            <select name="lost_reason"><option value="">Pick one…</option>${Object.entries(LOST_REASONS).map(([v, l]) =>
+              html`<option value="${v}">${l}</option>`)}</select></label>
+            <script>(() => { const f = document.currentScript.closest('form'), r = f.querySelector('.lost-reason');
+              const sync = () => { r.hidden = f.status.value !== 'cancelled'; }; f.status.addEventListener('change', sync); sync(); })();</script>` : ''}
           <button class="btn">Change status</button>
         </form>` : ''}
       </div>

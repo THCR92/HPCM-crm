@@ -39,6 +39,11 @@ const STATUS_LABEL = {
 };
 const AREA_LABEL = { roof: 'Roof', wall: 'Wall', trim: 'Trim', other: 'Other' };
 
+const LOST_REASONS = {
+  price: 'Price', competitor: 'Went with someone else', timing: 'Timing or job delayed',
+  no_response: 'No response', changed_scope: 'Job changed or cancelled', other: 'Other',
+};
+
 const statusBadge = (s) => html`<span class="badge badge-${s}">${STATUS_LABEL[s] || s}</span>`;
 
 // ---- page shell ------------------------------------------------------------
@@ -51,6 +56,7 @@ const NAV = [
   ['/products', 'Price list', 'prices'],
   ['/colors', 'Colors'],
   ['/board', 'Shop board'],
+  ['/reports', 'Reports', 'reports'],
   ['/admin', 'Admin', 'admin'],
 ];
 
@@ -85,5 +91,5 @@ ${scripts.map((src) => html`<script src="${src}"></script>`)}
 
 module.exports = {
   html, raw, money, num, date, layout, statusBadge,
-  UNIT_LABEL, STATUS_LABEL, AREA_LABEL,
+  UNIT_LABEL, STATUS_LABEL, AREA_LABEL, LOST_REASONS,
 };
