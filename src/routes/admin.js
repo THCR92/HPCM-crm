@@ -88,6 +88,7 @@ async function productForm(res, p, error) {
         value="${p.max_length_in ? num(p.max_length_in / 12, 3) : ''}"></label>
       <label>Flat width (inches of coil)<input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}"></label>
       <label>SKU<input name="sku" value="${p.sku}" placeholder="made from the name if blank"></label>
+      <label>Pieces per bundle (packing)<input name="bundle_size" type="number" step="1" min="1" value="${p.bundle_size ?? ''}" placeholder="blank = one bundle per line"></label>
       ${isNew ? html`<label>Price<input name="unit_price" type="number" step="0.01" min="0" placeholder="leave blank if it varies"></label>` : ''}
       <label class="check"><input type="checkbox" name="is_cut_to_length" value="1" ${p.is_cut_to_length ? 'checked' : ''}> Every line needs a length</label>
       <label class="check"><input type="checkbox" name="taxable" value="1" ${p.taxable !== false ? 'checked' : ''}> Taxable</label>
@@ -123,6 +124,7 @@ const productFromBody = (b) => ({
   track_stock: b.track_stock === '1',
   stock_by_color: b.track_stock === '1' && b.stock_by_color === '1',
   is_rental: b.is_rental === '1',
+  bundle_size: optNum(b.bundle_size) ? Math.round(optNum(b.bundle_size)) : null,
 });
 const makeSku = (name) => name.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
 
@@ -139,7 +141,7 @@ const dbProblem = (err) => (err.code === '23505' ? 'Another product already uses
   : err.code === '23514' ? 'Those settings don\'t fit together (a panel needs a profile and gauge; custom trim is per sq ft).' : null);
 
 const COLS = ['name', 'sku', 'category', 'pricing_unit', 'profile_id', 'gauge_id', 'standard_length_in',
-  'max_length_in', 'girth_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental'];
+  'max_length_in', 'girth_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental', 'bundle_size'];
 
 router.get('/admin/products/new', need('catalog'), (req, res) => productForm(res, { taxable: true }));
 

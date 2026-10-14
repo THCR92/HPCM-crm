@@ -286,3 +286,9 @@ table.pack tr.packed td { background: #f0faf3; }
   .labels-sheet { display: grid; grid-template-columns: 4in 4in; column-gap: .188in; row-gap: 0; }
   .labels-roll .label, .labels-small .label { page-break-after: always; break-after: page; }
 }
+table.pack tbody.pack-line { border-top: 2px solid var(--line); }
+table.pack tr.bundle td:nth-child(2) { padding-left: 1.6rem; color: var(--muted); }
+table.pack tr.bundle.packed td:nth-child(2) { color: var(--ink); }
+.bundle-split { display: inline-flex; gap: .4rem; align-items: center; }
+.bundle-split input { width: 8rem; }
+.bundle-split label { display: inline-flex; gap: .4rem; align-items: center; flex-direction: row; font-size: .9rem; }

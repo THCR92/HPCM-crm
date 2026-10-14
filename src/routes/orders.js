@@ -354,6 +354,12 @@ async function saveOrder(orderId, body) {
     }
     // Lines may have changed, so any pack checks have to be done again.
     await db.query('UPDATE order_items SET packed_at = NULL, packed_by = NULL WHERE order_id = $1 AND packed_at IS NOT NULL', [orderId]);
+    await db.query(`UPDATE order_bundles b SET packed_at = NULL, packed_by = NULL FROM order_items oi
+      WHERE oi.order_item_id = b.order_item_id AND oi.order_id = $1 AND b.packed_at IS NOT NULL`, [orderId]);
+    // Bundles that no longer add up to their line's pieces are split again.
+    await db.query(`DELETE FROM order_bundles b USING order_items oi
+      WHERE oi.order_item_id = b.order_item_id AND oi.order_id = $1
+        AND oi.pieces <> (SELECT sum(pieces) FROM order_bundles x WHERE x.order_item_id = oi.order_item_id)`, [orderId]);
     return orderId;
   });
 }

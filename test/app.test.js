@@ -846,7 +846,7 @@ test('barcodes: labels print, scans open the right page, pack and check catches 
 
   const labels = await (await fetch(`${base}/labels/order/${a.id}`)).text();
   assert.match(labels, /<svg/);
-  assert.ok(labels.includes(`<div class="code">L${a.lines[0]}</div>`));
+  assert.match(labels, /<div class="code">B\d+<\/div>/);
   for (const p of ['/labels/coils', '/labels/supplies', '/labels/tools']) assert.strictEqual((await fetch(base + p)).status, 200, p);
 
   let res = await fetch(`${base}/scan?code=${encodeURIComponent(`https://www.hpcmcrm.net/s/${a.number}`)}`, { redirect: 'manual' });
@@ -863,7 +863,7 @@ test('barcodes: labels print, scans open the right page, pack and check catches 
   assert.match(await pack(`L${a.lines[0]}`), /already checked/);
   res = await form(`/orders/${a.id}/pack/complete`, {});
   assert.match(decodeURIComponent(res.headers.get('location')), /aren't checked/);
-  assert.match(await pack(`L${a.lines[1]}`), /All lines checked/);
+  assert.match(await pack(`L${a.lines[1]}`), /All bundles checked/);
   assert.match(await (await fetch(`${base}/orders/${a.id}/pack`)).text(), /Mark order completed/);
   assert.strictEqual((await form(`/orders/${a.id}/pack`, { code: `L${a.lines[1]}` }, await signIn('sales'))).status, 403);
   await form(`/orders/${a.id}/pack/complete`, {});
@@ -880,4 +880,34 @@ test('barcodes: labels print, scans open the right page, pack and check catches 
     { order_item_id: b.lines[0], product_id: await productId('PNL-PBR-26'), pieces: 5, length_in: 150, unit_price: 5 }] }] });
   const { rows: [cleared] } = await query('SELECT count(*)::int AS n FROM order_items WHERE order_id = $1 AND packed_at IS NOT NULL', [b.id]);
   assert.strictEqual(cleared.n, 0);
+});
+
+test('bundles: drip edge splits into bundles of 10, the split can change, each bundle label is scanned', async () => {
+  const form = (path, body) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() })
+    .then((r) => decodeURIComponent(r.headers.get('location') || ''));
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Bundler ' || gen_random_uuid()) RETURNING customer_id");
+  const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'trim', items: [
+    { product_id: await productId('TRM-D-STYLE-90'), pieces: 26, length_in: 120, unit_price: 10 }] }] });
+  const id = Number((await res.json()).redirect.split('/').pop());
+  await form(`/orders/${id}/status`, { status: 'confirmed' });
+  const page = await (await fetch(`${base}/orders/${id}/pack`)).text();
+  assert.match(page, /value="10, 10, 6"/);
+  const { rows: [line] } = await query('SELECT order_item_id FROM order_items WHERE order_id = $1', [id]);
+  const bundles = async () => (await query('SELECT bundle_id, pieces FROM order_bundles WHERE order_item_id = $1 ORDER BY seq', [line.order_item_id])).rows;
+  assert.deepStrictEqual((await bundles()).map((b) => b.pieces), [10, 10, 6]);
+  const labels = await (await fetch(`${base}/labels/order/${id}`)).text();
+  assert.match(labels, /bundle 3 of 3/);
+  assert.match(labels, /6 × 10&#39; 0&quot; D style 90/);
+
+  assert.match(await form(`/orders/${id}/pack`, { code: `L${line.order_item_id}` }), /in 3 bundles/);
+  assert.match(await form(`/orders/${id}/pack/bundles`, { order_item_id: line.order_item_id, split: '13, 12' }), /add up to 25/);
+  assert.match(await form(`/orders/${id}/pack/bundles`, { order_item_id: line.order_item_id, split: '13, 13' }), /2 bundles: 13 \+ 13/);
+  const [b1, b2] = await bundles();
+  assert.match(await form(`/orders/${id}/pack`, { code: `B${b1.bundle_id}` }), /bundle 1 of 2.*1 to go/);
+  assert.match(await form(`/orders/${id}/pack/bundles`, { order_item_id: line.order_item_id, split: '26' }), /already has checked bundles/);
+  assert.match(await form(`/orders/${id}/pack`, { code: `https://www.hpcmcrm.net/s/B${b2.bundle_id}` }), /All bundles checked/);
+  assert.ok((await query('SELECT packed_at FROM order_items WHERE order_item_id = $1', [line.order_item_id])).rows[0].packed_at);
+  await form(`/orders/${id}/pack/complete`, {});
+  assert.strictEqual((await query('SELECT status FROM orders WHERE order_id = $1', [id])).rows[0].status, 'completed');
 });

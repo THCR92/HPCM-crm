@@ -5,7 +5,7 @@
 // (which types what it reads) works in the scan box at the top of every page.
 //   HP-10023  an order         L<id>  one line of an order (a bundle or bag)
 //   C<id>     a coil           S<id>  a supply shelf (item and color)
-//   T<id>     a tool
+//   T<id>     a tool           B<id>  one bundle of an order line
 const QRCode = require('qrcode');
 const { query, tx } = require('../db');
 const { html, raw, layout, num, date } = require('../html');
@@ -37,12 +37,17 @@ async function resolve(raw0) {
     r = await query('SELECT order_id FROM orders WHERE order_number = $1', [up.replace(/^HP-?/, 'HP-')]);
     if (r.rows[0]) return { kind: 'order', id: r.rows[0].order_id, path: `/orders/${r.rows[0].order_id}` };
   }
-  const k = up.match(/^([LCST])(\d+)$/);
+  const k = up.match(/^([LCSTB])(\d+)$/);
   if (k) {
     const id = Number(k[2]);
     if (k[1] === 'L') {
       r = await query('SELECT order_id FROM order_items WHERE order_item_id = $1', [id]);
       if (r.rows[0]) return { kind: 'line', id, orderId: r.rows[0].order_id, path: `/orders/${r.rows[0].order_id}/pack` };
+    }
+    if (k[1] === 'B') {
+      r = await query(`SELECT oi.order_id, b.order_item_id FROM order_bundles b JOIN order_items oi USING (order_item_id)
+        WHERE b.bundle_id = $1`, [id]);
+      if (r.rows[0]) return { kind: 'bundle', id, lineId: r.rows[0].order_item_id, orderId: r.rows[0].order_id, path: `/orders/${r.rows[0].order_id}/pack` };
     }
     if (k[1] === 'C') {
       r = await query('SELECT coil_id FROM coils WHERE coil_id = $1', [id]);
@@ -129,10 +134,38 @@ const lineText = (i) => {
   return `${num(i.pieces)}${len} ${i.product_name}${width}`;
 };
 
+
+// Split a line's pieces into bundles: 26 at 10 per bundle = 10 + 10 + 6.
+function split(pieces, size) {
+  const n = Number(pieces);
+  if (!size || size >= n) return [n];
+  const out = [];
+  for (let left = n; left > 0; left -= size) out.push(Math.min(size, Math.round(left * 100) / 100));
+  return out;
+}
+
+// Every packable line gets bundles the first time labels or the pack page are opened.
+async function ensureBundles(orderId) {
+  await tx(async (db) => {
+    const { rows } = await db.query(`
+      SELECT oi.order_item_id, oi.pieces, p.bundle_size FROM order_items oi JOIN products p USING (product_id)
+      WHERE oi.order_id = $1 AND ${PACKABLE}
+        AND NOT EXISTS (SELECT 1 FROM order_bundles b WHERE b.order_item_id = oi.order_item_id)
+      FOR UPDATE OF oi`, [orderId]);
+    for (const r of rows) {
+      for (const [i, pcs] of split(r.pieces, r.bundle_size).entries()) {
+        await db.query(`INSERT INTO order_bundles (order_item_id, seq, pieces) VALUES ($1, $2, $3)
+          ON CONFLICT (order_item_id, seq) DO NOTHING`, [r.order_item_id, i + 1, pcs]);
+      }
+    }
+  });
+}
+
 async function orderLines(orderId) {
+  await ensureBundles(orderId);
   const { rows } = await query(`
     SELECT oi.order_item_id, oi.line_no, oi.pieces, oi.pricing_unit, oi.width_in, oi.packed_at, oi.packed_by,
-           fn_format_length(oi.length_in) AS length_display, p.name AS product_name, p.category,
+           fn_format_length(oi.length_in) AS length_display, p.name AS product_name, p.category, p.bundle_size,
            col.label AS color, g.gauge, os.area, os.label AS section_label, COALESCE(os.sort_order, 999) AS section_sort
     FROM order_items oi JOIN products p USING (product_id)
     LEFT JOIN v_colors col ON col.color_id = oi.color_id
@@ -140,29 +173,47 @@ async function orderLines(orderId) {
     LEFT JOIN order_sections os ON os.section_id = oi.section_id
     WHERE oi.order_id = $1 AND ${PACKABLE}
     ORDER BY section_sort, os.section_id, oi.line_no`, [orderId]);
+  const { rows: bundles } = await query(`
+    SELECT b.* FROM order_bundles b JOIN order_items oi USING (order_item_id)
+    WHERE oi.order_id = $1 ORDER BY b.order_item_id, b.seq`, [orderId]);
+  for (const l of rows) l.bundles = bundles.filter((b) => b.order_item_id === l.order_item_id);
   return rows;
 }
 
 const AREA = { roof: 'Roof', wall: 'Wall', trim: 'Trim', other: 'Other' };
+const bundleText = (l, b) => {
+  const len = l.length_display ? ` × ${l.length_display}` : '';
+  return `${num(b.pieces)}${len} ${l.product_name}`;
+};
 
 router.get('/labels/order/:id(\\d+)', async (req, res) => {
   const { rows: [o] } = await query(`SELECT o.*, c.display_name AS customer FROM orders o JOIN customers c USING (customer_id)
     WHERE o.order_id = $1`, [req.params.id]);
   if (!o) return res.status(404).send('Order not found');
   const lines = await orderLines(o.order_id);
+  const total = lines.reduce((a, l) => a + l.bundles.length, 0);
   const head = [o.customer, o.job_name, o.need_by ? `Need by ${date(o.need_by)}` : '', o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'];
-  const labels = [{ code: o.order_number, big: o.order_number, title: 'Whole order', lines: [...head, `${lines.length} line${lines.length === 1 ? '' : 's'}`] }];
-  const only = req.query.line ? Number(req.query.line) : null;
-  for (const [n, l] of lines.entries()) {
-    if (only && l.order_item_id !== only) continue;
-    labels.push({
-      code: `L${l.order_item_id}`, big: o.order_number, title: lineText(l),
-      lines: [[l.color, l.gauge ? `${l.gauge} ga` : ''].filter(Boolean).join(' · '),
-        `${o.customer}${o.job_name ? ` · ${o.job_name}` : ''}`,
-        `${l.section_label || AREA[l.area] || ''}${l.section_label || l.area ? ' · ' : ''}line ${l.line_no} · ${n + 1} of ${lines.length}`],
-    });
+  const labels = [];
+  const onlyLine = Number(req.query.line) || null;
+  const onlyBundle = Number(req.query.bundle) || null;
+  if (!onlyLine && !onlyBundle) {
+    labels.push({ code: o.order_number, big: o.order_number, title: 'Whole order',
+      lines: [...head, `${lines.length} line${lines.length === 1 ? '' : 's'}, ${total} bundle${total === 1 ? '' : 's'}`] });
   }
-  await labelPage(req, res, { title: `Labels for ${o.order_number}`, labels: only ? labels.slice(1) : labels, back: `/orders/${o.order_id}` });
+  for (const l of lines) {
+    if (onlyLine && l.order_item_id !== onlyLine) continue;
+    for (const b of l.bundles) {
+      if (onlyBundle && b.bundle_id !== onlyBundle) continue;
+      labels.push({
+        code: `B${b.bundle_id}`, big: o.order_number, title: bundleText(l, b),
+        lines: [[l.color, l.gauge ? `${l.gauge} ga` : ''].filter(Boolean).join(' · '),
+          `${o.customer}${o.job_name ? ` · ${o.job_name}` : ''}`,
+          `${l.section_label || AREA[l.area] || ''}${l.section_label || l.area ? ' · ' : ''}line ${l.line_no}${
+            l.bundles.length > 1 ? ` · bundle ${b.seq} of ${l.bundles.length}` : ''}`],
+      });
+    }
+  }
+  await labelPage(req, res, { title: `Labels for ${o.order_number}`, labels, back: `/orders/${o.order_id}/pack` });
 });
 
 router.get('/labels/coils', async (req, res) => {
@@ -211,50 +262,93 @@ router.get('/labels/tools', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Pack and check: scan each line's label as its bundle is checked against the
-// order. When every line is checked, the order can be marked Completed.
+
 // ---------------------------------------------------------------------------
+// Pack and check: count each line into bundles, print a label per bundle, and
+// scan each bundle as it's checked against the order. When every bundle is
+// checked, the order can be marked Completed.
+// ---------------------------------------------------------------------------
+const stamp = (t) => new Date(t).toLocaleString('en-US', { timeZone: 'America/Denver', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
 router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
   const { rows: [o] } = await query(`SELECT o.*, c.display_name AS customer FROM orders o JOIN customers c USING (customer_id)
     WHERE o.order_id = $1`, [req.params.id]);
   if (!o) return res.status(404).send('Order not found');
   const lines = await orderLines(o.order_id);
-  const done = lines.filter((l) => l.packed_at).length;
+  const bundles = lines.flatMap((l) => l.bundles);
+  const done = bundles.filter((b) => b.packed_at).length;
   const open = PACK_STATUSES.includes(o.status);
   const msg = req.query.ok ? html`<div class="notice pack-flash ok">✓ ${req.query.ok}</div>`
     : req.query.err ? html`<div class="alert pack-flash">✗ ${req.query.err}</div>` : '';
+  const act = (code, label, extra = '') => html`<form method="post" action="/orders/${o.order_id}/pack" class="inline">
+    <input type="hidden" name="code" value="${code}">${extra ? raw(extra) : ''}<button class="btn small">${label}</button></form>`;
   res.send(layout({
     title: `Pack ${o.order_number}`, active: '/orders',
     body: html`
     <div class="page-head"><h1>Pack and check ${o.order_number}</h1>
-      <div class="actions"><a class="btn" href="/labels/order/${o.order_id}">Print labels</a>
+      <div class="actions"><a class="btn primary" href="/labels/order/${o.order_id}">Print all labels</a>
         <a class="btn" href="/orders/${o.order_id}">Back to the order</a></div></div>
     <p><strong>${o.customer}</strong>${o.job_name ? ` · ${o.job_name}` : ''}${o.need_by ? ` · need by ${date(o.need_by)}` : ''}
       · ${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</p>
+    <p class="muted small">1. Count each line into bundles; change the split if it's packed differently (e.g. "13, 13").
+      2. Print the labels and stick one on each bundle. 3. Scan each bundle as you check it against the line.</p>
     ${msg}
     ${open ? html`<form method="post" action="/orders/${o.order_id}/pack" class="card scan-big">
-      <label>Scan a line label <input name="code" autofocus autocomplete="off" placeholder="Scan, or type a code like L123"></label>
+      <label>Scan a bundle label <input name="code" autofocus autocomplete="off" placeholder="Scan, or type a code like B123"></label>
       <button class="btn primary">Check</button>
     </form>` : html`<p class="muted">This order is ${o.status === 'quote' ? 'still a quote' : o.status}; packing is for approved orders that aren't completed yet.</p>`}
-    <div class="pack-progress"><div style="width:${lines.length ? Math.round((100 * done) / lines.length) : 0}%"></div></div>
-    <p><strong>${done} of ${lines.length}</strong> lines checked.</p>
+    <div class="pack-progress"><div style="width:${bundles.length ? Math.round((100 * done) / bundles.length) : 0}%"></div></div>
+    <p><strong>${done} of ${bundles.length}</strong> bundles checked.</p>
     <table class="list pack">
       <thead><tr><th>Line</th><th>What to check</th><th>Color</th><th>Gauge</th><th>Checked</th><th></th></tr></thead>
-      <tbody>${lines.map((l) => html`<tr class="${l.packed_at ? 'packed' : ''}">
-        <td>${l.line_no}</td><td>${lineText(l)}</td><td>${l.color}</td><td>${l.gauge ? `${l.gauge} ga` : ''}</td>
-        <td>${l.packed_at ? html`✓ ${l.packed_by} <span class="muted small">${new Date(l.packed_at).toLocaleString('en-US', { timeZone: 'America/Denver', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>` : html`<span class="muted">Waiting</span>`}</td>
-        <td class="num">${open ? html`<form method="post" action="/orders/${o.order_id}/pack" class="inline">
-          <input type="hidden" name="code" value="L${l.order_item_id}">
-          ${l.packed_at ? html`<input type="hidden" name="undo" value="1"><button class="btn small">Undo</button>`
-          : html`<button class="btn small" title="For a bundle whose label is missing">Check without label</button>`}</form>` : ''}
-          <a class="small" href="/labels/order/${o.order_id}?line=${l.order_item_id}">label</a></td></tr>`)}</tbody>
+      ${lines.map((l) => {
+        const anyPacked = l.bundles.some((b) => b.packed_at);
+        return html`<tbody class="pack-line">
+        <tr class="line-head ${l.bundles.every((b) => b.packed_at) ? 'packed' : ''}">
+          <td>${l.line_no}</td><td><strong>${lineText(l)}</strong></td><td>${l.color}</td><td>${l.gauge ? `${l.gauge} ga` : ''}</td>
+          <td colspan="2">${open && !anyPacked ? html`<form method="post" action="/orders/${o.order_id}/pack/bundles" class="inline bundle-split">
+              <input type="hidden" name="order_item_id" value="${l.order_item_id}">
+              <label>Bundles <input name="split" value="${l.bundles.map((b) => num(b.pieces)).join(', ')}" size="12"></label>
+              <button class="btn small">Change</button></form>`
+            : html`<span class="muted small">${l.bundles.length} bundle${l.bundles.length === 1 ? '' : 's'}: ${l.bundles.map((b) => num(b.pieces)).join(' + ')}</span>`}
+            <a class="small" href="/labels/order/${o.order_id}?line=${l.order_item_id}">labels</a></td>
+        </tr>
+        ${l.bundles.map((b) => html`<tr class="bundle ${b.packed_at ? 'packed' : ''}">
+          <td></td><td>Bundle ${b.seq}${l.bundles.length > 1 ? ` of ${l.bundles.length}` : ''}: ${bundleText(l, b)}</td><td></td><td></td>
+          <td>${b.packed_at ? html`✓ ${b.packed_by} <span class="muted small">${stamp(b.packed_at)}</span>` : html`<span class="muted">Waiting</span>`}</td>
+          <td class="num">${open ? (b.packed_at ? act(`B${b.bundle_id}`, 'Undo', '<input type="hidden" name="undo" value="1">')
+            : act(`B${b.bundle_id}`, 'Check without label')) : ''}
+            <a class="small" href="/labels/order/${o.order_id}?bundle=${b.bundle_id}">label</a></td></tr>`)}
+        </tbody>`;
+      })}
     </table>
-    ${open && lines.length && done === lines.length && can('production') ? html`
+    ${open && bundles.length && done === bundles.length ? html`
     <form method="post" action="/orders/${o.order_id}/pack/complete" class="card pack-done">
       <strong>Everything is checked.</strong>
       <button class="btn primary">Mark order completed</button>
     </form>` : ''}`,
   }));
+});
+
+// Change how a line is split into bundles ("10, 10, 6"). Only before any of them is checked.
+router.post('/orders/:id(\\d+)/pack/bundles', need('production'), async (req, res) => {
+  const orderId = Number(req.params.id);
+  const to = (k, m) => res.redirect(`/orders/${orderId}/pack?${k}=${encodeURIComponent(m)}`);
+  const lines = await orderLines(orderId);
+  const l = lines.find((x) => x.order_item_id === Number(req.body.order_item_id));
+  if (!l) return to('err', 'That line isn\'t on this order.');
+  if (l.bundles.some((b) => b.packed_at)) return to('err', `Line ${l.line_no} already has checked bundles. Undo them first.`);
+  const parts = String(req.body.split || '').split(/[\s,+]+/).filter(Boolean).map(Number);
+  if (!parts.length || parts.some((n) => !(n > 0))) return to('err', 'Enter the pieces in each bundle, like 10, 10, 6.');
+  const sum = Math.round(parts.reduce((a, n) => a + n, 0) * 100) / 100;
+  if (sum !== Number(l.pieces)) return to('err', `Line ${l.line_no} has ${num(l.pieces)} pieces, but those bundles add up to ${num(sum)}.`);
+  await tx(async (db) => {
+    await db.query('DELETE FROM order_bundles WHERE order_item_id = $1', [l.order_item_id]);
+    for (const [i, n] of parts.entries()) {
+      await db.query('INSERT INTO order_bundles (order_item_id, seq, pieces) VALUES ($1, $2, $3)', [l.order_item_id, i + 1, n]);
+    }
+  });
+  to('ok', `Line ${l.line_no} is now ${parts.length} bundle${parts.length === 1 ? '' : 's'}: ${parts.join(' + ')}. Print its labels again.`);
 });
 
 router.post('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
@@ -263,36 +357,51 @@ router.post('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
   const { rows: [o] } = await query('SELECT status, order_number FROM orders WHERE order_id = $1', [orderId]);
   if (!o) return res.status(404).send('Order not found');
   if (!PACK_STATUSES.includes(o.status)) return to('err', 'This order isn\'t open for packing.');
-  const hit = await resolve(req.body.code);
-  if (!hit) return to('err', `Nothing matches "${String(req.body.code || '').trim()}".`);
+  const code = String(req.body.code || '').trim();
+  const hit = await resolve(code);
+  if (!hit) return to('err', `Nothing matches "${code}". If its line was re-bundled, print its labels again.`);
   if (hit.kind === 'order' && hit.id === orderId) return to('err', 'That\'s the whole-order label. Scan the label on each bundle.');
-  if (hit.kind !== 'line') return to('err', 'That isn\'t an order line label.');
+  if (hit.kind !== 'line' && hit.kind !== 'bundle') return to('err', 'That isn\'t a bundle label.');
   if (hit.orderId !== orderId) {
     const { rows: [other] } = await query('SELECT order_number FROM orders WHERE order_id = $1', [hit.orderId]);
     return to('err', `WRONG ORDER: that bundle belongs to ${other.order_number}, not ${o.order_number}.`);
   }
   const lines = await orderLines(orderId);
-  const line = lines.find((l) => l.order_item_id === hit.id);
+  const line = lines.find((l) => l.order_item_id === (hit.kind === 'bundle' ? hit.lineId : hit.id));
   if (!line) return to('err', 'That line doesn\'t get packed.');
+  let bundle;
+  if (hit.kind === 'bundle') bundle = line.bundles.find((b) => b.bundle_id === hit.id);
+  else if (line.bundles.length === 1) [bundle] = line.bundles;
+  else return to('err', `Line ${line.line_no} is in ${line.bundles.length} bundles. Scan the bundle labels.`);
+  const where = `Line ${line.line_no}${line.bundles.length > 1 ? `, bundle ${bundle.seq} of ${line.bundles.length}` : ''}`;
   if (req.body.undo) {
-    await query('UPDATE order_items SET packed_at = NULL, packed_by = NULL WHERE order_item_id = $1', [line.order_item_id]);
-    return to('ok', `Line ${line.line_no} unchecked.`);
+    await tx(async (db) => {
+      await db.query('UPDATE order_bundles SET packed_at = NULL, packed_by = NULL WHERE bundle_id = $1', [bundle.bundle_id]);
+      await db.query('UPDATE order_items SET packed_at = NULL, packed_by = NULL WHERE order_item_id = $1', [line.order_item_id]);
+    });
+    return to('ok', `${where} unchecked.`);
   }
-  if (line.packed_at) return to('err', `Line ${line.line_no} was already checked by ${line.packed_by}.`);
-  await query('UPDATE order_items SET packed_at = now(), packed_by = $2 WHERE order_item_id = $1', [line.order_item_id, userName()]);
-  const left = lines.filter((l) => !l.packed_at && l.order_item_id !== line.order_item_id).length;
-  to('ok', `Line ${line.line_no}: ${lineText(line)}${line.color ? `, ${line.color}` : ''}. ${left ? `${left} to go.` : 'All lines checked.'}`);
+  if (bundle.packed_at) return to('err', `${where} was already checked by ${bundle.packed_by}.`);
+  await tx(async (db) => {
+    await db.query('UPDATE order_bundles SET packed_at = now(), packed_by = $2 WHERE bundle_id = $1', [bundle.bundle_id, userName()]);
+    // The line is checked once all its bundles are.
+    await db.query(`UPDATE order_items SET packed_at = now(), packed_by = $2 WHERE order_item_id = $1
+      AND NOT EXISTS (SELECT 1 FROM order_bundles WHERE order_item_id = $1 AND packed_at IS NULL)`, [line.order_item_id, userName()]);
+  });
+  const left = lines.flatMap((l) => l.bundles).filter((b) => !b.packed_at && b.bundle_id !== bundle.bundle_id).length;
+  to('ok', `${where}: ${bundleText(line, bundle)}${line.color ? `, ${line.color}` : ''}. ${left ? `${left} to go.` : 'All bundles checked.'}`);
 });
 
 router.post('/orders/:id(\\d+)/pack/complete', need('production'), async (req, res) => {
   const orderId = Number(req.params.id);
   const lines = await orderLines(orderId);
-  const { rows: [o] } = await query('SELECT status, need_by FROM orders WHERE order_id = $1', [orderId]);
+  const bundles = lines.flatMap((l) => l.bundles);
+  const { rows: [o] } = await query('SELECT status FROM orders WHERE order_id = $1', [orderId]);
   if (!o || !PACK_STATUSES.includes(o.status)) return res.redirect(`/orders/${orderId}/pack`);
-  if (!lines.length || lines.some((l) => !l.packed_at)) {
-    return res.redirect(`/orders/${orderId}/pack?err=${encodeURIComponent('Some lines aren\'t checked yet.')}`);
+  if (!bundles.length || bundles.some((b) => !b.packed_at)) {
+    return res.redirect(`/orders/${orderId}/pack?err=${encodeURIComponent('Some bundles aren\'t checked yet.')}`);
   }
-  const checkers = [...new Set(lines.map((l) => l.packed_by).filter(Boolean))].join(', ');
+  const checkers = [...new Set(bundles.map((b) => b.packed_by).filter(Boolean))].join(', ');
   await tx(async (db) => {
     await db.query(`UPDATE orders SET status = 'completed', completed_at = COALESCE(completed_at, now()),
         completed_by = COALESCE(completed_by, $2), inspected_by = COALESCE(inspected_by, $3), updated_by = $2
