@@ -20,6 +20,11 @@ services:
       # once, to create the first Admin account; after that everyone has their own.
       - key: APP_PASSWORD
         sync: false
+      # QuickBooks (Admin > QuickBooks). Keys from the Intuit developer app.
+      - key: QBO_CLIENT_ID
+        sync: false
+      - key: QBO_CLIENT_SECRET
+        sync: false
 
 databases:
   - name: hpcm-db

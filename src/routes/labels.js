@@ -11,6 +11,7 @@ const { query, tx } = require('../db');
 const { html, raw, layout, num, date } = require('../html');
 const { can, need, userName } = require('../auth');
 const { syncOrderSupplies } = require('../supplies');
+const qbo = require('../qbo');
 
 const router = require('../async-router')();
 
@@ -501,6 +502,7 @@ router.post('/orders/:id(\\d+)/handoff', async (req, res) => {
       WHERE order_id = $1`, [orderId, userName(), method, clean(req.body.received_by), clean(req.body.note)]);
     await syncOrderSupplies(db, orderId, userName());
   });
+  qbo.orderCompleted(orderId);
   res.redirect(`/orders/${orderId}`);
 });
 

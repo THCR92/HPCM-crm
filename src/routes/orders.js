@@ -5,6 +5,7 @@ const { query, tx } = require('../db');
 const { feetInches } = require('../length');
 const { RUNNABLE, footage, runError } = require('../production');
 const { syncOrderSupplies } = require('../supplies');
+const qbo = require('../qbo');
 const { can, need, userName } = require('../auth');
 const Screws = require('../../public/screws');
 const {
@@ -505,6 +506,8 @@ router.post('/:id(\\d+)/status', async (req, res) => {
     // Boots, screws and other supplies come out of stock when the order is completed.
     await syncOrderSupplies(db, Number(req.params.id), userName());
   });
+  // Completed orders become QuickBooks invoices.
+  if (status === 'completed') qbo.orderCompleted(Number(req.params.id));
   res.redirect(back);
 });
 
@@ -728,6 +731,7 @@ router.get('/:id(\\d+)', async (req, res) => {
             <tr><th>Completed by</th><td>${o.completed_by}</td><th>Inspected by</th><td>${o.inspected_by}</td></tr>
             <tr><th>Invoice #</th><td>${o.qbo_doc_number}</td><th>Date</th><td>${date(o.completed_at)}</td></tr>
           </table>
+          ${await qboLine(o)}
         </div>
         ${prices ? html`<table class="totals">
           <tr><th>Materials</th><td>${money(o.lines_subtotal)}</td></tr>
@@ -847,6 +851,17 @@ router.post('/:id(\\d+)/attachments/:aid(\\d+)/delete', need('drawings'), async 
 // when the customer picks it up and back in when it's returned.
 // ---------------------------------------------------------------------------
 const canRent = () => can('inventory') || can('quotes');
+
+// Where a completed order stands with QuickBooks, with a button to send it again.
+async function qboLine(o) {
+  if (!['completed', 'invoiced'].includes(o.status) || !can('prices') || !(await qbo.connected())) return '';
+  const retry = can('approve') || can('status') ? html` <form method="post" action="/orders/${o.order_id}/qbo" class="inline">
+    <button class="btn small">${o.qbo_invoice_id ? 'Send again' : 'Send to QuickBooks'}</button></form>` : '';
+  if (o.qbo_sync_status === 'error') return html`<p class="no-print"><span class="warn-text">Not in QuickBooks: ${o.qbo_last_error}</span>${retry}</p>`;
+  if (o.qbo_invoice_id) return html`<p class="no-print muted small">In QuickBooks as invoice ${o.qbo_doc_number}${retry}</p>`;
+  if (o.qbo_sync_status === 'pending') return html`<p class="no-print muted small">Sending to QuickBooks…</p>`;
+  return html`<p class="no-print muted small">Not in QuickBooks yet${retry}</p>`;
+}
 
 async function rentalsSection(o, req) {
   const lines = o.sections.flatMap((s) => s.items).filter((i) => i.is_rental);

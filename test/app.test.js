@@ -944,3 +944,137 @@ test('handoff: unchecked bundles block pickup unless skipped; delivery is record
   assert.deepStrictEqual(o, { status: 'completed', handoff_method: 'delivery', received_by: 'Site foreman' });
   assert.strictEqual((await fetch(`${base}/orders/${id}/handoff`, { headers: { cookie: await signIn('production') } })).status, 200);
 });
+
+test('QuickBooks: connect, customers both ways, webhook, completed order becomes an invoice', async () => {
+  const qbo = require('../src/qbo');
+  const crypto = require('crypto');
+  Object.assign(process.env, { QBO_CLIENT_ID: 'test-id', QBO_CLIENT_SECRET: 'test-secret', QBO_WEBHOOK_TOKEN: 'verify-me' });
+  const realm = `9130${Date.now()}`;
+  const run = Date.now();
+  // A pretend QuickBooks company.
+  const qb = { customers: new Map(), items: new Map(), invoices: new Map(), next: 1 };
+  const addCustomer = (c) => { const id = String(qb.next++); qb.customers.set(id, { ...c, Id: id, SyncToken: '0', Active: true }); return id; };
+  const qbOnly = addCustomer({ DisplayName: `QB Only Roofing ${run}`, PrimaryPhone: { FreeFormNumber: '307-555-0100' },
+    BillAddr: { Line1: '1 Main St', City: 'Cheyenne', CountrySubDivisionCode: 'WY', PostalCode: '82001' } });
+  addCustomer({ DisplayName: `Some Job ${run}`, Job: true, ParentRef: { value: qbOnly } });
+  const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  const save = (map, body) => {
+    const old = body.Id && map.get(body.Id);
+    const id = old ? body.Id : String(qb.next++);
+    const rec = { ...(body.sparse && old ? old : {}), ...body, Id: id, SyncToken: old ? String(Number(old.SyncToken) + 1) : '0' };
+    if (rec.Active === undefined) rec.Active = true;
+    map.set(id, rec);
+    return rec;
+  };
+  const realFetchQbo = qbo.io.fetch;
+  qbo.io.fetch = async (url, opts = {}) => {
+    const u = new URL(url);
+    if (u.hostname === 'oauth.platform.intuit.com') return reply(200, { access_token: 'a1', refresh_token: 'r1', expires_in: 3600, x_refresh_token_expires_in: 8640000 });
+    if (u.hostname === 'developer.api.intuit.com') return reply(200, {});
+    assert.strictEqual(u.hostname, 'sandbox-quickbooks.api.intuit.com');
+    assert.strictEqual(opts.headers.Authorization, 'Bearer a1');
+    const path = u.pathname.replace(`/v3/company/${realm}/`, '');
+    const body = opts.body ? JSON.parse(opts.body) : null;
+    if (path === `companyinfo/${realm}`) return reply(200, { CompanyInfo: { CompanyName: 'Sandbox Co' } });
+    if (path === 'customer') return reply(200, { Customer: save(qb.customers, body) });
+    if (path === 'item') return reply(200, { Item: save(qb.items, body) });
+    if (path === 'invoice') return reply(200, { Invoice: save(qb.invoices, body) });
+    let m = path.match(/^(customer|invoice)\/(\w+)$/);
+    if (m) {
+      const rec = (m[1] === 'customer' ? qb.customers : qb.invoices).get(m[2]);
+      return rec ? reply(200, { [m[1] === 'customer' ? 'Customer' : 'Invoice']: rec })
+        : reply(400, { Fault: { Error: [{ Message: 'Object Not Found' }] } });
+    }
+    if (path === 'query') {
+      const q = u.searchParams.get('query');
+      if (/from Account/.test(q)) return reply(200, { QueryResponse: { Account: [{ Id: '79', Name: 'Sales of Product Income' }] } });
+      m = q.match(/from (Customer|Item) where (?:DisplayName|Name) = '((?:[^'\\]|\\.)*)'( and Active = false)?/);
+      if (m) {
+        const name = m[2].replace(/\\(.)/g, '$1');
+        const map = m[1] === 'Customer' ? qb.customers : qb.items;
+        const hits = [...map.values()].filter((r) => (r.DisplayName || r.Name) === name && (m[3] ? r.Active === false : r.Active !== false));
+        return reply(200, { QueryResponse: { [m[1]]: hits } });
+      }
+      if (/from Customer startposition/.test(q)) return reply(200, { QueryResponse: { Customer: [...qb.customers.values()] } });
+    }
+    if (path === 'cdc') return reply(200, { CDCResponse: [{ QueryResponse: [{ Customer: [] }] }] });
+    throw new Error(`pretend QuickBooks doesn't know ${opts.method || 'GET'} ${path}`);
+  };
+  const form = (path, body) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() })
+    .then((r) => decodeURIComponent(r.headers.get('location') || ''));
+  try {
+    assert.match(await (await fetch(`${base}/admin/quickbooks`)).text(), /Connect to QuickBooks/);
+    const go = new URL(await form('/qbo/connect', {}));
+    assert.strictEqual(go.hostname, 'appcenter.intuit.com');
+    assert.strictEqual(go.searchParams.get('scope'), 'com.intuit.quickbooks.accounting');
+    const back = await fetch(`${base}/qbo/callback?code=c1&state=${go.searchParams.get('state')}&realmId=${realm}`, { redirect: 'manual' });
+    assert.match(decodeURIComponent(back.headers.get('location')), /Connected/);
+    // The same link can't be used twice.
+    const again = await fetch(`${base}/qbo/callback?code=c1&state=${go.searchParams.get('state')}&realmId=${realm}`, { redirect: 'manual' });
+    assert.match(decodeURIComponent(again.headers.get('location')), /old or already used/);
+    await qbo.idle();
+    const { rows: [conn] } = await query('SELECT company_name, access_token FROM qbo_connection');
+    assert.strictEqual(conn.company_name, 'Sandbox Co');
+    assert.ok(!conn.access_token.includes('a1'), 'tokens are stored encrypted');
+
+    // QuickBooks -> CRM: the QuickBooks customer and its address came in; its job didn't.
+    const { rows: [pulled] } = await query(`SELECT c.customer_id, c.phone, a.city FROM customers c
+      LEFT JOIN customer_addresses a ON a.customer_id = c.customer_id AND a.address_type = 'billing'
+      WHERE c.qbo_customer_id = $1`, [qbOnly]);
+    assert.deepStrictEqual({ phone: pulled.phone, city: pulled.city }, { phone: '307-555-0100', city: 'Cheyenne' });
+    assert.strictEqual((await query('SELECT count(*)::int AS n FROM customers WHERE display_name = $1', [`Some Job ${run}`])).rows[0].n, 0);
+    // CRM -> QuickBooks: customers already in the CRM went over.
+    const { rows: [left] } = await query('SELECT count(*)::int AS n FROM customers WHERE active AND qbo_customer_id IS NULL');
+    assert.strictEqual(left.n, 0);
+
+    // A new CRM customer goes straight to QuickBooks.
+    const name = `Front Range Roofing ${run}`;
+    const created = await form('/customers', { display_name: name, phone: '307-555-0199', email: 'fr@example.com', tax_exempt: '1' });
+    await qbo.idle();
+    const customerId = Number(created.split('/').pop());
+    const inQb = [...qb.customers.values()].find((c) => c.DisplayName === name);
+    assert.deepStrictEqual([inQb.PrimaryPhone.FreeFormNumber, inQb.PrimaryEmailAddr.Address, inQb.Taxable], ['307-555-0199', 'fr@example.com', false]);
+    assert.match(await (await fetch(`${base}/customers/${customerId}`)).text(), /Matched/);
+
+    // Changed in QuickBooks: the webhook brings it back, signed or refused.
+    inQb.PrimaryPhone = { FreeFormNumber: '307-555-0222' };
+    inQb.SyncToken = '5';
+    const hook = JSON.stringify({ eventNotifications: [{ realmId: realm, dataChangeEvent: { entities: [{ name: 'Customer', id: inQb.Id, operation: 'Update' }] } }] });
+    const sign = (s) => crypto.createHmac('sha256', 'verify-me').update(s).digest('base64');
+    assert.strictEqual((await fetch(`${base}/qbo/webhook`, { method: 'POST', anonymous: true, body: hook, headers: { 'intuit-signature': 'nope' } })).status, 401);
+    assert.strictEqual((await fetch(`${base}/qbo/webhook`, { method: 'POST', anonymous: true, body: hook, headers: { 'intuit-signature': sign(hook) } })).status, 200);
+    await qbo.idle();
+    assert.strictEqual((await query('SELECT phone FROM customers WHERE customer_id = $1', [customerId])).rows[0].phone, '307-555-0222');
+
+    // A completed order becomes an invoice with the same number, lines, delivery and the CRM's tax.
+    const res = await post('/orders', { customer_id: pulled.customer_id, need_by: '2030-01-01', job_name: 'Barn', po_number: 'PO-7',
+      delivery_charge: 75, sections: [{ area: 'roof', items: [
+        { product_id: await productId('PNL-SL-26'), pieces: 10, length_in: 120, width_in: 18, unit_price: 3.65 }] }] });
+    const id = Number((await res.json()).redirect.split('/').pop());
+    await form(`/orders/${id}/status`, { status: 'confirmed' });
+    await form(`/orders/${id}/status`, { status: 'completed' });
+    await qbo.idle();
+    const { rows: [o] } = await query(`SELECT o.status, o.qbo_invoice_id, o.qbo_doc_number, o.order_number, o.qbo_sync_status, t.tax_amount
+      FROM orders o JOIN v_order_totals t USING (order_id) WHERE o.order_id = $1`, [id]);
+    assert.strictEqual(o.qbo_sync_status, 'synced');
+    assert.strictEqual(o.status, 'completed', 'test company keeps orders Completed');
+    const inv = qb.invoices.get(o.qbo_invoice_id);
+    assert.strictEqual(inv.DocNumber, o.order_number);
+    assert.strictEqual(inv.CustomerRef.value, qbOnly);
+    assert.deepStrictEqual(inv.Line.map((l) => [l.Amount, l.SalesItemLineDetail.Qty, l.SalesItemLineDetail.TaxCodeRef.value]),
+      [[547.5, 150, 'TAX'], [75, 1, 'NON']]);
+    assert.match(inv.Line[0].Description, /150\.00 sq ft/);
+    assert.strictEqual(inv.TxnTaxDetail.TotalTax, o.tax_amount);
+    assert.match(inv.CustomerMemo.value, /Job: Barn\nPO: PO-7/);
+    assert.ok([...qb.items.values()].some((i) => i.IncomeAccountRef.value === '79'));
+    assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /In QuickBooks as invoice/);
+    assert.match(await (await fetch(`${base}/admin/quickbooks`)).text(), /Connected to Sandbox Co/);
+  } finally {
+    await form('/qbo/disconnect', {});
+    await qbo.idle();
+    qbo.io.fetch = realFetchQbo;
+    for (const k of ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_WEBHOOK_TOKEN']) delete process.env[k];
+  }
+  assert.strictEqual((await query('SELECT count(*)::int AS n FROM qbo_connection')).rows[0].n, 0);
+});

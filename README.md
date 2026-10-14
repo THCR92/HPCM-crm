@@ -116,8 +116,8 @@ works out the square feet, linear feet and price for every line.
 - **Pickup and delivery** (`/orders/:id/handoff`, Production or Quotes permission): scanning the
   whole-order label of a Ready order opens this page (so does the "Picked up…/Delivered…" button).
   Pick pickup or delivery, type who received it and an optional note, and the order is marked
-  Completed with who handed it off and when. Unchecked bundles block it unless "hand off anyway"
-  is ticked; rental tools not yet checked out are flagged.
+  Completed with who handed it off and when. Unchecked bundles block it unless "Send it without every bundle
+  checked" is ticked; rental tools not yet checked out are flagged.
 - **Reports** (`/reports`, Admins and Managers): pick a date range (or a preset like This
   year) and see sales, quotes written, quote win rate (by count and dollars), average order,
   days from quote to approval, open quotes and work in the shop, quoted vs sold by week or
@@ -129,8 +129,18 @@ works out the square feet, linear feet and price for every line.
   Click a column to sort; every table downloads as a spreadsheet (CSV). Every status change
   is recorded (`order_status_history`), and cancelling a quote asks why it was lost.
 
-Coming next: sending completed orders to QuickBooks as invoices (see the QuickBooks
-mapping guide).
+- **QuickBooks** (Admin > QuickBooks, Admins only): connect once, then
+  - customers added or edited in the CRM are added or updated in QuickBooks right away;
+  - customers added or edited in QuickBooks come into the CRM by webhook (`/qbo/webhook`), with a
+    check for changes every 10 minutes in case one is missed. QuickBooks sub-customers (jobs) are skipped;
+  - an order becomes a QuickBooks invoice when it is completed (picked up or delivered): same
+    number, one line per cut-sheet line with its quantity, length and price, plus delivery, discount,
+    deposit and the CRM's sales tax. Price list items are added to QuickBooks as products the first
+    time they are invoiced. With the real company the order then reads Invoiced and is locked; with
+    the test (sandbox) company it stays Completed.
+  Customers and orders show where they stand, with a "Send to QuickBooks" button to retry.
+  Connecting a different company (test, then real) forgets the old company's ids. Tokens are
+  stored encrypted. Every call is listed under Recent activity (`qbo_sync_log`).
 
 ## How it's built
 
@@ -160,6 +170,10 @@ Settings (environment variables):
 | `DATABASE_SSL` | `true` when the database host requires SSL (most hosted databases). |
 | `APP_PASSWORD` | Needed once, to create the first Admin account (see Users below). |
 | `PORT` | Web port (default 3000). |
+| `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET` | Keys from the Intuit developer app (QuickBooks). |
+| `QBO_ENVIRONMENT` | `sandbox` (test company, the default) or `production` (the real books). |
+| `QBO_WEBHOOK_TOKEN` | Optional: the Intuit app's webhook verifier token, to check webhooks are from QuickBooks. |
+| `QBO_REDIRECT_URI` | Optional: defaults to `https://www.hpcmcrm.net/qbo/callback` on Render. |
 
 ## Putting it online (Render)
 

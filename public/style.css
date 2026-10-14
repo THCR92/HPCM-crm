@@ -71,6 +71,7 @@ a.admin-card h2 { margin: 0 0 .4rem; color: var(--brand); }
 
 .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; margin-bottom: 1rem; }
 .alert { background: #fdecea; border: 1px solid #f3b9b4; color: var(--warn); padding: .7rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
+.warn-text { color: var(--warn); }
 .notice { background: #e8f3ea; border: 1px solid #b6d9bd; padding: .7rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
 
 input, select, textarea { font: inherit; padding: .45rem .55rem; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); width: 100%; }

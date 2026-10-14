@@ -1,6 +1,7 @@
 const { query } = require('../db');
 const { html, layout, money, date, statusBadge } = require('../html');
 const { can, need } = require('../auth');
+const qbo = require('../qbo');
 
 const router = require('../async-router')();
 
@@ -55,6 +56,16 @@ const friendlyError = (err) => (err.code === '23505'
   ? 'Another customer already has that name. Customer names must be unique (QuickBooks requires it).'
   : err.message);
 
+// Where this customer stands with QuickBooks (only once QuickBooks is connected).
+async function qboRow(c) {
+  if (!(await qbo.connected())) return '';
+  const retry = can('customers') ? html` <form method="post" action="/customers/${c.customer_id}/qbo" class="inline">
+    <button class="btn small">Send to QuickBooks</button></form>` : '';
+  if (c.qbo_last_error) return html`<dt>QuickBooks</dt><dd><span class="warn-text">Not updated: ${c.qbo_last_error}</span>${retry}</dd>`;
+  if (c.qbo_customer_id) return html`<dt>QuickBooks</dt><dd>Matched${c.qbo_synced_at ? `, last synced ${date(c.qbo_synced_at)}` : ''}</dd>`;
+  return html`<dt>QuickBooks</dt><dd>Not in QuickBooks yet${retry}</dd>`;
+}
+
 router.get('/', async (req, res) => {
   const q = (req.query.q || '').trim();
   const { rows } = await query(`
@@ -98,6 +109,7 @@ router.post('/', need('customers'), async (req, res) => {
       INSERT INTO customers (${FIELDS.join(', ')}, tax_exempt)
       VALUES (${FIELDS.map((_, i) => `$${i + 1}`).join(', ')}, $${FIELDS.length + 1})
       RETURNING customer_id`, [...FIELDS.map((f) => c[f]), c.tax_exempt]);
+    qbo.customerChanged(rows[0].customer_id);
     res.redirect(`/customers/${rows[0].customer_id}`);
   } catch (err) {
     res.status(400).send(layout({
@@ -134,6 +146,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       ${row('Terms', c.payment_terms)}${row('Usually', c.default_fulfillment === 'delivery' ? 'Gets delivery' : 'Picks up')}
       ${row('Tax', c.tax_exempt ? `Exempt${c.resale_cert_number ? ` (cert ${c.resale_cert_number})` : ''}` : 'Taxable')}
       ${row('Notes', c.notes)}
+      ${await qboRow(c)}
     </dl></div>
     <h2>Orders</h2>
     <table class="list">
@@ -164,6 +177,7 @@ router.post('/:id(\\d+)', need('customers'), async (req, res) => {
              tax_exempt = $${FIELDS.length + 1}
       WHERE customer_id = $${FIELDS.length + 2}`,
     [...FIELDS.map((f) => c[f]), c.tax_exempt, req.params.id]);
+    qbo.customerChanged(Number(req.params.id));
     res.redirect(`/customers/${req.params.id}`);
   } catch (err) {
     res.status(400).send(layout({

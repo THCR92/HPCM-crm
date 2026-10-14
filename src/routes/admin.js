@@ -30,6 +30,7 @@ router.get('/admin', need('admin'), async (req, res) => {
       ${card('/admin/products', 'Products', `${c.products} products. Add new ones, rename, change units, or remove.`)}
       ${card('/colors', 'Colors and finishes', `${c.colors} colors. Add colors, premiums and finishes.`)}
       ${card('/admin/screws', 'Screws and clips', 'Which screws and clips go with each panel and framing, and how many.')}
+      ${card('/admin/quickbooks', 'QuickBooks', 'Connect QuickBooks. Customers sync both ways; completed orders become invoices.')}
       ${card('/admin/suppliers', 'Suppliers', `${c.suppliers} suppliers. Edit contact details or remove.`)}
     </div>`,
   }));

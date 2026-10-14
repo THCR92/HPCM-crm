@@ -10,6 +10,13 @@ app.get('/healthz', (req, res) => res.send(`ok ${(process.env.RENDER_GIT_COMMIT 
 // Render sits in front of the app; trust it so secure cookies work.
 app.set('trust proxy', 1);
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// QuickBooks webhooks: no sign-in, and the raw body is needed to check QuickBooks' signature.
+const qbo = require('./qbo');
+app.post('/qbo/webhook', express.raw({ type: () => true, limit: '1mb' }), (req, res, next) => {
+  qbo.handleWebhook(req.body || Buffer.alloc(0), req.get('intuit-signature'))
+    .then((ok) => res.status(ok ? 200 : 401).end(), next);
+});
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: '1mb' }));
 
@@ -24,6 +31,7 @@ app.use('/board', require('./routes/board'));
 app.use('/', require('./routes/reports'));
 app.use('/', require('./routes/supplies'));
 app.use('/', require('./routes/labels'));
+app.use('/', require('./routes/qbo'));
 app.use('/', require('./routes/admin'));
 app.use('/', require('./routes/catalog'));
 app.use('/', require('./routes/inventory'));
@@ -38,6 +46,7 @@ app.use((err, req, res, next) => {
 const port = Number(process.env.PORT) || 3000;
 if (require.main === module) {
   app.listen(port, () => console.log(`HPCM CRM running at http://localhost:${port}`));
+  qbo.startChecks();
 }
 
 module.exports = app;
