@@ -304,3 +304,5 @@ table.pack tr.bundle.packed td:nth-child(2) { color: var(--ink); }
   border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 6px 18px rgba(0,0,0,.12); padding: .3rem;
   display: flex; flex-direction: column; }
 .topbar nav .nav-drop a { padding: .5rem .75rem; }
+.handoff .big-name { font-size: 1.6rem; font-weight: 700; color: var(--brand); }
+.btn.big-btn { font-size: 1.1rem; padding: .7rem 1.4rem; }

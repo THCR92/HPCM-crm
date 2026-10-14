@@ -34,8 +34,12 @@ async function resolve(raw0) {
   const up = code.toUpperCase();
   let r;
   if (/^HP-?\d+$/.test(up)) {
-    r = await query('SELECT order_id FROM orders WHERE order_number = $1', [up.replace(/^HP-?/, 'HP-')]);
-    if (r.rows[0]) return { kind: 'order', id: r.rows[0].order_id, path: `/orders/${r.rows[0].order_id}` };
+    r = await query('SELECT order_id, status FROM orders WHERE order_number = $1', [up.replace(/^HP-?/, 'HP-')]);
+    // A finished order waiting to leave opens straight to pickup / delivery.
+    if (r.rows[0]) {
+      const { order_id: id, status } = r.rows[0];
+      return { kind: 'order', id, path: status === 'ready' ? `/orders/${id}/handoff` : `/orders/${id}` };
+    }
   }
   const k = up.match(/^([LCSTB])(\d+)$/);
   if (k) {
@@ -324,11 +328,13 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
         </tbody>`;
       })}
     </table>
-    ${open && bundles.length && done === bundles.length ? html`
+    ${open && bundles.length && done === bundles.length ? (o.status === 'ready' ? html`
+    <div class="card pack-done"><strong>Everything is checked and the order is ready to leave.</strong>
+      <a class="btn primary" href="/orders/${o.order_id}/handoff">${o.fulfillment === 'delivery' ? 'Delivered' : 'Picked up'}…</a></div>` : html`
     <form method="post" action="/orders/${o.order_id}/pack/complete" class="card pack-done">
       <strong>Everything is checked.</strong>
-      <button class="btn primary">Mark order completed</button>
-    </form>` : ''}`,
+      <button class="btn primary">Mark ready for ${o.fulfillment === 'delivery' ? 'delivery' : 'pickup'}</button>
+    </form>`) : ''}`,
   }));
 });
 
@@ -414,11 +420,85 @@ router.post('/orders/:id(\\d+)/pack/complete', need('production'), async (req, r
   if (!bundles.length || bundles.some((b) => !b.packed_at)) {
     return res.redirect(`/orders/${orderId}/pack?err=${encodeURIComponent('Some bundles aren\'t checked yet.')}`);
   }
+  // Checked and packed: ready to leave. Scanning the whole-order label at
+  // pickup or delivery completes it.
   const checkers = [...new Set(bundles.map((b) => b.packed_by).filter(Boolean))].join(', ');
+  await query(`UPDATE orders SET status = 'ready', ready_at = COALESCE(ready_at, now()),
+      inspected_by = COALESCE(inspected_by, $3), updated_by = $2
+    WHERE order_id = $1`, [orderId, userName(), checkers]);
+  res.redirect(`/orders/${orderId}/pack`);
+});
+
+// ---------------------------------------------------------------------------
+// Pickup and delivery: scan the whole-order label as it leaves the shop.
+// ---------------------------------------------------------------------------
+const HANDOFF_FROM = ['confirmed', 'in_production', 'ready'];
+const canHandoff = () => can('production') || can('quotes');
+
+router.get('/orders/:id(\\d+)/handoff', async (req, res) => {
+  if (!canHandoff()) return res.status(403).send('Not allowed');
+  const { rows: [o] } = await query(`SELECT o.*, c.display_name AS customer, c.phone AS customer_phone
+    FROM orders o JOIN customers c USING (customer_id) WHERE o.order_id = $1`, [req.params.id]);
+  if (!o) return res.status(404).send('Order not found');
+  const lines = await orderLines(o.order_id);
+  const bundles = lines.flatMap((l) => l.bundles);
+  const unchecked = bundles.filter((b) => !b.packed_at).length;
+  const { rows: tools } = await query(`
+    SELECT oi.order_item_id, p.name, EXISTS (SELECT 1 FROM tool_rentals r WHERE r.order_item_id = oi.order_item_id) AS out
+    FROM order_items oi JOIN products p USING (product_id) WHERE oi.order_id = $1 AND p.is_rental`, [o.order_id]);
+  const toolsNotOut = tools.filter((t) => !t.out);
+  const method = o.fulfillment === 'delivery' ? 'delivery' : 'pickup';
+  const open = HANDOFF_FROM.includes(o.status);
+  res.send(layout({
+    title: `${method === 'delivery' ? 'Deliver' : 'Pick up'} ${o.order_number}`, active: '/orders',
+    body: html`
+    <div class="page-head"><h1>${method === 'delivery' ? 'Delivery' : 'Pickup'}: ${o.order_number}</h1>
+      <a class="btn" href="/orders/${o.order_id}">Back to the order</a></div>
+    ${req.query.err ? html`<div class="alert">${req.query.err}</div>` : ''}
+    <div class="card handoff">
+      <div class="big-name">${o.customer}</div>
+      <p>${o.job_name ? html`${o.job_name} · ` : ''}${o.customer_phone}${o.need_by ? html` · need by ${date(o.need_by)}` : ''}</p>
+      <p><strong>${bundles.length} bundle${bundles.length === 1 ? '' : 's'}</strong> on ${lines.length} line${lines.length === 1 ? '' : 's'}:
+        ${lines.map((l) => `${lineText(l)}${l.color ? ` (${l.color})` : ''}`).join('; ')}</p>
+      ${o.handed_off_at ? html`<div class="notice">Already ${o.handoff_method === 'delivery' ? 'delivered' : 'picked up'}
+        ${new Date(o.handed_off_at).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' })}
+        by ${o.handed_off_by}${o.received_by ? `, received by ${o.received_by}` : ''}.</div>` : ''}
+      ${unchecked && open ? html`<div class="alert">${unchecked} bundle${unchecked === 1 ? ' hasn\'t' : 's haven\'t'} been checked in
+        <a href="/orders/${o.order_id}/pack">Pack &amp; check</a>.</div>` : ''}
+      ${toolsNotOut.length && open ? html`<div class="alert">Rental tools not checked out yet: ${toolsNotOut.map((t) => t.name).join(', ')}.
+        <a href="/orders/${o.order_id}#rentals">Check them out</a> before it leaves.</div>` : ''}
+      ${open ? html`<form method="post" action="/orders/${o.order_id}/handoff" class="form-grid" style="margin-top:1rem">
+        <label>How<select name="method">
+          <option value="pickup" ${method === 'pickup' ? 'selected' : ''}>Picked up</option>
+          <option value="delivery" ${method === 'delivery' ? 'selected' : ''}>Delivered</option></select></label>
+        <label>Received by<input name="received_by" placeholder="Name of the person who took it" autofocus></label>
+        <label class="span2">Note<input name="note" placeholder="Truck, trailer, anything missing…"></label>
+        ${unchecked ? html`<label class="check span2"><input type="checkbox" name="skip_check" value="1"> Send it without every bundle checked</label>` : ''}
+        <div class="span2 actions"><button class="btn primary big-btn">${method === 'delivery' ? 'Mark delivered' : 'Mark picked up'}</button></div>
+      </form>` : html`<p class="muted">This order is ${o.status}.</p>`}
+    </div>`,
+  }));
+});
+
+router.post('/orders/:id(\\d+)/handoff', async (req, res) => {
+  if (!canHandoff()) return res.status(403).send('Not allowed');
+  const orderId = Number(req.params.id);
+  const back = (err) => res.redirect(`/orders/${orderId}/handoff?err=${encodeURIComponent(err)}`);
+  const { rows: [o] } = await query('SELECT status FROM orders WHERE order_id = $1', [orderId]);
+  if (!o) return res.status(404).send('Order not found');
+  if (!HANDOFF_FROM.includes(o.status)) return back(`This order is ${o.status}.`);
+  const bundles = (await orderLines(orderId)).flatMap((l) => l.bundles);
+  if (bundles.some((b) => !b.packed_at) && req.body.skip_check !== '1') {
+    return back('Some bundles haven\'t been checked. Check them, or tick "Send it without every bundle checked".');
+  }
+  const method = req.body.method === 'delivery' ? 'delivery' : 'pickup';
+  const clean = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
   await tx(async (db) => {
     await db.query(`UPDATE orders SET status = 'completed', completed_at = COALESCE(completed_at, now()),
-        completed_by = COALESCE(completed_by, $2), inspected_by = COALESCE(inspected_by, $3), updated_by = $2
-      WHERE order_id = $1`, [orderId, userName(), checkers]);
+        completed_by = COALESCE(completed_by, $2), handed_off_at = now(), handed_off_by = $2, handoff_method = $3,
+        received_by = $4, handoff_note = $5, updated_by = $2,
+        delivered_on = (now() AT TIME ZONE 'America/Denver')::date
+      WHERE order_id = $1`, [orderId, userName(), method, clean(req.body.received_by), clean(req.body.note)]);
     await syncOrderSupplies(db, orderId, userName());
   });
   res.redirect(`/orders/${orderId}`);

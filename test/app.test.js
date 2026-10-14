@@ -864,12 +864,24 @@ test('barcodes: labels print, scans open the right page, pack and check catches 
   res = await form(`/orders/${a.id}/pack/complete`, {});
   assert.match(decodeURIComponent(res.headers.get('location')), /aren't checked/);
   assert.match(await pack(`L${a.lines[1]}`), /All bundles checked/);
-  assert.match(await (await fetch(`${base}/orders/${a.id}/pack`)).text(), /Mark order completed/);
+  assert.match(await (await fetch(`${base}/orders/${a.id}/pack`)).text(), /Mark ready for pickup/);
   assert.strictEqual((await form(`/orders/${a.id}/pack`, { code: `L${a.lines[1]}` }, await signIn('sales'))).status, 403);
   await form(`/orders/${a.id}/pack/complete`, {});
   const { rows: [done] } = await query('SELECT status, inspected_by FROM orders WHERE order_id = $1', [a.id]);
-  assert.strictEqual(done.status, 'completed');
+  assert.strictEqual(done.status, 'ready');
   assert.ok(done.inspected_by);
+  // Scanning the whole-order label of a ready order opens pickup.
+  res = await fetch(`${base}/scan?code=${a.number}`, { redirect: 'manual' });
+  assert.strictEqual(res.headers.get('location'), `/orders/${a.id}/handoff`);
+  assert.match(await (await fetch(`${base}/orders/${a.id}/handoff`)).text(), /Mark picked up/);
+  await form(`/orders/${a.id}/handoff`, { method: 'pickup', received_by: 'Joe Smith', note: 'Flatbed' });
+  const { rows: [gone] } = await query(`SELECT status, handoff_method, received_by, handed_off_at, delivered_on
+    FROM orders WHERE order_id = $1`, [a.id]);
+  assert.strictEqual(gone.status, 'completed');
+  assert.strictEqual(gone.handoff_method, 'pickup');
+  assert.strictEqual(gone.received_by, 'Joe Smith');
+  assert.ok(gone.handed_off_at && gone.delivered_on);
+  assert.match(await (await fetch(`${base}/orders/${a.id}`)).text(), /Picked up.*received by Joe Smith/s);
   const { rows: [took] } = await query("SELECT count(*)::int AS n FROM supply_transactions WHERE order_id = $1 AND txn_type = 'order'", [a.id]);
   assert.strictEqual(took.n, 1);
 
@@ -913,5 +925,22 @@ test('bundles: drip edge splits into bundles of 10, the split can change, each b
   assert.match(await form(`/orders/${id}/pack`, { code: `https://www.hpcmcrm.net/s/B${b2.bundle_id}` }), /All bundles checked/);
   assert.ok((await query('SELECT packed_at FROM order_items WHERE order_item_id = $1', [line.order_item_id])).rows[0].packed_at);
   await form(`/orders/${id}/pack/complete`, {});
-  assert.strictEqual((await query('SELECT status FROM orders WHERE order_id = $1', [id])).rows[0].status, 'completed');
+  assert.strictEqual((await query('SELECT status FROM orders WHERE order_id = $1', [id])).rows[0].status, 'ready');
+});
+
+test('handoff: unchecked bundles block pickup unless skipped; delivery is recorded', async () => {
+  const form = (path, body) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() })
+    .then((r) => decodeURIComponent(r.headers.get('location') || ''));
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Truck ' || gen_random_uuid()) RETURNING customer_id");
+  const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', fulfillment: 'delivery', sections: [{ area: 'trim', items: [
+    { product_id: await productId('TRM-D-STYLE-90'), pieces: 12, length_in: 120, unit_price: 10 }] }] });
+  const id = Number((await res.json()).redirect.split('/').pop());
+  assert.match(await form(`/orders/${id}/handoff`, { method: 'delivery' }), /This order is quote/);
+  await form(`/orders/${id}/status`, { status: 'confirmed' });
+  assert.match(await form(`/orders/${id}/handoff`, { method: 'delivery' }), /haven't been checked/);
+  assert.strictEqual(await form(`/orders/${id}/handoff`, { method: 'delivery', skip_check: '1', received_by: 'Site foreman' }), `/orders/${id}`);
+  const { rows: [o] } = await query('SELECT status, handoff_method, received_by FROM orders WHERE order_id = $1', [id]);
+  assert.deepStrictEqual(o, { status: 'completed', handoff_method: 'delivery', received_by: 'Site foreman' });
+  assert.strictEqual((await fetch(`${base}/orders/${id}/handoff`, { headers: { cookie: await signIn('production') } })).status, 200);
 });

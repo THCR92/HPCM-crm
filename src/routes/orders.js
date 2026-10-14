@@ -662,6 +662,7 @@ router.get('/:id(\\d+)', async (req, res) => {
         <button class="btn" onclick="window.print()">Print cut sheet</button>
         ${o.status !== 'quote' && o.status !== 'cancelled' ? html`<a class="btn" href="/labels/order/${o.order_id}">Labels</a>` : ''}
         ${['confirmed', 'in_production', 'ready'].includes(o.status) && can('production') ? html`<a class="btn" href="/orders/${o.order_id}/pack">Pack &amp; check</a>` : ''}
+        ${o.status === 'ready' && (can('production') || can('quotes')) ? html`<a class="btn primary" href="/orders/${o.order_id}/handoff">${o.fulfillment === 'delivery' ? 'Delivered…' : 'Picked up…'}</a>` : ''}
         ${o.status !== 'invoiced' && nextStatuses.length ? html`
         <form method="post" action="/orders/${o.order_id}/status" class="inline">
           <select name="status">${nextStatuses.map((s) => html`<option value="${s}">${STATUS_LABEL[s]}</option>`)}</select>
@@ -716,6 +717,10 @@ router.get('/:id(\\d+)', async (req, res) => {
         <div>
           ${o.customer_memo ? html`<p><strong>Note to customer:</strong> ${o.customer_memo}</p>` : ''}
           ${o.internal_notes ? html`<p class="no-print"><strong>Shop notes:</strong> ${o.internal_notes}</p>` : ''}
+          ${o.handed_off_at ? html`<p><strong>${o.handoff_method === 'delivery' ? 'Delivered' : 'Picked up'}</strong>
+            ${new Date(o.handed_off_at).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' })}${
+            o.received_by ? `, received by ${o.received_by}` : ''}${o.handed_off_by ? ` (handed off by ${o.handed_off_by})` : ''}${
+            o.handoff_note ? html`<br><span class="muted">${o.handoff_note}</span>` : ''}</p>` : ''}
           ${o.created_by || o.approved_by ? html`<p class="no-print muted small">${o.created_by ? `Written by ${o.created_by}` : ''}${
             o.created_by && o.approved_by ? ' · ' : ''}${o.approved_by ? `approved by ${o.approved_by}` : ''}${
             o.updated_by && o.updated_by !== o.created_by ? ` · last changed by ${o.updated_by}` : ''}</p>` : ''}

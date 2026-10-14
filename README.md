@@ -106,13 +106,18 @@ works out the square feet, linear feet and price for every line.
   sheets (4" x 2", 10 per page) or label printers (4" x 2" or 2.25" x 1.25").
 - **Pack and check** (`/orders/:id/pack`, Production permission): scan each line's label as its
   bundle is checked against the order. Labels from another order are flagged, and a line can be
-  checked without its label. When every line is checked the order can be marked Completed
+  checked without its label. When every line is checked the order is marked Ready
   (inspected by = whoever checked). Editing the order clears its checks.
   Lines are packed in bundles, set on the pack page before checking: type how many go in a
   bundle ("10" makes 26 pieces 10 + 10 + 6; the CRM remembers it as the usual for that item,
   drip edge 2x2, 2x4 and D style start at 10) or each bundle's count ("13, 13"). There is one
   label per bundle (`B<id>`).
   Each cut-sheet line is one length, so panels of different lengths are always separate bundles.
+- **Pickup and delivery** (`/orders/:id/handoff`, Production or Quotes permission): scanning the
+  whole-order label of a Ready order opens this page (so does the "Picked up…/Delivered…" button).
+  Pick pickup or delivery, type who received it and an optional note, and the order is marked
+  Completed with who handed it off and when. Unchecked bundles block it unless "hand off anyway"
+  is ticked; rental tools not yet checked out are flagged.
 - **Reports** (`/reports`, Admins and Managers): pick a date range (or a preset like This
   year) and see sales, quotes written, quote win rate (by count and dollars), average order,
   days from quote to approval, open quotes and work in the shop, quoted vs sold by week or
