@@ -51,22 +51,29 @@ const statusBadge = (s) => html`<span class="badge badge-${s}">${STATUS_LABEL[s]
 const NAV = [
   ['/orders', 'Quotes & orders'],
   ['/customers', 'Customers'],
-  ['/coils', 'Coils'],
-  ['/stock', 'Stock'],
-  ['/supplies', 'Supplies'],
-  ['/tools', 'Tools'],
   ['/products', 'Price list', 'prices'],
   ['/colors', 'Colors'],
   ['/board', 'Shop board'],
-  ['/reports', 'Reports', 'reports'],
+  ['menu', 'Reports'],
   ['/admin', 'Admin', 'admin'],
+];
+// The Reports dropdown: reports and inventory.
+const MENU = [
+  ['/reports', 'Reports', 'reports'],
+  ['/coils', 'Coils'],
+  ['/stock', 'Finished stock'],
+  ['/supplies', 'Supplies'],
+  ['/tools', 'Tools'],
 ];
 
 // Returns a plain string, ready for res.send(). `bare` leaves out the menu (sign-in page).
 const layout = ({ title, active, body, scripts = [], bare = false }) => {
   const { currentUser, can, isAdmin } = require('./auth');
   const user = bare ? null : currentUser();
-  const shown = NAV.filter(([, , perm]) => !perm || (perm === 'admin' ? isAdmin(user) : can(perm, user)));
+  const allowed = ([, , perm]) => !perm || (perm === 'admin' ? isAdmin(user) : can(perm, user));
+  const shown = NAV.filter(allowed);
+  const menu = MENU.filter(allowed);
+  const inMenu = menu.some(([href]) => href === active);
   return String(html`<!doctype html>
 <html lang="en">
 <head>
@@ -80,13 +87,17 @@ const layout = ({ title, active, body, scripts = [], bare = false }) => {
 ${user ? html`<header class="topbar">
   <a class="brand" href="/orders"><img src="/logo.svg" alt="High Plains Custom Metal"></a>
   ${can('quotes', user) ? html`<a class="btn quote-btn" href="/orders/new">+ Quote</a>` : ''}
-  <nav>${shown.map(([href, label]) =>
-    html`<a href="${href}" class="${active === href ? 'active' : ''}">${label}</a>`)}</nav>
+  <nav>${shown.map(([href, label]) => (href === 'menu'
+    ? html`<details class="nav-menu"><summary class="${inMenu ? 'active' : ''}">${can('reports', user) ? label : 'Inventory'}</summary>
+      <div class="nav-drop">${menu.map(([h, l]) => html`<a href="${h}" class="${active === h ? 'active' : ''}">${l}</a>`)}</div></details>`
+    : html`<a href="${href}" class="${active === href ? 'active' : ''}">${label}</a>`))}</nav>
   <form class="scan-box" method="get" action="/scan" role="search"><input name="code" placeholder="Scan or type a code" aria-label="Scan or type a code" autocomplete="off"></form>
   <div class="who"><a href="/account" title="My account">${user.full_name}</a>
     <form method="post" action="/logout" class="inline"><button class="linkish">Sign out</button></form></div>
 </header>` : ''}
 <main>${body}</main>
+${user ? raw(`<script>document.addEventListener('click', (e) => { document.querySelectorAll('details.nav-menu[open]')
+  .forEach((d) => { if (!d.contains(e.target)) d.open = false; }); });</script>`) : ''}
 ${scripts.map((src) => html`<script src="${src}"></script>`)}
 </body>
 </html>`);

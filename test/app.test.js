@@ -902,6 +902,10 @@ test('bundles: drip edge splits into bundles of 10, the split can change, each b
 
   assert.match(await form(`/orders/${id}/pack`, { code: `L${line.order_item_id}` }), /in 3 bundles/);
   assert.match(await form(`/orders/${id}/pack/bundles`, { order_item_id: line.order_item_id, split: '13, 12' }), /add up to 25/);
+  assert.match(await form(`/orders/${id}/pack/bundles`, { order_item_id: line.order_item_id, split: '12' }),
+    /3 bundles: 12 \+ 12 \+ 2.*12 per bundle is now the usual/);
+  assert.strictEqual((await query('SELECT bundle_size FROM products WHERE product_id = $1', [await productId('TRM-D-STYLE-90')])).rows[0].bundle_size, 12);
+  await query("UPDATE products SET bundle_size = 10 WHERE sku = 'TRM-D-STYLE-90'");
   assert.match(await form(`/orders/${id}/pack/bundles`, { order_item_id: line.order_item_id, split: '13, 13' }), /2 bundles: 13 \+ 13/);
   const [b1, b2] = await bundles();
   assert.match(await form(`/orders/${id}/pack`, { code: `B${b1.bundle_id}` }), /bundle 1 of 2.*1 to go/);

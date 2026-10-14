@@ -290,7 +290,8 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
         <a class="btn" href="/orders/${o.order_id}">Back to the order</a></div></div>
     <p><strong>${o.customer}</strong>${o.job_name ? ` · ${o.job_name}` : ''}${o.need_by ? ` · need by ${date(o.need_by)}` : ''}
       · ${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</p>
-    <p class="muted small">1. Count each line into bundles; change the split if it's packed differently (e.g. "13, 13").
+    <p class="muted small">1. Count each line into bundles: type how many go in a bundle (10 makes 26 pieces 10 + 10 + 6), or each
+      bundle's count (13, 13). The CRM remembers the bundle size for that item next time.
       2. Print the labels and stick one on each bundle. 3. Scan each bundle as you check it against the line.</p>
     ${msg}
     ${open ? html`<form method="post" action="/orders/${o.order_id}/pack" class="card scan-big">
@@ -308,7 +309,8 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
           <td>${l.line_no}</td><td><strong>${lineText(l)}</strong></td><td>${l.color}</td><td>${l.gauge ? `${l.gauge} ga` : ''}</td>
           <td colspan="2">${open && !anyPacked ? html`<form method="post" action="/orders/${o.order_id}/pack/bundles" class="inline bundle-split">
               <input type="hidden" name="order_item_id" value="${l.order_item_id}">
-              <label>Bundles <input name="split" value="${l.bundles.map((b) => num(b.pieces)).join(', ')}" size="12"></label>
+              <label title="One number = that many per bundle (10 → 10 + 10 + 6). Several = each bundle (13, 13).">Bundles
+                <input name="split" value="${l.bundles.map((b) => num(b.pieces)).join(', ')}" size="12"></label>
               <button class="btn small">Change</button></form>`
             : html`<span class="muted small">${l.bundles.length} bundle${l.bundles.length === 1 ? '' : 's'}: ${l.bundles.map((b) => num(b.pieces)).join(' + ')}</span>`}
             <a class="small" href="/labels/order/${o.order_id}?line=${l.order_item_id}">labels</a></td>
@@ -340,6 +342,13 @@ router.post('/orders/:id(\\d+)/pack/bundles', need('production'), async (req, re
   if (l.bundles.some((b) => b.packed_at)) return to('err', `Line ${l.line_no} already has checked bundles. Undo them first.`);
   const parts = String(req.body.split || '').split(/[\s,+]+/).filter(Boolean).map(Number);
   if (!parts.length || parts.some((n) => !(n > 0))) return to('err', 'Enter the pieces in each bundle, like 10, 10, 6.');
+  // One number smaller than the line: that many per bundle, remembered for this item.
+  let perBundle = null;
+  if (parts.length === 1 && parts[0] < Number(l.pieces)) {
+    perBundle = Math.round(parts[0]);
+    if (perBundle < 1) return to('err', 'A bundle needs at least 1 piece.');
+    parts.splice(0, 1, ...split(l.pieces, perBundle));
+  }
   const sum = Math.round(parts.reduce((a, n) => a + n, 0) * 100) / 100;
   if (sum !== Number(l.pieces)) return to('err', `Line ${l.line_no} has ${num(l.pieces)} pieces, but those bundles add up to ${num(sum)}.`);
   await tx(async (db) => {
@@ -347,8 +356,12 @@ router.post('/orders/:id(\\d+)/pack/bundles', need('production'), async (req, re
     for (const [i, n] of parts.entries()) {
       await db.query('INSERT INTO order_bundles (order_item_id, seq, pieces) VALUES ($1, $2, $3)', [l.order_item_id, i + 1, n]);
     }
+    if (perBundle) {
+      await db.query(`UPDATE products SET bundle_size = $2 FROM order_items oi
+        WHERE oi.order_item_id = $1 AND products.product_id = oi.product_id`, [l.order_item_id, perBundle]);
+    }
   });
-  to('ok', `Line ${l.line_no} is now ${parts.length} bundle${parts.length === 1 ? '' : 's'}: ${parts.join(' + ')}. Print its labels again.`);
+  to('ok', `Line ${l.line_no} is now ${parts.length} bundle${parts.length === 1 ? '' : 's'}: ${parts.join(' + ')}. Print its labels again.${perBundle ? ` ${perBundle} per bundle is now the usual for ${l.product_name}.` : ''}`);
 });
 
 router.post('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {

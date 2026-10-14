@@ -108,9 +108,10 @@ works out the square feet, linear feet and price for every line.
   bundle is checked against the order. Labels from another order are flagged, and a line can be
   checked without its label. When every line is checked the order can be marked Completed
   (inspected by = whoever checked). Editing the order clears its checks.
-  Lines are packed in bundles: each product can have "Pieces per bundle" (Admin > Products;
-  standard drip edge 2x2, 2x4 and D style = 10), so 26 pieces = 10 + 10 + 6. The split can be
-  changed on the pack page before checking ("13, 13"); there is one label per bundle (`B<id>`).
+  Lines are packed in bundles, set on the pack page before checking: type how many go in a
+  bundle ("10" makes 26 pieces 10 + 10 + 6; the CRM remembers it as the usual for that item,
+  drip edge 2x2, 2x4 and D style start at 10) or each bundle's count ("13, 13"). There is one
+  label per bundle (`B<id>`).
   Each cut-sheet line is one length, so panels of different lengths are always separate bundles.
 - **Reports** (`/reports`, Admins and Managers): pick a date range (or a preset like This
   year) and see sales, quotes written, quote win rate (by count and dollars), average order,
