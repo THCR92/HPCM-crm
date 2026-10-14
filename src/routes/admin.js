@@ -91,6 +91,10 @@ async function productForm(res, p, error) {
       ${isNew ? html`<label>Price<input name="unit_price" type="number" step="0.01" min="0" placeholder="leave blank if it varies"></label>` : ''}
       <label class="check"><input type="checkbox" name="is_cut_to_length" value="1" ${p.is_cut_to_length ? 'checked' : ''}> Every line needs a length</label>
       <label class="check"><input type="checkbox" name="taxable" value="1" ${p.taxable !== false ? 'checked' : ''}> Taxable</label>
+      <label class="check"><input type="checkbox" name="track_stock" value="1" ${p.track_stock ? 'checked' : ''}> Count on hand (Supplies page)</label>
+      <label class="check"><input type="checkbox" name="stock_by_color" value="1" ${p.stock_by_color ? 'checked' : ''}> Count each color separately</label>
+      <label class="check"><input type="checkbox" name="is_rental" value="1" ${p.is_rental ? 'checked' : ''}> Tool rental (quantity on a quote = days)</label>
+      <span></span>
       ${isNew ? '' : html`<label class="check"><input type="checkbox" name="active" value="1" ${p.active ? 'checked' : ''}> Show on new quotes</label>`}
       <div class="span2 actions"><button class="btn primary">${isNew ? 'Add product' : 'Save'}</button>
         <a class="btn" href="/admin/products">Cancel</a></div>
@@ -116,6 +120,9 @@ const productFromBody = (b) => ({
   is_cut_to_length: b.is_cut_to_length === '1',
   taxable: b.taxable === '1',
   active: b.active === '1',
+  track_stock: b.track_stock === '1',
+  stock_by_color: b.track_stock === '1' && b.stock_by_color === '1',
+  is_rental: b.is_rental === '1',
 });
 const makeSku = (name) => name.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
 
@@ -132,7 +139,7 @@ const dbProblem = (err) => (err.code === '23505' ? 'Another product already uses
   : err.code === '23514' ? 'Those settings don\'t fit together (a panel needs a profile and gauge; custom trim is per sq ft).' : null);
 
 const COLS = ['name', 'sku', 'category', 'pricing_unit', 'profile_id', 'gauge_id', 'standard_length_in',
-  'max_length_in', 'girth_in', 'is_cut_to_length', 'taxable'];
+  'max_length_in', 'girth_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental'];
 
 router.get('/admin/products/new', need('catalog'), (req, res) => productForm(res, { taxable: true }));
 

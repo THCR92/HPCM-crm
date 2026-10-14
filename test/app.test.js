@@ -698,3 +698,101 @@ test('reports: Admins and Managers only; status changes are logged; lost reasons
   assert.match(row, /,50,/);
   assert.match((await as(manager, '/reports?range=month&csv=lost')).headers.get('content-type'), /text\/csv/);
 });
+
+test('supplies: receive, count, open orders, completed orders take them out and reopening puts them back', async () => {
+  const boot = await productId('BOOT-1-ZIP');
+  const screw = await productId('SCR-10-1-5-WOODTITE-SCREWS');
+  const { rows: [col] } = await query("INSERT INTO colors (name) VALUES ('Supply ' || gen_random_uuid()) RETURNING color_id");
+  const form = (path, body, cookie) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(cookie ? { cookie } : {}) }, body: new URLSearchParams(body).toString() });
+  const onHand = async (p, c) => (await query(
+    'SELECT qty_on_hand FROM supply_stock WHERE product_id = $1 AND color_id IS NOT DISTINCT FROM $2', [p, c])).rows[0]?.qty_on_hand;
+  const start = (await onHand(boot, null)) || 0;
+
+  await form('/supplies', { product_id: boot, what: 'receive', qty: '10', note: 'PO 55' });
+  assert.strictEqual(await onHand(boot, null), start + 10);
+  await form('/supplies', { product_id: screw, color_id: col.color_id, what: 'count', qty: '6' });
+  assert.strictEqual(await onHand(screw, col.color_id), 6);
+  await form('/supplies', { product_id: screw, color_id: col.color_id, what: 'adjust', qty: '1' });
+  assert.strictEqual(await onHand(screw, col.color_id), 5);
+  assert.strictEqual((await form('/supplies', { product_id: boot, what: 'receive', qty: '1' }, await signIn('sales'))).status, 403);
+
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Supply ' || gen_random_uuid()) RETURNING customer_id");
+  const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'other', items: [
+    { product_id: boot, pieces: 3, unit_price: 20 },
+    { product_id: screw, color_id: col.color_id, pieces: 2, unit_price: 40 }] }] });
+  const id = Number((await res.json()).redirect.split('/').pop());
+  const setStatus = (status) => form(`/orders/${id}/status`, { status });
+
+  await setStatus('confirmed');
+  let page = await (await fetch(`${base}/supplies`)).text();
+  assert.match(page, /On orders/);
+  await setStatus('completed');
+  assert.strictEqual(await onHand(boot, null), start + 7);
+  assert.strictEqual(await onHand(screw, col.color_id), 3);
+  await setStatus('completed'); // no double count
+  assert.strictEqual(await onHand(boot, null), start + 7);
+  await setStatus('ready'); // reopened: back on the shelf
+  assert.strictEqual(await onHand(boot, null), start + 10);
+  assert.strictEqual(await onHand(screw, col.color_id), 5);
+  await setStatus('completed');
+  assert.strictEqual(await onHand(screw, col.color_id), 3);
+
+  const { rows: [s] } = await query('SELECT supply_id FROM supply_stock WHERE product_id = $1 AND color_id = $2', [screw, col.color_id]);
+  await form(`/supplies/${s.supply_id}/settings`, { reorder_at: '4', location: 'Shelf B' });
+  page = await (await fetch(`${base}/supplies?show=low`)).text();
+  assert.match(page, /Woodtite/);
+  page = await (await fetch(`${base}/supplies/${s.supply_id}`)).text();
+  assert.match(page, /Shelf B/);
+  assert.match(page, /Order completed/);
+});
+
+test('tools: add a tool with a new rental item, rent it on a quote, check it out and back in', async () => {
+  const form = (path, body, cookie) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(cookie ? { cookie } : {}) }, body: new URLSearchParams(body).toString() });
+  const tag = `T${Date.now()}`;
+  const rentalName = `Seamer ${tag} rental`;
+  let res = await form('/tools', { name: 'Hand seamer', tag, rental_product_id: 'new', new_rental_name: rentalName, new_rental_price: '25' });
+  assert.match(res.headers.get('location'), /^\/tools\/\d+\?saved=1$/);
+  const toolId = Number(res.headers.get('location').match(/\d+/)[0]);
+  const { rows: [p] } = await query('SELECT p.product_id, p.name, p.is_rental, cp.unit_price FROM products p JOIN v_current_prices cp USING (product_id) WHERE p.name = $1',
+    [`${rentalName} (per day)`]);
+  assert.strictEqual(p.is_rental, true);
+  assert.strictEqual(p.unit_price, 25);
+  res = await form('/tools', { name: 'Second seamer', tag, rental_product_id: p.product_id });
+  assert.match(res.headers.get('location'), /error=.*tag/);
+  const { rows: [shopTool] } = await query("INSERT INTO tools (name, rental_product_id) VALUES ('Spare seamer', $1) RETURNING tool_id", [p.product_id]);
+  await query("UPDATE tools SET status = 'repair' WHERE tool_id = $1", [shopTool.tool_id]);
+
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Renter ' || gen_random_uuid()) RETURNING customer_id");
+  res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'other', items: [
+    { product_id: p.product_id, pieces: 3, unit_price: 25 }] }] });
+  const id = Number((await res.json()).redirect.split('/').pop());
+  const { rows: [line] } = await query('SELECT order_item_id, line_total FROM order_items WHERE order_id = $1', [id]);
+  assert.strictEqual(line.line_total, 75);
+  let page = await (await fetch(`${base}/orders/${id}`)).text();
+  assert.match(page, /approve the quote to check it out/);
+
+  await form(`/orders/${id}/status`, { status: 'confirmed' });
+  page = await (await fetch(`${base}/orders/${id}`)).text();
+  assert.match(page, /Picked up/);
+  assert.doesNotMatch(page, /Spare seamer/); // in for repair
+  res = await form(`/orders/${id}/rentals`, { order_item_id: line.order_item_id, tool_id: shopTool.tool_id, due_back: '2030-01-04' });
+  assert.match(res.headers.get('location'), /rental_error/);
+  res = await form(`/orders/${id}/rentals`, { order_item_id: line.order_item_id, tool_id: toolId, due_back: '2020-01-04' });
+  assert.doesNotMatch(res.headers.get('location'), /rental_error/);
+  res = await form(`/orders/${id}/rentals`, { order_item_id: line.order_item_id, tool_id: toolId, due_back: '2030-01-04' });
+  assert.match(decodeURIComponent(res.headers.get('location')), /already out/);
+  page = await (await fetch(`${base}/tools`)).text();
+  assert.match(page, /Out with Renter/);
+  assert.match(page, /overdue/);
+
+  const { rows: [r] } = await query('SELECT rental_id FROM tool_rentals WHERE order_id = $1', [id]);
+  await form(`/orders/${id}/rentals/${r.rental_id}/return`, { note: 'Good shape' });
+  const { rows: [after] } = await query('SELECT returned_at, return_note FROM tool_rentals WHERE rental_id = $1', [r.rental_id]);
+  assert.ok(after.returned_at);
+  assert.strictEqual(after.return_note, 'Good shape');
+  page = await (await fetch(`${base}/tools/${toolId}`)).text();
+  assert.match(page, /Available/);
+  assert.match(page, /Good shape/);
+});

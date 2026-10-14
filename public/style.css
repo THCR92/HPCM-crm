@@ -237,3 +237,14 @@ table.sortable th[data-dir="desc"]::after { content: " ▼"; font-size: .7em; }
 .s-sold { fill: var(--brand); background: var(--brand); }
 .s-run { fill: var(--accent); background: var(--accent); }
 .report-table th:not(.num), .report-table td:not(.num) { text-align: left; }
+
+/* Supplies and tools */
+table.supplies tr.low td { background: #fff4f2; }
+.low-tag { display: inline-block; font-size: .72rem; font-weight: 700; text-transform: uppercase; color: #fff;
+  background: var(--warn); border-radius: 4px; padding: 0 .35rem; margin-left: .3rem; vertical-align: middle; }
+.tool-out { font-weight: 600; }
+.tool-out.late { color: var(--warn); }
+.tool-repair { color: #8a5a00; font-weight: 600; }
+.tool-retired { color: var(--muted); }
+.rtile.warn .n { color: var(--warn); }
+.rental-out { display: inline-flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin-left: .5rem; }

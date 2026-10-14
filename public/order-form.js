@@ -13,7 +13,7 @@
   const UNIT = { sqft: 'sq ft', lf: 'LF', each: 'ea', bag: 'bag', roll: 'roll' };
   const CATEGORY = {
     panel: 'Panels', custom_trim: 'Custom trim', trim: 'Trims & specialty cuts', flat_sheet: 'Flat sheet',
-    downspout: 'Downspouts & elbows', boot: 'Boots', jack: 'Jacks', fastener: 'Screws', accessory: 'Accessories', service: 'Services',
+    downspout: 'Downspouts & elbows', boot: 'Boots', jack: 'Jacks', fastener: 'Screws', accessory: 'Accessories', service: 'Services & tool rentals',
   };
 
   // ---------------------------------------------------------------- helpers

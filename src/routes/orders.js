@@ -4,6 +4,7 @@ const express = require('express');
 const { query, tx } = require('../db');
 const { feetInches } = require('../length');
 const { RUNNABLE, footage, runError } = require('../production');
+const { syncOrderSupplies } = require('../supplies');
 const { can, need, userName } = require('../auth');
 const Screws = require('../../public/screws');
 const {
@@ -45,7 +46,7 @@ async function loadOrder(id) {
   const { rows: sections } = await query(
     'SELECT * FROM order_sections WHERE order_id = $1 ORDER BY sort_order, section_id', [id]);
   const { rows: items } = await query(`
-    SELECT oi.*, p.name AS product_name, p.sku, p.category, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
+    SELECT oi.*, p.name AS product_name, p.sku, p.category, p.is_rental, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
            p.flat_extra_in AS product_flat_extra,
            g.gauge, col.label AS color_name,
            col.name || CASE WHEN col.finish <> 'smooth' THEN ' (' || col.finish_label || ')' ELSE '' END AS customer_color,
@@ -477,21 +478,25 @@ router.post('/:id(\\d+)/status', async (req, res) => {
   // Why a quote was lost, for the Reports page.
   const lostReason = cur.status === 'quote' && status === 'cancelled' && LOST_REASONS[req.body.lost_reason]
     ? req.body.lost_reason : null;
-  await query(`
-    UPDATE orders SET status = $1::order_status,
-           need_by = COALESCE($3::date, need_by),
-           lost_reason = $5,
-           -- The order date is the day the quote was approved.
-           ordered_on = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
-                             THEN current_date ELSE ordered_on END,
-           approved_by = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
-                              THEN $4 ELSE approved_by END,
-           updated_by = $4,
-           completed_at = CASE WHEN $1::order_status = 'completed' THEN COALESCE(completed_at, now()) ELSE completed_at END,
-           ready_at = CASE WHEN $1::order_status = 'ready' THEN COALESCE(ready_at, now())
-                           WHEN $1::order_status IN ('quote', 'confirmed', 'in_production') THEN NULL
-                           ELSE ready_at END
-    WHERE order_id = $2 AND status <> 'invoiced'`, [status, req.params.id, needBy, userName(), lostReason]);
+  await tx(async (db) => {
+    await db.query(`
+      UPDATE orders SET status = $1::order_status,
+             need_by = COALESCE($3::date, need_by),
+             lost_reason = $5,
+             -- The order date is the day the quote was approved.
+             ordered_on = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
+                               THEN current_date ELSE ordered_on END,
+             approved_by = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
+                                THEN $4 ELSE approved_by END,
+             updated_by = $4,
+             completed_at = CASE WHEN $1::order_status = 'completed' THEN COALESCE(completed_at, now()) ELSE completed_at END,
+             ready_at = CASE WHEN $1::order_status = 'ready' THEN COALESCE(ready_at, now())
+                             WHEN $1::order_status IN ('quote', 'confirmed', 'in_production') THEN NULL
+                             ELSE ready_at END
+      WHERE order_id = $2 AND status <> 'invoiced'`, [status, req.params.id, needBy, userName(), lostReason]);
+    // Boots, screws and other supplies come out of stock when the order is completed.
+    await syncOrderSupplies(db, Number(req.params.id), userName());
+  });
   res.redirect(back);
 });
 
@@ -628,12 +633,14 @@ router.get('/:id(\\d+)', async (req, res) => {
   // Each-priced pieces cut to a length are billed in standard lengths: "7.2 × 10'".
   // Sized trim adds the standard width: "18.46 × 13" × 10'".
   const billed = (i) => {
+    if (i.is_rental) return `${num(i.billable_qty)} day${Number(i.billable_qty) === 1 ? '' : 's'}`;
     if (i.pricing_unit !== 'each') return `${num(i.billable_qty)} ${UNIT_LABEL[i.pricing_unit]}`;
     const parts = [i.per_width_in && i.width_in ? `${num(i.per_width_in, 3)}"` : '',
       i.per_length_in && (i.length_in || (i.per_width_in && i.width_in)) ? `${num(i.per_length_in / 12)}'` : ''].filter(Boolean);
     return parts.length ? `${num(i.billable_qty)} × ${parts.join(' × ')}` : `${num(i.billable_qty)} ${UNIT_LABEL.each}`;
   };
   const production = await productionSection(o, req);
+  const rentals = await rentalsSection(o, req);
   const docName = o.status === 'quote' ? 'Quote' : 'Order';
 
   res.send(layout({
@@ -716,6 +723,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       </div>
     </section>
     ${drawingsSection(o)}
+    ${rentals}
     ${production}`,
     scripts: ['/production.js', '/attachments.js'],
   }));
@@ -817,6 +825,102 @@ router.post('/:id(\\d+)/attachments/:aid(\\d+)/delete', need('drawings'), async 
     WHERE a.attachment_id = $1 AND a.order_id = $2 AND o.order_id = a.order_id AND o.status <> 'invoiced'`,
   [req.params.aid, req.params.id]);
   res.redirect(`/orders/${req.params.id}#drawings`);
+});
+
+// ---------------------------------------------------------------------------
+// Tool rentals: each rental line on an approved order is one tool, checked out
+// when the customer picks it up and back in when it's returned.
+// ---------------------------------------------------------------------------
+const canRent = () => can('inventory') || can('quotes');
+
+async function rentalsSection(o, req) {
+  const lines = o.sections.flatMap((s) => s.items).filter((i) => i.is_rental);
+  const { rows: rentals } = await query(`
+    SELECT r.*, t.name AS tool_name, t.tag,
+           (COALESCE(r.returned_at, now()) AT TIME ZONE 'America/Denver')::date
+             - (r.out_at AT TIME ZONE 'America/Denver')::date AS days,
+           r.returned_at IS NULL AND r.due_back < (now() AT TIME ZONE 'America/Denver')::date AS overdue
+    FROM tool_rentals r JOIN tools t USING (tool_id) WHERE r.order_id = $1 ORDER BY r.out_at`, [o.order_id]);
+  if (!lines.length && !rentals.length) return '';
+  const open = !NO_PRODUCTION.includes(o.status) && o.status !== 'invoiced' && canRent();
+  const { rows: tools } = open ? await query(`
+    SELECT t.tool_id, t.name, t.tag, t.rental_product_id FROM tools t
+    WHERE t.status = 'available' AND t.rental_product_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM tool_rentals r WHERE r.tool_id = t.tool_id AND r.returned_at IS NULL)
+    ORDER BY t.name, t.tag`) : { rows: [] };
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
+  const addDays = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+  const rentalRow = (r, line) => {
+    const days = Math.max(1, r.days);
+    return html`<tr>
+      <td>${line ? line.line_no : ''}</td>
+      <td><a href="/tools/${r.tool_id}">${r.tool_name}</a>${r.tag ? html` <span class="muted">#${r.tag}</span>` : ''}</td>
+      <td>${date(r.out_at)}${r.out_by ? html` <span class="muted small">${r.out_by}</span>` : ''}</td>
+      <td>${date(r.due_back)}${r.overdue ? html` <span class="badge badge-cancelled">overdue</span>` : ''}</td>
+      <td>${r.returned_at ? html`${date(r.returned_at)}${r.returned_by ? html` <span class="muted small">${r.returned_by}</span>` : ''}${
+        r.return_note ? html`<div class="muted small">${r.return_note}</div>` : ''}` : html`<strong>Out</strong>`}</td>
+      <td class="num">${days}${line && days > Number(line.pieces) ? html` <span class="badge badge-cancelled" title="Days billed on the order">billed ${num(line.pieces)}</span>` : ''}</td>
+      <td class="num">${!r.returned_at && open ? html`<form method="post" action="/orders/${o.order_id}/rentals/${r.rental_id}/return" class="inline">
+        <input name="note" placeholder="Condition / note" style="width:10rem">
+        <button class="btn small primary">Returned</button></form>` : ''}</td></tr>`;
+  };
+  return html`
+  <section class="no-print" id="rentals">
+    <h2>Tool rentals</h2>
+    ${req.query.rental_error ? html`<div class="alert">${req.query.rental_error}</div>` : ''}
+    <table class="list">
+      <thead><tr><th>Line</th><th>Tool</th><th>Picked up</th><th>Due back</th><th>Returned</th><th class="num">Days out</th><th></th></tr></thead>
+      <tbody>
+      ${lines.map((l) => {
+        const mine = rentals.filter((r) => r.order_item_id === l.order_item_id);
+        const out = mine.some((r) => !r.returned_at);
+        const choices = tools.filter((t) => t.rental_product_id === l.product_id);
+        return html`${mine.map((r) => rentalRow(r, l))}
+        ${!out && !mine.length ? html`<tr><td>${l.line_no}</td><td colspan="5">${l.product_name}, ${num(l.pieces)} day${Number(l.pieces) === 1 ? '' : 's'}
+          ${o.status === 'quote' ? html`<span class="muted">· approve the quote to check it out</span>`
+          : open ? (choices.length ? html`<form method="post" action="/orders/${o.order_id}/rentals" class="inline rental-out">
+              <input type="hidden" name="order_item_id" value="${l.order_item_id}">
+              <select name="tool_id" required>${choices.map((t) => html`<option value="${t.tool_id}">${t.name}${t.tag ? ` #${t.tag}` : ''}</option>`)}</select>
+              <label class="inline-date">Due back <input type="date" name="due_back" value="${addDays(today, Math.max(1, Math.ceil(Number(l.pieces))))}"></label>
+              <button class="btn small primary">Picked up</button></form>`
+            : html`<span class="muted">· no ${l.product_name.replace(/\s*\(per day\)/i, '')} is in the shop right now (see <a href="/tools">Tools</a>)</span>`) : ''}
+          </td><td></td></tr>` : ''}`;
+      })}
+      ${rentals.filter((r) => !lines.some((l) => l.order_item_id === r.order_item_id)).map((r) => rentalRow(r, null))}
+      </tbody>
+    </table>
+  </section>`;
+}
+
+router.post('/:id(\\d+)/rentals', async (req, res) => {
+  if (!canRent()) return res.status(403).send('Not allowed');
+  const back = (err) => res.redirect(`/orders/${req.params.id}${err ? `?rental_error=${encodeURIComponent(err)}` : ''}#rentals`);
+  const { rows: [line] } = await query(`
+    SELECT oi.order_item_id, oi.product_id, o.status FROM order_items oi JOIN orders o USING (order_id)
+    JOIN products p ON p.product_id = oi.product_id
+    WHERE oi.order_item_id = $1 AND oi.order_id = $2 AND p.is_rental`, [Number(req.body.order_item_id) || null, req.params.id]);
+  if (!line) return back('That rental isn\'t on this order.');
+  if (NO_PRODUCTION.includes(line.status) || line.status === 'invoiced') return back('Approve the quote before checking tools out.');
+  const { rows: [tool] } = await query('SELECT tool_id FROM tools WHERE tool_id = $1 AND rental_product_id = $2 AND status = \'available\'',
+    [Number(req.body.tool_id) || null, line.product_id]);
+  if (!tool) return back('Pick a tool that matches the rental line.');
+  const due = /^\d{4}-\d{2}-\d{2}$/.test(req.body.due_back || '') ? req.body.due_back : null;
+  try {
+    await query(`INSERT INTO tool_rentals (tool_id, order_id, order_item_id, due_back, out_by) VALUES ($1, $2, $3, $4, $5)`,
+      [tool.tool_id, req.params.id, line.order_item_id, due, userName()]);
+  } catch (err) {
+    if (err.code !== '23505') throw err;
+    return back('That tool is already out. Pick another one.');
+  }
+  back();
+});
+
+router.post('/:id(\\d+)/rentals/:rid(\\d+)/return', async (req, res) => {
+  if (!canRent()) return res.status(403).send('Not allowed');
+  await query(`UPDATE tool_rentals SET returned_at = now(), returned_by = $3, return_note = $4
+    WHERE rental_id = $1 AND order_id = $2 AND returned_at IS NULL`,
+  [req.params.rid, req.params.id, userName(), (req.body.note || '').trim() || null]);
+  res.redirect(`/orders/${req.params.id}#rentals`);
 });
 
 // ---------------------------------------------------------------------------

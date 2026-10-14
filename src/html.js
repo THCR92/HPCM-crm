@@ -53,6 +53,8 @@ const NAV = [
   ['/customers', 'Customers'],
   ['/coils', 'Coils'],
   ['/stock', 'Stock'],
+  ['/supplies', 'Supplies'],
+  ['/tools', 'Tools'],
   ['/products', 'Price list', 'prices'],
   ['/colors', 'Colors'],
   ['/board', 'Shop board'],

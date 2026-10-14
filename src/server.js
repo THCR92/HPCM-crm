@@ -22,6 +22,7 @@ app.use('/orders', require('./routes/orders'));
 app.use('/customers', require('./routes/customers'));
 app.use('/board', require('./routes/board'));
 app.use('/', require('./routes/reports'));
+app.use('/', require('./routes/supplies'));
 app.use('/', require('./routes/admin'));
 app.use('/', require('./routes/catalog'));
 app.use('/', require('./routes/inventory'));

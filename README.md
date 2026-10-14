@@ -82,6 +82,17 @@ works out the square feet, linear feet and price for every line.
   each still needs. A coil check flags approved jobs that need more footage of a color than
   is on hand (jobs are served in due-date order; trim assumes 48" coil), and a list shows
   finished orders waiting on pickup or delivery and for how many days. Refreshes every minute.
+- **Supplies** (`/supplies`): boots, jacks, screws and accessories counted on hand (screws by
+  color). Receive, count or take out; set a reorder point and where it's kept; "Running low"
+  lists anything at or under its reorder point or short for open orders. Supplies on an order
+  come out of stock when the order is marked Completed and go back if it is reopened. Any
+  product can be counted by ticking "Count on hand" in Admin > Products.
+- **Tools** (`/tools`): every tool the shop owns, with tag and serial numbers, cost and where
+  it's kept, and its status (available, in for repair, retired, or out with a customer). A
+  tool can be rented as a price list item ("Hand seamer rental (per day)"); put it on a quote
+  with the quantity as the number of days, and once the quote is approved check the tool out
+  ("Picked up", with a due-back date) and back in ("Returned", with a note) at the bottom of
+  the order. Overdue tools are flagged, and the order shows when a tool was out longer than billed.
 - **Reports** (`/reports`, Admins and Managers): pick a date range (or a preset like This
   year) and see sales, quotes written, quote win rate (by count and dollars), average order,
   days from quote to approval, open quotes and work in the shop, quoted vs sold by week or
