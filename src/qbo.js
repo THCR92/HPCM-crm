@@ -281,8 +281,8 @@ async function pullCustomer(q) {
         qbo_customer_id = $${cols.length + 1}, qbo_sync_token = $${cols.length + 2}, qbo_synced_at = now(), qbo_last_error = NULL
       WHERE customer_id = $${cols.length + 3}`, [...Object.values(v), q.Id, q.SyncToken, id]);
   } else {
-    const { rows: [n] } = await query(`INSERT INTO customers (${cols.join(', ')}, qbo_customer_id, qbo_sync_token, qbo_synced_at)
-      VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')}, $${cols.length + 1}, $${cols.length + 2}, now())
+    const { rows: [n] } = await query(`INSERT INTO customers (${cols.join(', ')}, qbo_customer_id, qbo_sync_token, qbo_synced_at, created_from_qbo)
+      VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')}, $${cols.length + 1}, $${cols.length + 2}, now(), true)
       RETURNING customer_id`, [...Object.values(v), q.Id, q.SyncToken]);
     id = n.customer_id;
   }
@@ -450,7 +450,9 @@ async function invoiceBody(o) {
   if (discount > 0) Line.push({ DetailType: 'DiscountLineDetail', Amount: discount, DiscountLineDetail: { PercentBased: false } });
   const memo = [o.job_name && `Job: ${o.job_name}`, o.po_number && `PO: ${o.po_number}`, o.customer_memo].filter(Boolean).join('\n');
   const email = o.contact_email || o.customer_email;
+  const ship = await shipTo(o);
   return {
+    ...(ship ? { ShipAddr: ship } : {}),
     DocNumber: o.order_number,
     TxnDate: denverDate(o.completed_at),
     CustomerRef: { value: o.qbo_customer_id },
@@ -462,6 +464,16 @@ async function invoiceBody(o) {
     // The CRM's tax (5% on taxable materials) is what the customer was quoted.
     TxnTaxDetail: { TotalTax: round2(o.tax_amount) },
   };
+}
+
+// QuickBooks works out sales tax from where the goods go: the shop for pickups,
+// the job's saved address for deliveries.
+const SHOP_ADDR = { Line1: '805 E Fox Farm Rd Unit B', City: 'Cheyenne', CountrySubDivisionCode: 'WY', PostalCode: '82007', Country: 'US' };
+async function shipTo(o) {
+  if (o.fulfillment !== 'delivery') return SHOP_ADDR;
+  if (!o.job_address_id) return null;
+  const { rows: [a] } = await query('SELECT * FROM customer_addresses WHERE address_id = $1', [o.job_address_id]);
+  return a ? toQbAddr(a) : null;
 }
 
 const INVOICEABLE = ['completed', 'invoiced'];

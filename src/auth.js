@@ -106,7 +106,7 @@ async function loadUser(req) {
   return u || null;
 }
 
-const OPEN_PATHS = ['/login', '/logout', '/healthz'];
+const OPEN_PATHS = ['/login', '/logout', '/healthz', '/legal/terms', '/legal/privacy'];
 const isAsset = (p) => /\.(css|js|svg|png|ico|jpg|webp|woff2?)$/.test(p);
 
 function middleware() {

@@ -307,3 +307,5 @@ table.pack tr.bundle.packed td:nth-child(2) { color: var(--ink); }
 .topbar nav .nav-drop a { padding: .5rem .75rem; }
 .handoff .big-name { font-size: 1.6rem; font-weight: 700; color: var(--brand); }
 .btn.big-btn { font-size: 1.1rem; padding: .7rem 1.4rem; }
+.check-list { display: flex; flex-direction: column; gap: .3rem; margin: .5rem 0 1rem; }
+.legal { max-width: 45rem; }

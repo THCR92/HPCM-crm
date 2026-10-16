@@ -139,6 +139,11 @@ works out the square feet, linear feet and price for every line.
     time they are invoiced. With the real company the order then reads Invoiced and is locked; with
     the test (sandbox) company it stays Completed.
   Customers and orders show where they stand, with a "Send to QuickBooks" button to retry.
+  QuickBooks works out the tax from the invoice's ship-to address: the shop for pickups, the job's
+  saved address for deliveries. While the test company is connected, Admin > QuickBooks lists the
+  steps to switch to the real books and can remove the customers that came from the test company
+  (`customers.created_from_qbo`, only ones without orders). Intuit's app details point at
+  `/legal/terms` and `/legal/privacy`, which open without signing in.
   Connecting a different company (test, then real) forgets the old company's ids. Tokens are
   stored encrypted. Every call is listed under Recent activity (`qbo_sync_log`).
 

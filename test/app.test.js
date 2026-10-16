@@ -123,6 +123,13 @@ test('status changes: approving needs a due date and sets the order date; comple
   assert.strictEqual(edit.status, 400);
 });
 
+test('terms and privacy pages open without signing in', async () => {
+  for (const p of ['/legal/terms', '/legal/privacy']) {
+    const res = await fetch(base + p, { anonymous: true, redirect: 'manual' });
+    assert.strictEqual(res.status, 200, p);
+  }
+});
+
 test('health check answers', async () => {
   const res = await fetch(`${base}/healthz`);
   assert.match(await res.text(), /^ok/);
@@ -957,6 +964,7 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
   const qbOnly = addCustomer({ DisplayName: `QB Only Roofing ${run}`, PrimaryPhone: { FreeFormNumber: '307-555-0100' },
     BillAddr: { Line1: '1 Main St', City: 'Cheyenne', CountrySubDivisionCode: 'WY', PostalCode: '82001' } });
   addCustomer({ DisplayName: `Some Job ${run}`, Job: true, ParentRef: { value: qbOnly } });
+  addCustomer({ DisplayName: `Sample Shop ${run}` });
   const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
   const save = (map, body) => {
     const old = body.Id && map.get(body.Id);
@@ -1069,7 +1077,18 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     assert.match(inv.CustomerMemo.value, /Job: Barn\nPO: PO-7/);
     assert.ok([...qb.items.values()].some((i) => i.IncomeAccountRef.value === '79'));
     assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /In QuickBooks as invoice/);
-    assert.match(await (await fetch(`${base}/admin/quickbooks`)).text(), /Connected to Sandbox Co/);
+    assert.deepStrictEqual(inv.ShipAddr && [inv.ShipAddr.City, inv.ShipAddr.CountrySubDivisionCode], ['Cheyenne', 'WY'], 'pickups are taxed at the shop');
+    const page = await (await fetch(`${base}/admin/quickbooks`)).text();
+    assert.match(page, /Connected to Sandbox Co/);
+    // Going live: the test company's customers without orders can be removed; ones with orders and CRM customers stay.
+    assert.match(page, /Switching to your real QuickBooks/);
+    const { rows: [sample] } = await query('SELECT customer_id FROM customers WHERE display_name = $1', [`Sample Shop ${run}`]);
+    assert.ok(page.includes(`value="${sample.customer_id}"`));
+    assert.ok(!page.includes(`value="${pulled.customer_id}"`), 'has an order');
+    assert.ok(!page.includes(`value="${customerId}"`), 'typed into the CRM');
+    assert.match(await form('/qbo/test-customers/remove', [sample.customer_id, pulled.customer_id, customerId].map((v) => ['id', v])), /Removed 1 test customer/);
+    assert.strictEqual((await query('SELECT count(*)::int AS n FROM customers WHERE customer_id = ANY($1::int[])',
+      [[sample.customer_id, pulled.customer_id, customerId]])).rows[0].n, 2);
   } finally {
     await form('/qbo/disconnect', {});
     await qbo.idle();

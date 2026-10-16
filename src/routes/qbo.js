@@ -26,6 +26,55 @@ function keyCheck(cfg, req) {
     </ul></details>`;
 }
 
+// Customers that came in from QuickBooks and have no orders: with the test
+// company, these are its made-up sample customers (and any added there while testing).
+const TEST_CUSTOMERS = `
+  SELECT c.customer_id, c.display_name, c.created_at FROM customers c
+  WHERE c.created_from_qbo AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id)
+  ORDER BY lower(c.display_name)`;
+
+async function goLive() {
+  const { rows } = await query(TEST_CUSTOMERS);
+  return html`
+  <div class="card">
+    <h2>Switching to your real QuickBooks</h2>
+    <ol>
+      <li>${rows.length ? html`Remove the test company's customers below.` : 'Test customers: none left to remove.'}</li>
+      <li>On the Intuit app, get the <strong>Production</strong> keys (Keys &amp; Credentials, Production switch on). Intuit asks for app
+        details first. Use these addresses:
+        <ul>
+          <li>Host domain: <code>www.hpcmcrm.net</code></li>
+          <li>Launch URL and Connect/Reconnect URL: <code>https://www.hpcmcrm.net/admin/quickbooks</code></li>
+          <li>Disconnect URL: <code>https://www.hpcmcrm.net/admin/quickbooks</code></li>
+          <li>End-user license agreement: <code>https://www.hpcmcrm.net/legal/terms</code></li>
+          <li>Privacy policy: <code>https://www.hpcmcrm.net/legal/privacy</code></li>
+          <li>Redirect URI on the <strong>Production</strong> tab: <code>https://www.hpcmcrm.net/qbo/callback</code></li>
+        </ul></li>
+      <li>In Render, replace <code>QBO_CLIENT_ID</code> and <code>QBO_CLIENT_SECRET</code> with the Production keys, and add
+        <code>QBO_ENVIRONMENT</code> = <code>production</code>.</li>
+      <li>Come back here and press <strong>Connect to QuickBooks</strong>, then pick your real company.</li>
+    </ol>
+    ${rows.length ? html`
+    <form method="post" action="/qbo/test-customers/remove"
+      onsubmit="return confirm('Delete the ticked customers from the CRM? They stay in the QuickBooks test company.')">
+      <h3>Test customers to remove (${rows.length})</h3>
+      <p class="muted small">These came in from the QuickBooks test company and have no quotes or orders. Untick any that are real.</p>
+      <div class="check-list">${rows.map((r) => html`<label class="check"><input type="checkbox" name="id" value="${r.customer_id}" checked>
+        <a href="/customers/${r.customer_id}">${r.display_name}</a></label>`)}</div>
+      <button class="btn">Delete ticked customers</button>
+    </form>` : ''}
+  </div>`;
+}
+
+router.post('/qbo/test-customers/remove', need('admin'), async (req, res) => {
+  const conn = await qbo.connection();
+  if (!conn || conn.environment !== 'sandbox') return back(res, 'Test customers can only be removed while the test company is connected.', 'error');
+  const ids = [].concat(req.body.id || []).map(Number).filter(Number.isInteger);
+  const { rowCount } = await query(`DELETE FROM customers WHERE customer_id = ANY($1::int[])
+    AND customer_id IN (SELECT customer_id FROM (${TEST_CUSTOMERS}) t)`, [ids]);
+  back(res, `Removed ${rowCount} test customer${rowCount === 1 ? '' : 's'} from the CRM.`);
+});
+
 router.get('/admin/quickbooks', need('admin'), async (req, res) => {
   const cfg = qbo.config();
   const conn = await qbo.connection();
@@ -102,6 +151,7 @@ router.get('/admin/quickbooks', need('admin'), async (req, res) => {
     ${req.query.msg ? html`<div class="notice">${req.query.msg}</div>` : ''}
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
     ${status}
+    ${conn && conn.environment === 'sandbox' ? await goLive() : ''}
     <div class="card">
       <h2>What goes where</h2>
       <ul>

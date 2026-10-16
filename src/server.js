@@ -23,6 +23,7 @@ app.use(express.json({ limit: '1mb' }));
 // Everyone signs in with their own account (see src/auth.js).
 app.use(require('./auth').middleware());
 app.use('/', require('./routes/users'));
+app.use('/', require('./routes/legal'));
 
 app.get('/', (req, res) => res.redirect('/orders'));
 app.use('/orders', require('./routes/orders'));
