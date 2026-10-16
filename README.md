@@ -129,6 +129,9 @@ works out the square feet, linear feet and price for every line.
   Click a column to sort; every table downloads as a spreadsheet (CSV). Every status change
   is recorded (`order_status_history`), and cancelling a quote asks why it was lost.
 
+- **Deleting** (Admins only, type DELETE to confirm): a customer with no quotes or orders, and a
+  quote or cancelled order with no coil run against it and no rental tool still out. Anything else
+  is cancelled or left as is, so its history stays. Deleting a customer doesn't touch QuickBooks.
 - **QuickBooks** (Admin > QuickBooks, Admins only): connect once, then
   - customers added or edited in the CRM are added or updated in QuickBooks right away;
   - customers added or edited in QuickBooks come into the CRM by webhook (`/qbo/webhook`), with a

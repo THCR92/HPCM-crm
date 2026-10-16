@@ -44,6 +44,14 @@ const LOST_REASONS = {
   no_response: 'No response', changed_scope: 'Job changed or cancelled', other: 'Other',
 };
 
+// Delete button that asks the person to type DELETE (checked again on the server).
+const deleteButton = (action, what) => html`<form method="post" action="${action}" class="inline"
+  data-what="${what}" onsubmit="const v = prompt('This deletes ' + this.dataset.what + ' for good. Type DELETE to confirm.');
+    if (v === null || v.trim() !== 'DELETE') { if (v !== null) alert('Not deleted: type DELETE in capitals.'); return false; }
+    this.elements.confirm.value = 'DELETE';">
+  <input type="hidden" name="confirm"><button class="btn danger">Delete</button></form>`;
+const typedDelete = (body) => String((body && body.confirm) || '').trim() === 'DELETE';
+
 const statusBadge = (s) => html`<span class="badge badge-${s}">${STATUS_LABEL[s] || s}</span>`;
 
 // ---- page shell ------------------------------------------------------------
@@ -104,6 +112,6 @@ ${scripts.map((src) => html`<script src="${src}"></script>`)}
 };
 
 module.exports = {
-  html, raw, money, num, date, layout, statusBadge,
+  html, raw, money, num, date, layout, statusBadge, deleteButton, typedDelete,
   UNIT_LABEL, STATUS_LABEL, AREA_LABEL, LOST_REASONS,
 };

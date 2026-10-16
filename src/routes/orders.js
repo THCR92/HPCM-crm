@@ -6,10 +6,10 @@ const { feetInches } = require('../length');
 const { RUNNABLE, footage, runError } = require('../production');
 const { syncOrderSupplies } = require('../supplies');
 const qbo = require('../qbo');
-const { can, need, userName } = require('../auth');
+const { can, need, userName, isAdmin } = require('../auth');
 const Screws = require('../../public/screws');
 const {
-  html, raw, layout, money, num, date, statusBadge, UNIT_LABEL, STATUS_LABEL, AREA_LABEL, LOST_REASONS,
+  html, raw, layout, money, num, date, statusBadge, UNIT_LABEL, STATUS_LABEL, AREA_LABEL, LOST_REASONS, deleteButton, typedDelete,
 } = require('../html');
 
 const router = require('../async-router')();
@@ -470,6 +470,27 @@ const saveHandler = (getId) => async (req, res) => {
 router.post('/', need('quotes'), saveHandler(() => null));
 router.post('/:id(\\d+)', need('quotes'), saveHandler((req) => Number(req.params.id)));
 
+// Deleting: only quotes and cancelled orders (cancel first), and only ones nothing
+// was cut, checked out or invoiced against. Real orders are cancelled, not deleted.
+const DELETABLE = ['quote', 'cancelled'];
+router.post('/:id(\\d+)/delete', need('admin'), async (req, res) => {
+  const id = Number(req.params.id);
+  const fail = (msg) => res.redirect(`/orders/${id}?status_error=${encodeURIComponent(msg)}`);
+  if (!typedDelete(req.body)) return fail('Not deleted: type DELETE to confirm.');
+  const { rows: [o] } = await query('SELECT status, qbo_invoice_id FROM orders WHERE order_id = $1', [id]);
+  if (!o) return res.status(404).send('Order not found');
+  if (!DELETABLE.includes(o.status)) return fail('Only quotes and cancelled orders can be deleted. Cancel it first.');
+  const { rows: [open] } = await query('SELECT 1 FROM tool_rentals WHERE order_id = $1 AND returned_at IS NULL LIMIT 1', [id]);
+  if (open) return fail('A rental tool on this order hasn\'t been returned yet.');
+  try {
+    await query('DELETE FROM orders WHERE order_id = $1', [id]);
+  } catch (err) {
+    if (err.code === '23503') return fail('Coil was already run for this order, so it can\'t be deleted (it would lose the coil history). Leave it cancelled.');
+    throw err;
+  }
+  res.redirect('/orders');
+});
+
 router.post('/:id(\\d+)/status', async (req, res) => {
   const status = req.body.status;
   if (!SETTABLE.includes(status)) return res.status(400).send('Unknown status');
@@ -666,6 +687,7 @@ router.get('/:id(\\d+)', async (req, res) => {
         ${o.status !== 'quote' && o.status !== 'cancelled' ? html`<a class="btn" href="/labels/order/${o.order_id}">Labels</a>` : ''}
         ${['confirmed', 'in_production', 'ready'].includes(o.status) && can('production') ? html`<a class="btn" href="/orders/${o.order_id}/pack">Pack &amp; check</a>` : ''}
         ${o.status === 'ready' && (can('production') || can('quotes')) ? html`<a class="btn primary" href="/orders/${o.order_id}/handoff">${o.fulfillment === 'delivery' ? 'Delivered…' : 'Picked up…'}</a>` : ''}
+        ${DELETABLE.includes(o.status) && isAdmin() ? deleteButton(`/orders/${o.order_id}/delete`, `${docName.toLowerCase()} ${o.order_number}`) : ''}
         ${o.status !== 'invoiced' && nextStatuses.length ? html`
         <form method="post" action="/orders/${o.order_id}/status" class="inline">
           <select name="status">${nextStatuses.map((s) => html`<option value="${s}">${STATUS_LABEL[s]}</option>`)}</select>

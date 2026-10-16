@@ -1097,3 +1097,32 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
   }
   assert.strictEqual((await query('SELECT count(*)::int AS n FROM qbo_connection')).rows[0].n, 0);
 });
+
+test('deleting: quotes and cancelled orders, customers without orders; real orders stay', async () => {
+  const form = (path, body = {}) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() })
+    .then((r) => decodeURIComponent(r.headers.get('location') || ''));
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Delete me ' || gen_random_uuid()) RETURNING customer_id");
+  const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'trim', items: [
+    { product_id: await productId('TRM-D-STYLE-90'), pieces: 2, length_in: 120, unit_price: 10 }] }] });
+  const id = Number((await res.json()).redirect.split('/').pop());
+  assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /action="\/orders\/\d+\/delete"/);
+  await form(`/orders/${id}/status`, { status: 'confirmed' });
+  assert.match(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), /Cancel it first/);
+  assert.match(await form(`/customers/${c.customer_id}/delete`, { confirm: 'DELETE' }), /^$/); // has an order: 400 page
+  assert.strictEqual((await query('SELECT count(*)::int AS n FROM customers WHERE customer_id = $1', [c.customer_id])).rows[0].n, 1);
+  await form(`/orders/${id}/status`, { status: 'cancelled' });
+  assert.match(await form(`/orders/${id}/delete`, { confirm: 'delete' }), /type DELETE/);
+  assert.strictEqual(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), '/orders');
+  assert.strictEqual(await form(`/customers/${c.customer_id}/delete`), `/customers/${c.customer_id}`);
+  assert.strictEqual(await form(`/customers/${c.customer_id}/delete`, { confirm: 'DELETE' }), '/customers');
+  assert.strictEqual((await query('SELECT count(*)::int AS n FROM orders WHERE order_id = $1', [id])).rows[0].n, 0);
+  assert.strictEqual((await query('SELECT count(*)::int AS n FROM customers WHERE customer_id = $1', [c.customer_id])).rows[0].n, 0);
+  // Only Admins can delete, even Managers can't.
+  const manager = await signIn('manager');
+  for (const p of ['/orders/1/delete', '/customers/1/delete']) {
+    const r = await fetch(base + p, { method: 'POST', redirect: 'manual', headers: { cookie: manager } });
+    assert.strictEqual(r.status, 403, p);
+  }
+  assert.ok(!(await (await fetch(`${base}/customers`, { headers: { cookie: manager } })).text()).includes('/delete'));
+});

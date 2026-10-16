@@ -1,6 +1,6 @@
 const { query } = require('../db');
-const { html, layout, money, date, statusBadge } = require('../html');
-const { can, need } = require('../auth');
+const { html, layout, money, date, statusBadge, deleteButton, typedDelete } = require('../html');
+const { can, need, isAdmin } = require('../auth');
 const qbo = require('../qbo');
 
 const router = require('../async-router')();
@@ -137,6 +137,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       <div>
         ${can('customers') ? html`<a class="btn" href="/customers/${c.customer_id}/edit">Edit</a>` : ''}
         ${can('quotes') ? html`<a class="btn primary" href="/orders/new?customer_id=${c.customer_id}">+ New quote</a>` : ''}
+        ${isAdmin() && !orders.length ? deleteButton(`/customers/${c.customer_id}/delete`, `${c.display_name}${c.qbo_customer_id ? ' from the CRM (it stays in QuickBooks; make it inactive there too)' : ''}`) : ''}
       </div>
     </div>
     <div class="card"><dl class="details">
@@ -158,6 +159,17 @@ router.get('/:id(\\d+)', async (req, res) => {
       : html`<tr><td colspan="7" class="empty">No orders yet.</td></tr>`}</tbody>
     </table>`,
   }));
+});
+
+// Only customers with no quotes or orders; anyone with history stays.
+router.post('/:id(\\d+)/delete', need('admin'), async (req, res) => {
+  if (!typedDelete(req.body)) return res.redirect(`/customers/${req.params.id}`);
+  const { rowCount } = await query(`DELETE FROM customers WHERE customer_id = $1
+    AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = $1)`, [req.params.id]);
+  if (!rowCount) return res.status(400).send(layout({ title: 'Can\'t delete', active: '/customers',
+    body: html`<h1>Can't delete this customer</h1><p>They have quotes or orders. Delete those first, or leave the customer as is.</p>
+      <p><a class="btn" href="/customers/${req.params.id}">Back</a></p>` }));
+  res.redirect('/customers');
 });
 
 router.get('/:id(\\d+)/edit', need('customers'), async (req, res) => {
