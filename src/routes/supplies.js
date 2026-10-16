@@ -1,7 +1,7 @@
 // Supplies (boots, jacks, screws, accessories: anything on the price list marked
 // "count on hand") and tools (shop tools, some rented out on quotes).
 const { query, tx } = require('../db');
-const { html, layout, money, num, date } = require('../html');
+const { html, layout, money, num, date, printButton, printedLine } = require('../html');
 const { can, need, userName } = require('../auth');
 const { supplyRow, LINE_QTY } = require('../supplies');
 
@@ -79,11 +79,12 @@ router.get('/supplies', async (req, res) => {
     title: 'Supplies', active: '/supplies',
     body: html`
     <div class="page-head"><h1>Supplies</h1>
-      <div class="actions">
+      <div class="actions">${printButton('/count-sheets/supplies')}
         <a class="btn ${lowOnly ? '' : 'primary'}" href="/supplies">Everything</a>
         <a class="btn ${lowOnly ? 'primary' : ''}" href="/supplies?show=low">Running low (${lowCount})</a>
         <a class="btn" href="/labels/supplies">Print shelf labels</a>
       </div></div>
+    ${printedLine(lowOnly ? 'Supplies running low' : 'Supplies')}
     <p class="muted">Boots, jacks, screws and accessories. Supplies on an order come out of stock when the order is
       marked Completed, and go back if it's reopened. "On orders" is what approved orders still need. Screws are counted
       by color. To count something else (caulking, sealant), tick "Count on hand" on the product in Admin &gt; Products.</p>
@@ -293,7 +294,8 @@ router.get('/tools', async (req, res) => {
     title: 'Tools', active: '/tools',
     body: html`
     <div class="page-head"><h1>Tools</h1>
-      <div class="actions"><a class="btn" href="/labels/tools">Print tool labels</a><a class="btn" href="/tools${req.query.show === 'all' ? '' : '?show=all'}">${req.query.show === 'all' ? 'Hide retired' : 'Show retired'}</a></div></div>
+      <div class="actions">${printButton('/count-sheets/tools')}<a class="btn" href="/labels/tools">Print tool labels</a><a class="btn" href="/tools${req.query.show === 'all' ? '' : '?show=all'}">${req.query.show === 'all' ? 'Hide retired' : 'Show retired'}</a></div></div>
+    ${printedLine('Tools')}
     <p class="muted">Every tool the shop owns. To rent one out, put its rental item on a quote (the quantity is the
       number of days). Once the quote is approved, check the tool out and back in at the bottom of the order.</p>
     ${alert(req)}

@@ -44,6 +44,16 @@ const LOST_REASONS = {
   no_response: 'No response', changed_scope: 'Job changed or cancelled', other: 'Other',
 };
 
+// Print button for report and inventory pages, plus a line that only shows on paper
+// saying what this is and when it was printed.
+const printButton = (countSheet) => html`<button type="button" class="btn" onclick="window.print()">Print</button>${
+  countSheet ? html`<a class="btn" href="${countSheet}">Count sheet</a>` : ''}`;
+const printedLine = (what) => {
+  const { userName } = require('./auth');
+  const at = new Date().toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' });
+  return html`<p class="print-only printed-line">High Plains Custom Metal · ${what} · printed ${at}${userName() ? ` by ${userName()}` : ''}</p>`;
+};
+
 // Delete button that asks the person to type DELETE (checked again on the server).
 const deleteButton = (action, what) => html`<form method="post" action="${action}" class="inline"
   data-what="${what}" onsubmit="const v = prompt('This deletes ' + this.dataset.what + ' for good. Type DELETE to confirm.');
@@ -112,6 +122,6 @@ ${scripts.map((src) => html`<script src="${src}"></script>`)}
 };
 
 module.exports = {
-  html, raw, money, num, date, layout, statusBadge, deleteButton, typedDelete,
+  html, raw, money, num, date, layout, statusBadge, deleteButton, typedDelete, printButton, printedLine,
   UNIT_LABEL, STATUS_LABEL, AREA_LABEL, LOST_REASONS,
 };

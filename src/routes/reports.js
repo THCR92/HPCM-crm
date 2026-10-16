@@ -3,7 +3,7 @@
 // coil stock. Every table can be sorted and downloaded as a spreadsheet (CSV).
 const router = require('../async-router')();
 const { query } = require('../db');
-const { html, raw, layout, money, num, date, LOST_REASONS } = require('../html');
+const { html, raw, layout, money, num, date, LOST_REASONS, printButton, printedLine } = require('../html');
 const { can, need } = require('../auth');
 
 const TZ = 'America/Denver';
@@ -653,7 +653,8 @@ router.get('/reports', need('reports'), async (req, res) => {
     active: '/reports',
     scripts: ['/reports.js'],
     body: html`
-    <div class="page-head"><h1>Reports</h1></div>
+    <div class="page-head"><h1>Reports</h1><div class="actions">${printButton()}</div></div>
+    ${printedLine(`Reports, ${date(range.from)} to ${date(range.to)}`)}
     <form class="card report-range" method="get" action="/reports">
       <div class="presets">${range.list.map(([k, l]) =>
         html`<a class="${range.preset === k ? 'active' : ''}" href="/reports?range=${k}">${l}</a>`)}</div>

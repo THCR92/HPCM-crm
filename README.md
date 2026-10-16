@@ -92,6 +92,11 @@ works out the square feet, linear feet and price for every line.
   each, value on hand and margin against the price list; supplies used on orders carry their
   cost into Reports (Inventory: value at cost of coil, supplies and tools, and supplies used
   with cost, sold-for and margin). Tools show their cost and the rent billed against it.
+- **Printing and count sheets**: every page under the Reports menu has a Print button (Reports
+  can also print one section). Coils, Finished stock, Supplies and Tools have a "Count sheet"
+  (`/count-sheets/...`): a paper sheet listing what the CRM has, with blank Counted and Notes
+  columns, spare rows for anything missing, and a sign-off line. "Blind count" hides the CRM's
+  numbers so counters write what they see. Enter the counts back on that page afterward.
 - **Tools** (`/tools`): every tool the shop owns, with tag and serial numbers, cost and where
   it's kept, and its status (available, in for repair, retired, or out with a customer). A
   tool can be rented as a price list item ("Hand seamer rental (per day)"); put it on a quote

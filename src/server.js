@@ -31,6 +31,7 @@ app.use('/customers', require('./routes/customers'));
 app.use('/board', require('./routes/board'));
 app.use('/', require('./routes/reports'));
 app.use('/', require('./routes/supplies'));
+app.use('/', require('./routes/countsheets'));
 app.use('/', require('./routes/labels'));
 app.use('/', require('./routes/qbo'));
 app.use('/', require('./routes/admin'));

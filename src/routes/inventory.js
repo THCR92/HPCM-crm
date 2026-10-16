@@ -1,7 +1,7 @@
 // Coil inventory (one row per coil tag, tracked by linear feet) and finished stock
 // (panels and trim already cut, by product, color and length).
 const { query, tx } = require('../db');
-const { html, layout, money, num, date } = require('../html');
+const { html, layout, money, num, date, printButton, printedLine } = require('../html');
 const { feetInches } = require('../length');
 const { footage, undoRun, runError } = require('../production');
 const { can, need, userName } = require('../auth');
@@ -53,7 +53,8 @@ router.get('/coils', async (req, res) => {
   res.send(layout({
     title: 'Coils', active: '/coils',
     body: html`
-    <div class="page-head"><h1>Coils</h1><div class="actions"><a class="btn" href="/labels/coils">Print coil labels</a></div></div>
+    <div class="page-head"><h1>Coils</h1><div class="actions">${printButton('/count-sheets/coils')}<a class="btn" href="/labels/coils">Print coil labels</a></div></div>
+    ${printedLine(all ? 'All coils' : 'Coils on hand')}
     ${alert(req)}
     ${can('inventory') ? html`<details class="card" ${coils.length ? '' : 'open'}>
       <summary><strong>Receive a coil</strong></summary>
@@ -247,7 +248,8 @@ router.get('/stock', async (req, res) => {
   res.send(layout({
     title: 'Stock', active: '/stock',
     body: html`
-    <div class="page-head"><h1>Finished stock</h1></div>
+    <div class="page-head"><h1>Finished stock</h1><div class="actions">${printButton('/count-sheets/stock')}</div></div>
+    ${printedLine('Finished stock')}
     <p class="muted">Panels and trim already cut: run ahead to stock, or remnants left over from a job.</p>
     ${alert(req)}
     ${can('inventory') ? html`<details class="card" ${stock.length ? '' : 'open'}>
