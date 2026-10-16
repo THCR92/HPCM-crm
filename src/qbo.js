@@ -498,6 +498,23 @@ async function shipTo(o) {
   return a ? toQbAddr(a) : null;
 }
 
+// The invoice number if an invoice is still live in QuickBooks; null once it's
+// deleted or voided there. Says it's live when QuickBooks can't be asked.
+async function invoiceStillOpen(qboInvoiceId) {
+  if (!qboInvoiceId) return null;
+  if (!(await connected())) return 'the linked invoice (QuickBooks isn\'t connected, so it can\'t be checked)';
+  let inv;
+  try {
+    inv = (await api('GET', `invoice/${encodeURIComponent(qboInvoiceId)}`)).Invoice;
+  } catch (err) {
+    if (err.status === 400 || err.status === 404) return null;
+    throw err;
+  }
+  if (!inv || inv.status === 'Deleted') return null;
+  const voided = Number(inv.TotalAmt) === 0 && /voided/i.test(inv.PrivateNote || '');
+  return voided ? null : inv.DocNumber || 'this order\'s invoice';
+}
+
 const INVOICEABLE = ['completed', 'invoiced'];
 
 // Sends a completed order to QuickBooks as an invoice (or updates the one it
@@ -653,7 +670,7 @@ function startChecks() {
 
 module.exports = {
   io, config, configured, redirectUri, connection, connected, later, idle,
-  customerChanged, orderCompleted, pushCustomer, pushInvoice, pullCustomer, pullCustomerById,
+  customerChanged, orderCompleted, invoiceStillOpen, pushCustomer, pushInvoice, pullCustomer, pullCustomerById,
   checkCustomers, syncAllCustomers, connectUrl, finishConnect, disconnect, handleWebhook, startChecks,
   QboError, API_BASE,
 };

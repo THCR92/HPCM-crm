@@ -479,11 +479,22 @@ router.post('/:id(\\d+)/delete', need('admin'), async (req, res) => {
   if (!typedDelete(req.body)) return fail('Not deleted: type DELETE to confirm.');
   const { rows: [o] } = await query('SELECT status, qbo_invoice_id FROM orders WHERE order_id = $1', [id]);
   if (!o) return res.status(404).send('Order not found');
-  if (!DELETABLE.includes(o.status)) return fail('Only quotes and cancelled orders can be deleted. Cancel it first.');
+  // An invoiced order (say, a test) can go once its QuickBooks invoice is deleted or voided there.
+  if (o.status === 'invoiced') {
+    const still = await qbo.invoiceStillOpen(o.qbo_invoice_id);
+    if (still) return fail(`Delete or void invoice ${still} in QuickBooks first, then delete this order.`);
+  } else if (!DELETABLE.includes(o.status)) return fail('Only quotes and cancelled orders can be deleted. Cancel it first.');
   const { rows: [open] } = await query('SELECT 1 FROM tool_rentals WHERE order_id = $1 AND returned_at IS NULL LIMIT 1', [id]);
   if (open) return fail('A rental tool on this order hasn\'t been returned yet.');
   try {
-    await query('DELETE FROM orders WHERE order_id = $1', [id]);
+    await tx(async (db) => {
+      // Supplies taken out for an invoiced order go back on the shelf first.
+      if (o.status === 'invoiced') {
+        await db.query("UPDATE orders SET status = 'cancelled', updated_by = $2 WHERE order_id = $1", [id, userName()]);
+        await syncOrderSupplies(db, id, userName());
+      }
+      await db.query('DELETE FROM orders WHERE order_id = $1', [id]);
+    });
   } catch (err) {
     if (err.code === '23503') return fail('Coil was already run for this order, so it can\'t be deleted (it would lose the coil history). Leave it cancelled.');
     throw err;
@@ -687,7 +698,7 @@ router.get('/:id(\\d+)', async (req, res) => {
         ${o.status !== 'quote' && o.status !== 'cancelled' ? html`<a class="btn" href="/labels/order/${o.order_id}">Labels</a>` : ''}
         ${['confirmed', 'in_production', 'ready'].includes(o.status) && can('production') ? html`<a class="btn" href="/orders/${o.order_id}/pack">Pack &amp; check</a>` : ''}
         ${o.status === 'ready' && (can('production') || can('quotes')) ? html`<a class="btn primary" href="/orders/${o.order_id}/handoff">${o.fulfillment === 'delivery' ? 'Delivered…' : 'Picked up…'}</a>` : ''}
-        ${DELETABLE.includes(o.status) && isAdmin() ? deleteButton(`/orders/${o.order_id}/delete`, `${docName.toLowerCase()} ${o.order_number}`) : ''}
+        ${(DELETABLE.includes(o.status) || o.status === 'invoiced') && isAdmin() ? deleteButton(`/orders/${o.order_id}/delete`, `${docName.toLowerCase()} ${o.order_number}`) : ''}
         ${o.status !== 'invoiced' && nextStatuses.length ? html`
         <form method="post" action="/orders/${o.order_id}/status" class="inline">
           <select name="status">${nextStatuses.map((s) => html`<option value="${s}">${STATUS_LABEL[s]}</option>`)}</select>

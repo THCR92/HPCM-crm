@@ -1107,6 +1107,11 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     assert.match(await form('/qbo/test-customers/remove', [sample.customer_id, pulled.customer_id, customerId].map((v) => ['id', v])), /Removed 1 test customer/);
     assert.strictEqual((await query('SELECT count(*)::int AS n FROM customers WHERE customer_id = ANY($1::int[])',
       [[sample.customer_id, pulled.customer_id, customerId]])).rows[0].n, 2);
+    // An invoiced (test) order can only be deleted once its QuickBooks invoice is voided or deleted.
+    await query("UPDATE orders SET status = 'invoiced' WHERE order_id = $1", [id]);
+    assert.match(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), new RegExp(`void invoice ${o.order_number} in QuickBooks first`));
+    Object.assign(inv, { TotalAmt: 0, PrivateNote: 'Voided' });
+    assert.strictEqual(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), '/orders');
   } finally {
     await form('/qbo/disconnect', {});
     await qbo.idle();
