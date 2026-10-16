@@ -959,7 +959,7 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
   const realm = `9130${Date.now()}`;
   const run = Date.now();
   // A pretend QuickBooks company.
-  const qb = { customers: new Map(), items: new Map(), invoices: new Map(), next: 1 };
+  const qb = { customers: new Map(), items: new Map(), invoices: new Map(), vendors: new Set([`Metal Supplier ${run}`]), next: 1 };
   const addCustomer = (c) => { const id = String(qb.next++); qb.customers.set(id, { ...c, Id: id, SyncToken: '0', Active: true }); return id; };
   const qbOnly = addCustomer({ DisplayName: `QB Only Roofing ${run}`, PrimaryPhone: { FreeFormNumber: '307-555-0100' },
     BillAddr: { Line1: '1 Main St', City: 'Cheyenne', CountrySubDivisionCode: 'WY', PostalCode: '82001' } });
@@ -984,6 +984,9 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     const path = u.pathname.replace(`/v3/company/${realm}/`, '');
     const body = opts.body ? JSON.parse(opts.body) : null;
     if (path === `companyinfo/${realm}`) return reply(200, { CompanyInfo: { CompanyName: 'Sandbox Co' } });
+    if (path === 'customer' && !body.Id && qb.vendors.has(body.DisplayName)) {
+      return reply(400, { Fault: { Error: [{ Message: 'Duplicate Name Exists Error', Detail: 'The name supplied already exists. : null', code: '6240' }] } });
+    }
     if (path === 'customer') return reply(200, { Customer: save(qb.customers, body) });
     if (path === 'item') return reply(200, { Item: save(qb.items, body) });
     if (path === 'invoice') return reply(200, { Invoice: save(qb.invoices, body) });
@@ -1044,6 +1047,21 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     const inQb = [...qb.customers.values()].find((c) => c.DisplayName === name);
     assert.deepStrictEqual([inQb.PrimaryPhone.FreeFormNumber, inQb.PrimaryEmailAddr.Address, inQb.Taxable], ['307-555-0199', 'fr@example.com', false]);
     assert.match(await (await fetch(`${base}/customers/${customerId}`)).text(), /Matched/);
+
+    // A vendor already has this name in QuickBooks: the customer becomes "Name (Customer)" there and keeps its name here.
+    const vendorName = `Metal Supplier ${run}`;
+    const vc = Number((await form('/customers', { display_name: vendorName })).split('/').pop());
+    await qbo.idle();
+    const vid = [...qb.customers.values()].find((x) => x.DisplayName === `${vendorName} (Customer)`)?.Id;
+    assert.ok(vid, 'created with (Customer)');
+    await form(`/customers/${vc}`, { display_name: vendorName, phone: '307-555-0333' });
+    await qbo.idle();
+    const vq = qb.customers.get(vid);
+    assert.strictEqual(vq.DisplayName, `${vendorName} (Customer)`);
+    assert.strictEqual(vq.PrimaryPhone.FreeFormNumber, '307-555-0333');
+    await qbo.pullCustomer(vq);
+    const { rows: [vrow] } = await query('SELECT display_name, qbo_last_error FROM customers WHERE customer_id = $1', [vc]);
+    assert.deepStrictEqual(vrow, { display_name: vendorName, qbo_last_error: null });
 
     // Changed in QuickBooks: the webhook brings it back, signed or refused.
     inQb.PrimaryPhone = { FreeFormNumber: '307-555-0222' };

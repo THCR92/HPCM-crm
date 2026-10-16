@@ -211,6 +211,18 @@ function customerBody(c, addr) {
   };
 }
 
+const SUFFIX = ' (Customer)';
+// " (Customer)" is only there for QuickBooks (a vendor has the same name).
+const crmName = (n) => (String(n).endsWith(SUFFIX) ? String(n).slice(0, -SUFFIX.length) : String(n));
+const faultCode = (err) => String(err && err.body && err.body.Fault && err.body.Fault.Error && err.body.Fault.Error[0]
+  && err.body.Fault.Error[0].code || '');
+// A customer by exact name, active or not (inactive ones only show up when asked for).
+async function findCustomer(name) {
+  return ((await select(`select * from Customer where DisplayName = ${quote(name)}`)).Customer || [])[0]
+    || ((await select(`select * from Customer where DisplayName = ${quote(name)} and Active = false`)).Customer || [])[0]
+    || null;
+}
+
 // Sends one CRM customer to QuickBooks: updates the linked one, links to one
 // with the same name, or creates it. Problems are saved on the customer.
 async function pushCustomer(customerId) {
@@ -223,21 +235,28 @@ async function pushCustomer(customerId) {
     if (c.qbo_customer_id) {
       existing = (await api('GET', `customer/${c.qbo_customer_id}`).catch(() => null))?.Customer || null;
     }
-    if (!existing) {
-      existing = ((await select(`select * from Customer where DisplayName = ${quote(body.DisplayName)}`)).Customer || [])[0]
-        // Inactive customers only show up when asked for by name and Active.
-        || ((await select(`select * from Customer where DisplayName = ${quote(body.DisplayName)} and Active = false`)).Customer || [])[0]
-        || null;
-    }
+    if (!existing) existing = await findCustomer(body.DisplayName) || await findCustomer(body.DisplayName + SUFFIX);
+    // Keep the " (Customer)" QuickBooks needed when the name belongs to a vendor too.
+    if (existing && existing.DisplayName === body.DisplayName + SUFFIX) body.DisplayName = existing.DisplayName;
     // Clear in QuickBooks what was cleared here, or the next sync would bring it back.
     if (existing) {
       if (!c.email && existing.PrimaryEmailAddr) body.PrimaryEmailAddr = { Address: '' };
       if (!c.phone && existing.PrimaryPhone) body.PrimaryPhone = { FreeFormNumber: '' };
       if (!c.mobile && existing.Mobile) body.Mobile = { FreeFormNumber: '' };
     }
-    const out = existing
-      ? await api('POST', 'customer', { ...body, Id: existing.Id, SyncToken: existing.SyncToken, sparse: true }, { ...log, op: 'update' })
-      : await api('POST', 'customer', body, { ...log, op: 'create' });
+    let out;
+    if (existing) {
+      out = await api('POST', 'customer', { ...body, Id: existing.Id, SyncToken: existing.SyncToken, sparse: true }, { ...log, op: 'update' });
+    } else {
+      try {
+        out = await api('POST', 'customer', body, { ...log, op: 'create' });
+      } catch (err) {
+        // QuickBooks names are shared by customers, vendors and employees. When a
+        // vendor or employee already has the name, the customer gets " (Customer)".
+        if (faultCode(err) !== '6240') throw err;
+        out = await api('POST', 'customer', { ...body, DisplayName: cut(body.DisplayName, 500 - SUFFIX.length) + SUFFIX }, { ...log, op: 'create' });
+      }
+    }
     await query(`UPDATE customers SET qbo_customer_id = $1, qbo_sync_token = $2, qbo_synced_at = now(),
         qbo_last_error = NULL WHERE customer_id = $3`, [out.Customer.Id, out.Customer.SyncToken, c.customer_id]);
     return out.Customer.Id;
@@ -257,13 +276,13 @@ async function pullCustomer(q) {
   if (q.Job || q.ParentRef) return null;
   const { rows: [linked] } = await query(`SELECT customer_id FROM customers WHERE qbo_customer_id = $1
     UNION ALL (SELECT customer_id FROM customers WHERE lower(display_name) = lower($2) AND qbo_customer_id IS NULL LIMIT 1)
-    LIMIT 1`, [q.Id, q.DisplayName]);
+    LIMIT 1`, [q.Id, crmName(q.DisplayName)]);
   if (q.status === 'Deleted' || q.Active === false) {
     if (linked) await query('UPDATE customers SET active = false, qbo_synced_at = now() WHERE customer_id = $1', [linked.customer_id]);
     return linked ? linked.customer_id : null;
   }
   const v = {
-    display_name: q.DisplayName,
+    display_name: crmName(q.DisplayName),
     company_name: blank(q.CompanyName),
     first_name: blank(q.GivenName),
     last_name: blank(q.FamilyName),
