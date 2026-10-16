@@ -100,7 +100,7 @@ router.get('/admin/quickbooks', need('admin'), async (req, res) => {
     if (l.local_table === 'products' && l.local_id) return html`${l.product_name || 'Item'}`;
     return l.entity;
   };
-  const OPS = { create: 'Added to QuickBooks', update: 'Updated in QuickBooks', pull: 'Brought in from QuickBooks' };
+  const OPS = { create: 'Added to QuickBooks', update: 'Updated in QuickBooks', pull: 'Brought in from QuickBooks', read: 'Read from QuickBooks' };
 
   let status;
   if (!qbo.configured()) {
@@ -167,7 +167,7 @@ router.get('/admin/quickbooks', need('admin'), async (req, res) => {
       <thead><tr><th>When</th><th>What</th><th>Done</th><th>Result</th></tr></thead>
       <tbody>${log.length ? log.map((l) => html`<tr>
         <td>${when(l.created_at)}</td><td>${what(l)}</td><td>${OPS[l.operation] || l.operation}</td>
-        <td>${l.succeeded ? 'OK' : html`<span class="warn-text">${l.error || 'Failed'}</span>`}</td></tr>`)
+        <td>${l.succeeded ? 'OK' : html`<span class="warn-text">${l.error || 'Failed'}</span>${l.intuit_tid ? html` <span class="muted small">(Intuit ref ${l.intuit_tid})</span>` : ''}`}</td></tr>`)
       : html`<tr><td colspan="4" class="empty">Nothing sent yet.</td></tr>`}</tbody>
     </table>`,
   }));

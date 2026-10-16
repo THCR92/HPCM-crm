@@ -146,13 +146,16 @@ async function api(method, path, body, log) {
     if (res.status !== 401) break;
   }
   const error = res.ok && !json.Fault ? null : faultMessage(json) || `QuickBooks answered ${res.status}`;
+  // Every change is logged, and so is every failed read (with Intuit's intuit_tid for their support).
+  if (error && !log) log = { entity: path.split(/[/?]/)[0], table: 'qbo', op: 'read' };
   if (log) {
     const saved = json && json[log.entity];
+    const tid = res.headers && typeof res.headers.get === 'function' ? res.headers.get('intuit_tid') : null;
     await query(`INSERT INTO qbo_sync_log (entity, local_table, local_id, operation, request_id, request_body,
-        response_status, response_body, qbo_id, succeeded, error)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        response_status, response_body, qbo_id, succeeded, error, intuit_tid)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
     [log.entity, log.table, log.id ?? null, log.op, requestId, body || null, res.status, json,
-      saved ? saved.Id : null, !error, error]);
+      saved ? saved.Id : null, !error, error, tid]);
   }
   if (error) throw new QboError(error, res.status, json);
   return json;
