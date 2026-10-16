@@ -32,11 +32,13 @@ const CHECK_EVERY_MS = 10 * 60 * 1000;
 // Swapped out by the tests for a pretend QuickBooks.
 const io = { fetch: (...args) => globalThis.fetch(...args) };
 
+// Pasted keys often pick up spaces or quotes; Intuit then doesn't know the app.
+const env = (k) => String(process.env[k] || '').trim().replace(/^["']|["']$/g, '').trim();
 const config = () => ({
-  clientId: process.env.QBO_CLIENT_ID || '',
-  clientSecret: process.env.QBO_CLIENT_SECRET || '',
-  environment: process.env.QBO_ENVIRONMENT === 'production' ? 'production' : 'sandbox',
-  webhookToken: process.env.QBO_WEBHOOK_TOKEN || '',
+  clientId: env('QBO_CLIENT_ID'),
+  clientSecret: env('QBO_CLIENT_SECRET'),
+  environment: env('QBO_ENVIRONMENT') === 'production' ? 'production' : 'sandbox',
+  webhookToken: env('QBO_WEBHOOK_TOKEN'),
 });
 const configured = () => Boolean(config().clientId && config().clientSecret);
 

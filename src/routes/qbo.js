@@ -11,6 +11,21 @@ const when = (d) => (d ? new Date(d).toLocaleString('en-US', { timeZone: 'Americ
 const ENV_LABEL = { sandbox: 'test company (sandbox)', production: 'your real QuickBooks company' };
 const back = (res, msg, kind = 'msg') => res.redirect(`/admin/quickbooks?${kind}=${encodeURIComponent(msg)}`);
 
+// What the CRM is sending Intuit, to compare with the Intuit app's Development keys.
+// The Client ID isn't secret (it shows in the address bar on Intuit's page); the secret is never shown.
+function keyCheck(cfg, req) {
+  const id = cfg.clientId;
+  return html`<details class="small"><summary>If Intuit says "undefined didn't connect"</summary>
+    <p>Intuit doesn't recognize the Client ID. Compare these with <strong>Keys &amp; Credentials → Development</strong> on the Intuit app:</p>
+    <ul>
+      <li>Client ID in Render: starts <code>${id.slice(0, 6)}</code>, ends <code>${id.slice(-4)}</code>, ${id.length} characters
+        (Intuit's are usually about 50).</li>
+      <li>Client Secret in Render: ${cfg.clientSecret.length} characters (usually 40).</li>
+      <li>Redirect URI on the Intuit app's Development tab must be exactly <code>${qbo.redirectUri(req)}</code></li>
+      <li>Use the Development keys, not Production.</li>
+    </ul></details>`;
+}
+
 router.get('/admin/quickbooks', need('admin'), async (req, res) => {
   const cfg = qbo.config();
   const conn = await qbo.connection();
@@ -54,6 +69,7 @@ router.get('/admin/quickbooks', need('admin'), async (req, res) => {
       <p>Connecting signs in to QuickBooks once. You'll pick the company there; these keys are for the
         <strong>${ENV_LABEL[cfg.environment]}</strong>.</p>
       <form method="post" action="/qbo/connect"><button class="btn primary big-btn">Connect to QuickBooks</button></form>
+      ${keyCheck(cfg, req)}
     </div>`;
   } else {
     status = html`
