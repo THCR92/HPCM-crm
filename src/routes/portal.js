@@ -520,7 +520,7 @@ const blankQuote = (l, catalog) => {
   const c = catalog.customers[0] || {};
   return {
     order_id: null, customer_id: l.customer_id, fulfillment: c.default_fulfillment || 'pickup',
-    tax_rate: catalog.default_tax_rate, tax_exempt: Boolean(c.tax_exempt), auto_screws: true, framing: 'wood',
+    tax_rate: catalog.default_tax_rate, tax_exempt: Boolean(c.tax_exempt), auto_screws: true, framing: 'wood', closures: 'standard',
     contact_phone: l.phone || c.phone || null, contact_email: l.email,
     sections: [{ area: 'roof', items: [] }, { area: 'wall', items: [] }, { area: 'trim', items: [] }],
   };
@@ -541,6 +541,7 @@ router.get('/portal/orders/:id(\\d+)/again', signedIn, async (req, res) => {
   const order = {
     ...blankQuote(l, catalog), job_name: o.job_name, job_address_text: o.job_address_text, fulfillment: o.fulfillment,
     auto_screws: o.auto_screws, framing: o.framing, screw_length: o.screw_length, trim_screws_for: o.trim_screws_for,
+    closures: o.closures === 'none' ? 'standard' : o.closures,
     sections: o.sections.filter((sec) => !sec.is_auto).map((sec) => ({
       area: sec.area, label: sec.label,
       items: sec.items.filter((i) => known.has(i.product_id)).map((i) => ({
@@ -599,6 +600,7 @@ async function savePortalQuote(l, existing, body) {
     contact_phone: body.contact_phone, contact_email: body.contact_email, fulfillment: body.fulfillment,
     need_by: typeof body.need_by === 'string' && body.need_by >= today() ? body.need_by : null,
     auto_screws: body.auto_screws, framing: body.framing, screw_length: body.screw_length, trim_screws_for: body.trim_screws_for,
+    closures: body.closures, accessories_checked: body.accessories_checked,
     // Ours, kept as they are.
     delivery_charge: existing ? existing.delivery_charge : 0,
     discount_amount: existing ? existing.discount_amount : 0,

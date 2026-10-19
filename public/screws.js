@@ -159,9 +159,55 @@
     return { options: [...new Set(own.map((r) => r.option_label))], usual: def ? def.option_label : null };
   }
 
+  // Closures for through-fastener panels: 1 inside and 1 outside for every panel piece.
+  // choice: 'standard' | 'vented' (the outside one is vented, for the ridge) | 'none'.
+  // products: as for figure(), plus closure_id, vented_closure_id and price.
+  function closures(lines, products, choice) {
+    if (choice !== 'standard' && choice !== 'vented') return { lines: [], missing: [] };
+    const groups = new Map();
+    const missing = new Set();
+    const add = (id, n, side, panel) => {
+      const g = groups.get(id) || { count: 0, what: new Map() };
+      g.count += n;
+      const w = g.what.get(panel) || { inside: 0, outside: 0 };
+      w[side] += n;
+      g.what.set(panel, w);
+      groups.set(id, g);
+    };
+    for (const l of lines) {
+      const p = products.get(Number(l.product_id));
+      if (!p || p.category !== 'panel' || p.fastening !== 'through_fastened') continue;
+      const pieces = Number(l.pieces);
+      if (!(pieces > 0)) continue;
+      const solid = Number(p.closure_id) || null;
+      const vented = Number(p.vented_closure_id) || null;
+      const panel = p.profile_name || p.name;
+      if (!solid || (choice === 'vented' && !vented)) { missing.add(panel); continue; }
+      add(solid, pieces, 'inside', panel);
+      add(choice === 'vented' ? vented : solid, pieces, 'outside', panel);
+    }
+    const out = [];
+    for (const [id, g] of groups) {
+      const c = products.get(id);
+      const parts = [...g.what].map(([panel, w]) => (w.inside === w.outside
+        ? `1 inside + 1 outside for each of ${w.inside} ${panel} pieces`
+        : `${w.inside ? 'Inside' : 'Outside'}: 1 for each of ${w.inside || w.outside} ${panel} pieces`));
+      out.push({
+        kind: 'closure',
+        product_id: id,
+        color_id: null,
+        pieces: g.count,
+        unit_price: !c || c.price === null || c.price === undefined ? '' : Number(c.price),
+        count: g.count,
+        description: parts.join('; '),
+      });
+    }
+    return { lines: out, missing: [...missing] };
+  }
+
   const hasRules = (rules, productId) => rules.some((r) => Number(r.item_product_id) === Number(productId));
 
-  const api = { figure, panelRules, itemRules, lengths, lineOptions, hasRules, SYSTEMS };
+  const api = { figure, closures, panelRules, itemRules, lengths, lineOptions, hasRules, SYSTEMS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Screws = api;
 }(this));

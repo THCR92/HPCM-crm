@@ -374,3 +374,8 @@ tr.invite-row td { border-top: 0; padding-top: 0; }
 .photo-btn { cursor: pointer; }
 tr.needs-photo td:first-child { box-shadow: inset 4px 0 0 #e0a100; }
 .handoff-info { max-width: 760px; }
+
+/* Quote form: "I've added any other accessories" reminder by the Save button */
+label.accessories-check { align-items: flex-start; font-size: .9rem; margin: .5rem 0; }
+label.accessories-check input { margin-top: .2rem; }
+label.accessories-check.missing { color: var(--danger, #b42318); font-weight: 600; }

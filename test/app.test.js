@@ -666,6 +666,48 @@ test('trim screws: own lines in the trim color, choice per line, quote picks the
   assert.strictEqual((await fetch(`${base}/admin/screws`, { headers: { cookie: sales } })).status, 403);
 });
 
+test('closures: 1 inside and 1 outside per PBR or Tuff Rib panel; vented or none per quote', async () => {
+  const { rows: [c] } = await query(
+    "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const [pbr, tuff, snap, pbrClos, tuffClos, vented] = await Promise.all(['PNL-PBR-26', 'PNL-TR-26', 'PNL-SL-26',
+    'ACC-PBR-CLOSURE', 'ACC-CLOS-IO', 'ACC-VENTED-CLOSURE-THROUGH-F'].map((sku) => productId(sku)));
+  const price = async (pid) => (await query('SELECT unit_price FROM v_current_prices WHERE product_id = $1', [pid])).rows[0].unit_price;
+  const order = (closures, sectionId) => ({
+    customer_id: c.customer_id, closures, accessories_checked: true,
+    sections: [
+      { area: 'roof', items: [
+        { product_id: pbr, pieces: 20, length_in: 200, unit_price: 5.65 },
+        { product_id: pbr, pieces: 4, length_in: 100, unit_price: 5.65 },
+        { product_id: snap, pieces: 10, length_in: 120, width_in: 16, unit_price: 3.65 }] },
+      { area: 'wall', items: [{ product_id: tuff, pieces: 6, length_in: 150, unit_price: 5.65 }] },
+      ...(sectionId ? [{ section_id: sectionId, area: 'other', label: 'Closures', auto: true, items: [] }] : []),
+    ],
+  });
+  let out = await (await post('/orders', order('standard'))).json();
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const closures = async () => (await query(`SELECT oi.product_id, oi.pieces::int, oi.unit_price, oi.description, s.section_id, s.label
+    FROM order_items oi JOIN order_sections s USING (section_id) WHERE oi.order_id = $1 AND s.is_auto ORDER BY oi.line_no`, [id])).rows;
+  let rows = await closures();
+  // Snap lock gets none; 24 PBR panels -> 48 PBR closures; 6 Tuff Rib -> 12.
+  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.pieces, r.label]), [[pbrClos, 48, 'Closures'], [tuffClos, 12, 'Closures']]);
+  assert.strictEqual(rows[0].unit_price, await price(pbrClos));
+  assert.strictEqual(rows[0].description, '1 inside + 1 outside for each of 24 PBR/R Panel pieces');
+  const { rows: [o] } = await query('SELECT closures, accessories_checked FROM orders WHERE order_id = $1', [id]);
+  assert.deepStrictEqual([o.closures, o.accessories_checked], ['standard', true]);
+
+  // Vented: the inside closures stay, the outside ones are vented. The section keeps its place.
+  out = await (await post(`/orders/${id}`, order('vented', rows[0].section_id))).json();
+  assert.ok(out.ok, out.error);
+  rows = await closures();
+  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.pieces]), [[pbrClos, 24], [vented, 30], [tuffClos, 6]]);
+
+  // None: no closures section at all.
+  out = await (await post(`/orders/${id}`, order('none', rows[0].section_id))).json();
+  assert.ok(out.ok, out.error);
+  assert.deepStrictEqual(await closures(), []);
+});
+
 test('reports: Admins and Managers only; status changes are logged; lost reasons and win rate count', async () => {
   const manager = await signIn('manager');
   const sales = await signIn('sales');

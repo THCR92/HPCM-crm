@@ -89,7 +89,8 @@ async function loadCatalog() {
            p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
            p.flat_extra_in AS flat_extra, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
-           pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name
+           pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name,
+           pp.closure_product_id AS closure_id, pp.vented_closure_product_id AS vented_closure_id
     FROM products p
     LEFT JOIN v_current_prices cp USING (product_id)
     LEFT JOIN panel_profiles pp USING (profile_id)
@@ -166,6 +167,8 @@ function parseHeader(b) {
     framing: b.framing === 'steel' ? 'steel' : 'wood',
     screw_length: text(b.screw_length),
     trim_screws_for: ['through_fastened', 'concealed', 'none'].includes(b.trim_screws_for) ? b.trim_screws_for : null,
+    closures: ['standard', 'vented'].includes(b.closures) ? b.closures : 'none',
+    accessories_checked: b.accessories_checked === true || b.accessories_checked === 'true',
     delivery_charge: amount(b.delivery_charge, 'Delivery charge'),
     discount_amount: amount(b.discount_amount, 'Discount'),
     deposit_amount: amount(b.deposit_amount, 'Deposit'),
@@ -221,6 +224,7 @@ function parseSections(b, productsById) {
     return {
       section_id: Number(s.section_id) || null, area, label: text(s.label), sort_order: si + 1, items,
       is_auto: s.auto === true,
+      is_closures: s.auto === true && s.label === 'Closures',
     };
   });
 }
@@ -229,8 +233,8 @@ function parseSections(b, productsById) {
 // every save (whatever the form sent for it). With it off, the screw lines are
 // ordinary lines the person can change.
 async function withScrews(sections, header, productsById) {
-  const auto = sections.find((s) => s.is_auto);
-  const rest = sections.filter((s) => !s.is_auto);
+  const auto = sections.find((s) => s.is_auto && !s.is_closures);
+  const rest = withClosures(sections.filter((s) => !s.is_auto), sections.find((s) => s.is_closures), header, productsById);
   if (!header.auto_screws) {
     if (auto) rest.push({ ...auto, is_auto: false });
     return rest;
@@ -261,6 +265,29 @@ async function withScrews(sections, header, productsById) {
   }];
 }
 
+// Closures for PBR and Tuff Rib panels (1 inside, 1 outside per panel) go in their own
+// automatic section, rebuilt every save from the quote's "Closures" choice.
+function withClosures(rest, auto, header, productsById) {
+  const lines = rest.flatMap((s) => s.items).map((i) => ({ ...i, product_id: i.product.id }));
+  const { lines: figured, missing } = Screws.closures(lines, productsById, header.closures);
+  if (missing.length) {
+    throw new UserError(`No ${header.closures === 'vented' ? 'vented ' : ''}closure is set up for ${missing.join(' or ')}. Pick "No closures" and add them as lines.`);
+  }
+  if (!figured.length) return rest;
+  const items = figured.map((l) => {
+    const p = productsById.get(l.product_id);
+    if (l.unit_price === '') throw new UserError(`${p.name} has no price yet. Set it on the Price list, or pick "No closures".`);
+    return {
+      order_item_id: null, product: p, color_id: null, pieces: l.pieces, length_in: null, width_in: null,
+      unit_price: l.unit_price, description: l.description, screw_option: null,
+    };
+  });
+  return [...rest, {
+    section_id: auto ? auto.section_id : null, area: 'other', label: 'Closures',
+    sort_order: rest.length + 1, items, is_auto: true,
+  }];
+}
+
 // `who` names the person saving when it isn't a staff sign-in (the customer portal).
 async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
   const header = { ...parseHeader(body), ...extra };
@@ -269,8 +296,9 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
   const { rows: prodRows } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.taxable, p.max_length_in,
            p.girth_in AS girth, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov,
-           pp.fastening::text AS fastening, p.standard_length_in
-    FROM products p LEFT JOIN panel_profiles pp USING (profile_id)`);
+           pp.fastening::text AS fastening, p.standard_length_in,
+           pp.closure_product_id AS closure_id, pp.vented_closure_product_id AS vented_closure_id, cp.unit_price AS price
+    FROM products p LEFT JOIN panel_profiles pp USING (profile_id) LEFT JOIN v_current_prices cp USING (product_id)`);
   const productsById = new Map(prodRows.map((p) => [p.id, p]));
   const sections = await withScrews(parseSections(body, productsById), header, productsById);
 
@@ -459,7 +487,7 @@ router.get('/new', need('quotes'), async (req, res) => {
       fulfillment: cust ? cust.default_fulfillment : 'pickup',
       tax_rate: catalog.default_tax_rate,
       tax_exempt: cust ? cust.tax_exempt : false,
-      auto_screws: true,
+      auto_screws: true, closures: 'standard',
       framing: 'wood',
       contact_phone: cust?.phone || null,
       contact_email: cust?.email || null,
@@ -663,7 +691,7 @@ function customerSheet(o, { linePrices = true, totals = true } = {}) {
         <dt>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</dt><dd>${o.fulfillment === 'delivery' ? 'Delivered' : 'Customer pickup'}</dd>
       </dl>
       ${sections.map((sec) => html`
-      <h3 class="area">${sec.is_auto ? 'Screws' : html`${AREA_LABEL[sec.area] || sec.area}${sec.label ? ` · ${sec.label}` : ''}`}</h3>
+      <h3 class="area">${sec.is_auto ? (sec.label || 'Screws') : html`${AREA_LABEL[sec.area] || sec.area}${sec.label ? ` · ${sec.label}` : ''}`}</h3>
       <table class="lines">
         <thead><tr><th class="num">Qty</th><th>Length</th><th>Item</th><th>Color</th><th>Size</th>
           ${linePrices ? html`<th class="num">Price each</th><th class="num">Amount</th>` : ''}</tr></thead>
@@ -803,7 +831,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       </dl>
 
       ${o.sections.map((s) => html`
-      <h3 class="area">${s.is_auto ? 'Screws' : html`${AREA_LABEL[s.area]}${s.label ? `: ${s.label}` : ''}`}
+      <h3 class="area">${s.is_auto ? (s.label || 'Screws') : html`${AREA_LABEL[s.area]}${s.label ? `: ${s.label}` : ''}`}
         <span class="area-total">${sectionTotals(s.items)}</span></h3>
       <table class="lines">
         <thead><tr><th class="num">Qty</th><th>Length</th><th>Panel / profile</th><th>Gauge</th><th>Color</th>

@@ -62,7 +62,8 @@
       screw_option: it.screw_option || '',
     };
   };
-  const autoSection = (order.sections || []).find((s) => s.is_auto);
+  const autoSection = (order.sections || []).find((s) => s.is_auto && s.label !== 'Closures');
+  const closureSection = (order.sections || []).find((s) => s.is_auto && s.label === 'Closures');
   const state = {
     header: { ...order },
     // The automatic Screws section isn't edited by hand; it's figured from the panels.
@@ -71,11 +72,14 @@
       items: (s.items || []).map(toRow),
     })),
     screwSectionId: autoSection ? autoSection.section_id : null,
+    closureSectionId: closureSection ? closureSection.section_id : null,
     screws: { lines: [], missing: [] },
+    closures: { lines: [], missing: [] },
   };
   delete state.header.sections;
   // Opening an older order that already has screws typed in: leave them alone.
   if (state.header.auto_screws === undefined) state.header.auto_screws = false;
+  if (!state.header.closures) state.header.closures = 'none';
   let dirty = false;
 
   function lengthIn(row) {
@@ -276,6 +280,8 @@
           <tr><th id="t-tax-label">Sales tax</th><td id="t-tax"></td></tr>
           <tr class="grand"><th>Total</th><td id="t-total"></td></tr>
         </table>
+        <label class="check accessories-check"><input type="checkbox" data-h="accessories_checked" ${h.accessories_checked ? 'checked' : ''}>
+          I've added any other accessories this job needs (pipe boots, jacks, butyl tape, sealant…)</label>
         <button type="button" class="btn primary big" data-act="save">Save ${!h.status || h.status === 'quote' ? 'quote' : 'order'}</button>
         <a class="btn" href="${h.order_id ? `/orders/${h.order_id}` : '/orders'}">Cancel</a>
       </div>
@@ -303,10 +309,53 @@
           <tr><th id="t-tax-label">Sales tax</th><td id="t-tax"></td></tr>
           <tr class="grand"><th>Total</th><td id="t-total"></td></tr>
         </table>
+        <label class="check accessories-check"><input type="checkbox" data-h="accessories_checked" ${h.accessories_checked ? 'checked' : ''}>
+          I've added any other accessories I need (pipe boots, jacks, butyl tape, sealant…)</label>
         <button type="button" class="btn primary big" data-act="save">Save quote</button>
         <a class="btn" href="${h.order_id ? `/portal/orders/${h.order_id}` : '/portal'}">Cancel</a>
       </div>
     </div>`;
+  }
+
+  // --------------------------------------------------------------- closures
+  // PBR and Tuff Rib: 1 inside and 1 outside closure per panel, figured like screws.
+  function panelLines() {
+    return state.sections.flatMap((s) => s.items).map((row) => ({
+      product_id: row.product_id, color_id: row.color_id, pieces: row.pieces, length_in: lengthIn(row), width_in: row.width_in,
+      screw_option: row.screw_option,
+    }));
+  }
+  const hasClosurePanels = () => state.sections.some((s) => s.items.some((r) => {
+    const p = productById.get(Number(r.product_id));
+    return p && p.category === 'panel' && p.fastening === 'through_fastened';
+  }));
+
+  function closuresHtml() {
+    if (!hasClosurePanels()) return '';
+    const h = state.header;
+    const opt = (v, label) => `<option value="${v}" ${h.closures === v ? 'selected' : ''}>${label}</option>`;
+    const { lines, missing } = state.closures;
+    const warn = missing.length ? `<p class="alert small">No ${h.closures === 'vented' ? 'vented ' : ''}closure is set up for
+      ${esc(missing.join(' or '))}. Pick "No closures" and add them as lines.</p>` : '';
+    const body = h.closures === 'none'
+      ? '<p class="muted small">No closures on this quote. Add them as lines if they need some.</p>'
+      : !lines.length ? warn : `${warn}<table class="lines edit">
+      <thead><tr><th>Qty</th><th>Closures</th><th></th><th class="num price-col">Price</th><th class="num amount-col">Amount</th></tr></thead>
+      <tbody>${lines.map((l) => {
+        const p = productById.get(l.product_id);
+        return `<tr><td>${l.pieces}</td>
+          <td>${esc(p ? p.name : '')}<div class="muted small">${esc(l.description)}</div></td><td></td>
+          <td class="num price-col">${l.unit_price === '' ? '<span class="missing-text">no price set</span>' : money(Number(l.unit_price))}</td>
+          <td class="num amount-col">${l.unit_price === '' ? '' : money(round2(l.pieces * l.unit_price))}</td></tr>`;
+      }).join('')}</tbody></table>`;
+    return `<div class="section-head screws-head">
+        <strong>Closures</strong>
+        <label>Type <select data-h="closures">
+          ${opt('standard', 'Standard (1 inside, 1 outside per panel)')}
+          ${opt('vented', 'Vented (vented outside closure)')}
+          ${opt('none', 'No closures')}</select></label>
+        <span class="section-total"></span>
+      </div>${body}`;
   }
 
   // ----------------------------------------------------------------- screws
@@ -381,6 +430,7 @@
       ${headerHtml()}
       <div id="sections">${state.sections.map(sectionHtml).join('')}</div>
       <button type="button" class="btn" data-act="add-section">+ Add section</button>
+      <fieldset class="section screws" id="closures-box"></fieldset>
       <fieldset class="section screws" id="screws-box">${screwControlsHtml()}</fieldset>
       ${footerHtml()}`;
     recompute();
@@ -409,6 +459,24 @@
       root.querySelector(`fieldset[data-s="${si}"] .section-total`).textContent =
         [sSq ? `${fmt(round2(sSq))} sq ft` : '', sLf ? `${fmt(round2(sLf))} LF` : ''].filter(Boolean).join(' · ');
     });
+    state.closures = hasClosurePanels() ? window.Screws.closures(panelLines(), productById, state.header.closures)
+      : { lines: [], missing: [] };
+    let closureTotal = 0;
+    for (const l of state.closures.lines) {
+      if (l.unit_price === '') continue;
+      const amt = round2(l.pieces * l.unit_price);
+      closureTotal += amt;
+      lines += amt;
+      if (productById.get(l.product_id)?.taxable !== false) taxable += amt;
+    }
+    const cbox = root.querySelector('#closures-box');
+    const cfocus = document.activeElement && cbox.contains(document.activeElement);
+    cbox.innerHTML = closuresHtml();
+    if (cfocus) cbox.querySelector('[data-h="closures"]')?.focus();
+    cbox.hidden = !cbox.innerHTML;
+    if (!cbox.hidden) {
+      cbox.querySelector('.section-total').textContent = closureTotal && (!portal || portal.prices) ? money(round2(closureTotal)) : '';
+    }
     state.screws = state.header.auto_screws ? figureScrews() : { lines: [], missing: [] };
     let screwTotal = 0;
     for (const l of state.screws.lines) {
@@ -476,6 +544,7 @@
         r.tr.outerHTML = rowHtml(r.row, s, i);
       }
     }
+    if (t.dataset.h === 'accessories_checked') t.closest('label').classList.toggle('missing', !t.checked);
     if (t.dataset.h === 'auto_screws') { toggleScrews(t.checked); return; }
     if (t.dataset.h === 'customer_id') {
       const c = customers.find((x) => x.id === Number(t.value));
@@ -593,7 +662,13 @@
       }
       sections.push({ section_id: s.section_id, area: s.area, label: s.label, items });
     }
-    // The server figures the screws itself; this only keeps the section's place.
+    if (!state.header.accessories_checked) {
+      const box = root.querySelector('.accessories-check');
+      box.classList.add('missing');
+      return showError('Tick the box by the Save button once you\'ve added any other accessories (pipe boots, jacks, butyl tape, sealant…).');
+    }
+    // The server figures closures and screws itself; this only keeps the sections' places.
+    if (state.closures.lines.length) sections.push({ section_id: state.closureSectionId, area: 'other', label: 'Closures', auto: true, items: [] });
     if (state.header.auto_screws) sections.push({ section_id: state.screwSectionId, area: 'other', label: 'Screws', auto: true, items: [] });
     button.disabled = true;
     try {
