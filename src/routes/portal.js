@@ -17,6 +17,7 @@ const {
 } = require('./orders');
 const { INVITE_DAYS, DECLINE_REASONS } = require('./portal-shared');
 const mail = require('../mail');
+const proof = require('../proof');
 const notices = require('../notices');
 
 const router = require('../async-router')();
@@ -373,6 +374,7 @@ router.get('/portal/orders/:id(\\d+)', signedIn, async (req, res) => {
     ${decided || ''}
     ${customerSheet(o, { linePrices: l.portal_line_prices, totals: l.portal_totals })}
     ${answer}
+    ${photosSection(o)}
     ${filesSection(o)}`,
     scripts: ['/attachments.js'],
   }));
@@ -599,6 +601,25 @@ router.post('/portal/orders/:id(\\d+)/save', ...saveRoute(async (req) => {
   return o && canEdit(o) ? o : false;
 }));
 
+// ---- length check photos: a tape measure on each line, taken before it's ready ----------
+function photosSection(o) {
+  if (!o.photos.length) return '';
+  const lines = o.sections.flatMap((sec) => sec.items).filter((i) => i.photos.length);
+  return html`
+  <section id="photos" class="photos">
+    <h2>Photos of your order</h2>
+    <p class="muted small">We photograph each line with a tape measure before it's ready, so you can see the lengths match.</p>
+    <table class="list photo-lines">
+      <thead><tr><th>Pieces</th><th>Photos</th></tr></thead>
+      <tbody>${lines.map((i) => html`<tr>
+        <td>${num(i.pieces)}${i.length_display ? html` × <strong>${i.length_display}</strong>` : ''} ${i.product_name}${
+          i.customer_color ? html`<div class="muted small">${i.customer_color}</div>` : ''}</td>
+        <td>${proof.photoCell({ orderId: o.order_id, lineId: i.order_item_id, photos: i.photos, canAdd: false, base: `/portal/orders/${o.order_id}/files` })}</td>
+      </tr>`)}</tbody>
+    </table>
+  </section>`;
+}
+
 // ---- drawings the customer adds, and the photos we take (part 3) ------------------------
 const OPEN_FOR_FILES = ['quote', 'confirmed', 'in_production'];
 function filesSection(o) {
@@ -654,7 +675,7 @@ router.get('/portal/orders/:id(\\d+)/files/:aid(\\d+)', signedIn, async (req, re
   const o = await customerOrder(req.login, req.params.id);
   if (!o) return res.status(404).send('Not found');
   const { rows: [a] } = await query(`SELECT filename, content_type, data FROM order_attachments
-    WHERE attachment_id = $1 AND order_id = $2 AND from_customer`, [req.params.aid, o.order_id]);
+    WHERE attachment_id = $1 AND order_id = $2 AND (from_customer OR is_proof)`, [req.params.aid, o.order_id]);
   if (!a) return res.status(404).send('Not found');
   res.set({
     'Content-Type': a.content_type,

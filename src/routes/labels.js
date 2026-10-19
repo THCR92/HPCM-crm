@@ -12,6 +12,7 @@ const { html, raw, layout, num, date } = require('../html');
 const { can, need, userName } = require('../auth');
 const { syncOrderSupplies } = require('../supplies');
 const qbo = require('../qbo');
+const proof = require('../proof');
 
 const router = require('../async-router')();
 
@@ -283,12 +284,14 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
   const bundles = lines.flatMap((l) => l.bundles);
   const done = bundles.filter((b) => b.packed_at).length;
   const open = PACK_STATUSES.includes(o.status);
+  const photos = await proof.photosByLine(o.order_id);
+  const needPhotos = lines.filter((l) => !(photos.get(l.order_item_id) || []).length);
   const msg = req.query.ok ? html`<div class="notice pack-flash ok">✓ ${req.query.ok}</div>`
     : req.query.err ? html`<div class="alert pack-flash">✗ ${req.query.err}</div>` : '';
   const act = (code, label, extra = '') => html`<form method="post" action="/orders/${o.order_id}/pack" class="inline">
     <input type="hidden" name="code" value="${code}">${extra ? raw(extra) : ''}<button class="btn small">${label}</button></form>`;
   res.send(layout({
-    title: `Pack ${o.order_number}`, active: '/orders',
+    title: `Pack ${o.order_number}`, active: '/orders', scripts: ['/photos.js'],
     body: html`
     <div class="page-head"><h1>Pack and check ${o.order_number}</h1>
       <div class="actions"><a class="btn primary" href="/labels/order/${o.order_id}">Print all labels</a>
@@ -297,7 +300,8 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
       · ${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</p>
     <p class="muted small">1. Count each line into bundles: type how many go in a bundle (10 makes 26 pieces 10 + 10 + 6), or each
       bundle's count (13, 13). The CRM remembers the bundle size for that item next time.
-      2. Print the labels and stick one on each bundle. 3. Scan each bundle as you check it against the line.</p>
+      2. Print the labels and stick one on each bundle. 3. Scan each bundle as you check it against the line.
+      4. Take a length check photo of each line: the pieces with a tape measure showing the length.</p>
     ${msg}
     ${open ? html`<form method="post" action="/orders/${o.order_id}/pack" class="card scan-big">
       <label>Scan a bundle label <input name="code" autofocus autocomplete="off" placeholder="Scan, or type a code like B123"></label>
@@ -320,6 +324,10 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
             : html`<span class="muted small">${l.bundles.length} bundle${l.bundles.length === 1 ? '' : 's'}: ${l.bundles.map((b) => num(b.pieces)).join(' + ')}</span>`}
             <a class="small" href="/labels/order/${o.order_id}?line=${l.order_item_id}">labels</a></td>
         </tr>
+        <tr class="photo-row"><td></td><td colspan="5"><span class="muted small">Length check photo${
+          (photos.get(l.order_item_id) || []).length ? '' : html` <strong class="warn-text">needed</strong>`}</span>
+          ${proof.photoCell({ orderId: o.order_id, lineId: l.order_item_id, photos: photos.get(l.order_item_id) || [],
+            canAdd: open, base: `/orders/${o.order_id}/attachments` })}</td></tr>
         ${l.bundles.map((b) => html`<tr class="bundle ${b.packed_at ? 'packed' : ''}">
           <td></td><td>Bundle ${b.seq}${l.bundles.length > 1 ? ` of ${l.bundles.length}` : ''}: ${bundleText(l, b)}</td><td></td><td></td>
           <td>${b.packed_at ? html`✓ ${b.packed_by} <span class="muted small">${stamp(b.packed_at)}</span>` : html`<span class="muted">Waiting</span>`}</td>
@@ -329,7 +337,11 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
         </tbody>`;
       })}
     </table>
-    ${open && bundles.length && done === bundles.length ? (o.status === 'ready' ? html`
+    ${open && bundles.length && done === bundles.length && needPhotos.length && o.status !== 'ready' ? html`
+    <div class="card pack-done"><strong>Everything is checked.</strong> Now take the length check photos:
+      ${needPhotos.length} line${needPhotos.length === 1 ? '' : 's'} still need${needPhotos.length === 1 ? 's' : ''} one
+      (${needPhotos.map((l) => `line ${l.line_no}`).join(', ')}).</div>` : ''}
+    ${open && bundles.length && done === bundles.length && (!needPhotos.length || o.status === 'ready') ? (o.status === 'ready' ? html`
     <div class="card pack-done"><strong>Everything is checked and the order is ready to leave.</strong>
       <a class="btn primary" href="/orders/${o.order_id}/handoff">${o.fulfillment === 'delivery' ? 'Delivered' : 'Picked up'}…</a></div>` : html`
     <form method="post" action="/orders/${o.order_id}/pack/complete" class="card pack-done">
@@ -421,6 +433,8 @@ router.post('/orders/:id(\\d+)/pack/complete', need('production'), async (req, r
   if (!bundles.length || bundles.some((b) => !b.packed_at)) {
     return res.redirect(`/orders/${orderId}/pack?err=${encodeURIComponent('Some bundles aren\'t checked yet.')}`);
   }
+  const missing = await proof.missingPhotos(orderId);
+  if (missing.length) return res.redirect(`/orders/${orderId}/pack?err=${encodeURIComponent(proof.missingText(missing))}`);
   // Checked and packed: ready to leave. Scanning the whole-order label at
   // pickup or delivery completes it.
   const checkers = [...new Set(bundles.map((b) => b.packed_by).filter(Boolean))].join(', ');
@@ -489,6 +503,11 @@ router.post('/orders/:id(\\d+)/handoff', async (req, res) => {
   const { rows: [o] } = await query('SELECT status FROM orders WHERE order_id = $1', [orderId]);
   if (!o) return res.status(404).send('Order not found');
   if (!HANDOFF_FROM.includes(o.status)) return back(`This order is ${o.status}.`);
+  // Going straight out without being marked Ready still needs the length check photos.
+  if (o.status !== 'ready' && HANDOFF_FROM.includes(o.status)) {
+    const missing = await proof.missingPhotos(orderId);
+    if (missing.length) return back(proof.missingText(missing));
+  }
   const bundles = (await orderLines(orderId)).flatMap((l) => l.bundles);
   if (bundles.some((b) => !b.packed_at) && req.body.skip_check !== '1') {
     return back('Some bundles haven\'t been checked. Check them, or tick "Send it without every bundle checked".');

@@ -146,6 +146,11 @@ works out the square feet, linear feet and price for every line.
   without a list price and services are left out; delivery, discounts and tax stay ours), change
   it until they answer it, "Order again" from a past order, and add drawings (PDF or pictures) to
   a quote or open order. A price staff set on a line stays if the customer edits the quote.
+- **Length check photos** (order page and Pack & check, `src/proof.js`): every line that leaves
+  the shop (panels, trim, closures, screws, accessories; not services or tool rentals) needs a
+  photo of its pieces with a tape measure before the order can be marked Ready, or picked up or
+  delivered without going through Ready. On a phone the Photo button opens the camera; photos are
+  shrunk to 1600 px before upload. Customers see them in the portal under "Photos of your order".
 - **Email** (`src/mail.js`, set `SMTP_USER` and `SMTP_PASS` on Render to a Gmail address and an
   App Password): portal invites and forgot-password links, Admins and Managers hear when a
   customer approves or declines, and customers hear when an order is ready. Without it, links

@@ -7,6 +7,7 @@ const { RUNNABLE, footage, runError } = require('../production');
 const { syncOrderSupplies } = require('../supplies');
 const qbo = require('../qbo');
 const notices = require('../notices');
+const proof = require('../proof');
 const { can, need, userName, isAdmin } = require('../auth');
 const Screws = require('../../public/screws');
 const {
@@ -66,14 +67,19 @@ async function loadOrder(id) {
   if (loose.length) sections.push({ section_id: null, area: 'other', label: null, items: loose });
   order.sections = sections;
   const { rows: attachments } = await query(`
-    SELECT a.attachment_id, a.order_item_id, a.filename, a.content_type, a.byte_size, a.note, a.created_at, a.uploaded_by, a.from_customer,
+    SELECT a.attachment_id, a.order_item_id, a.filename, a.content_type, a.byte_size, a.note, a.created_at, a.uploaded_by, a.from_customer, a.is_proof,
            oi.line_no, p.name AS product_name
     FROM order_attachments a
     LEFT JOIN order_items oi USING (order_item_id)
     LEFT JOIN products p ON p.product_id = oi.product_id
     WHERE a.order_id = $1 ORDER BY oi.line_no NULLS FIRST, a.attachment_id`, [id]);
-  order.attachments = attachments;
-  for (const i of items) i.attachments = attachments.filter((a) => a.order_item_id === i.order_item_id);
+  // Length check photos are kept apart from drawings.
+  order.photos = attachments.filter((a) => a.is_proof);
+  order.attachments = attachments.filter((a) => !a.is_proof);
+  for (const i of items) {
+    i.attachments = order.attachments.filter((a) => a.order_item_id === i.order_item_id);
+    i.photos = order.photos.filter((a) => a.order_item_id === i.order_item_id);
+  }
   return order;
 }
 
@@ -535,6 +541,11 @@ router.post('/:id(\\d+)/status', async (req, res) => {
   if (APPROVED.includes(status) && !cur.need_by && !needBy) {
     return res.redirect(`${back}?status_error=${encodeURIComponent('Set a Need-by date to approve this quote.')}`);
   }
+  // Ready (or completed without going through Ready) needs a length check photo of every line.
+  if (status === 'ready' || (status === 'completed' && !['ready', 'completed'].includes(cur.status))) {
+    const missing = await proof.missingPhotos(Number(req.params.id));
+    if (missing.length) return res.redirect(`${back}?status_error=${encodeURIComponent(proof.missingText(missing))}#photos`);
+  }
   // Why a quote was lost, for the Reports page.
   const lostReason = cur.status === 'quote' && status === 'cancelled' && LOST_REASONS[req.body.lost_reason]
     ? req.body.lost_reason : null;
@@ -832,16 +843,17 @@ router.get('/:id(\\d+)', async (req, res) => {
         </table>` : ''}
       </div>
     </section>
+    ${photosSection(o)}
     ${drawingsSection(o)}
     ${rentals}
     ${production}`,
-    scripts: ['/production.js', '/attachments.js'],
+    scripts: ['/production.js', '/attachments.js', '/photos.js'],
   }));
 });
 
 // ---------------------------------------------------------------------------
-// Drawings: files attached to the order or to one line (reMarkable exports,
-// photos, PDFs). Pictures print on the cut sheet; PDFs open in a new tab.
+// Length check photos: a tape measure on each line's pieces, taken before the
+// order is marked ready. The customer sees them in the portal.
 // ---------------------------------------------------------------------------
 const ATTACH_TYPES = {
   'application/pdf': 'pdf', 'image/png': 'image', 'image/jpeg': 'image', 'image/gif': 'image', 'image/webp': 'image',
@@ -849,6 +861,56 @@ const ATTACH_TYPES = {
 const ATTACH_MAX = 20 * 1024 * 1024;
 const isImage = (a) => ATTACH_TYPES[a.content_type] === 'image';
 const fileSize = (n) => (n >= 1024 * 1024 ? `${num(n / 1024 / 1024, 1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const PHOTO_STATUSES = ['confirmed', 'in_production', 'ready', 'completed'];
+const canPhoto = () => can('production') || can('drawings');
+
+function photosSection(o) {
+  if (!PHOTO_STATUSES.includes(o.status) && !o.photos.length) return '';
+  const lines = o.sections.flatMap((sec) => sec.items).filter((i) => !['service', 'delivery'].includes(i.category) && !i.is_rental);
+  if (!lines.length) return '';
+  const add = PHOTO_STATUSES.includes(o.status) && canPhoto();
+  const missing = lines.filter((i) => !i.photos.length).length;
+  return html`
+  <section id="photos" class="photos no-print">
+    <h2>Length check photos</h2>
+    <p class="muted small">Before it's marked ready, each line gets a photo of its pieces with a tape measure showing the length.
+      ${missing ? html`<strong>${missing} of ${lines.length} line${lines.length === 1 ? '' : 's'} still need${missing === 1 ? 's' : ''} one.</strong>` : 'Every line has one.'}
+      ${o.customer_portal ? 'The customer sees these in the portal.' : ''}</p>
+    <table class="list photo-lines">
+      <thead><tr><th>Line</th><th>Pieces</th><th>Photos</th></tr></thead>
+      <tbody>${lines.map((i) => html`<tr class="${i.photos.length ? '' : 'needs-photo'}">
+        <td>${i.line_no}</td>
+        <td>${num(i.pieces)}${i.length_display ? html` × <strong>${i.length_display}</strong>` : ''} ${i.product_name}${i.color_name ? html`<div class="muted small">${i.color_name}</div>` : ''}</td>
+        <td>${proof.photoCell({ orderId: o.order_id, lineId: i.order_item_id, photos: i.photos, canAdd: add, base: `/orders/${o.order_id}/attachments` })}
+          ${add ? i.photos.map((ph) => html`<form method="post" action="/orders/${o.order_id}/attachments/${ph.attachment_id}/delete" class="inline photo-remove"
+            onsubmit="return confirm('Remove this photo?')"><button class="linkish small">remove</button></form>`) : ''}</td></tr>`)}</tbody>
+    </table>
+  </section>`;
+}
+
+router.post('/:id(\\d+)/photos', express.raw({ type: () => true, limit: ATTACH_MAX }), async (req, res) => {
+  if (!canPhoto()) return res.status(403).json({ error: 'Your account can\'t add photos.' });
+  const orderId = Number(req.params.id);
+  const type = (req.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (ATTACH_TYPES[type] !== 'image') return res.status(400).json({ error: 'That isn\'t a photo.' });
+  if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'The photo is empty.' });
+  const { rows: [line] } = await query(`SELECT o.status FROM order_items oi JOIN orders o USING (order_id)
+    WHERE oi.order_item_id = $1 AND oi.order_id = $2`, [Number(req.query.line) || 0, orderId]);
+  if (!line) return res.status(400).json({ error: 'That line isn\'t on this order.' });
+  if (!PHOTO_STATUSES.includes(line.status)) return res.status(400).json({ error: 'Photos are for approved orders.' });
+  let filename = 'photo.jpg';
+  try { filename = decodeURIComponent(req.get('x-filename') || '') || filename; } catch { /* keep default */ }
+  const { rows: [a] } = await query(`
+    INSERT INTO order_attachments (order_id, order_item_id, filename, content_type, byte_size, data, uploaded_by, is_proof)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING attachment_id`,
+  [orderId, Number(req.query.line), filename.slice(0, 200), type, req.body.length, req.body, userName()]);
+  res.json({ ok: true, attachment_id: a.attachment_id });
+});
+
+// ---------------------------------------------------------------------------
+// Drawings: files attached to the order or to one line (reMarkable exports,
+// photos, PDFs). Pictures print on the cut sheet; PDFs open in a new tab.
+// ---------------------------------------------------------------------------
 
 function drawingsSection(o) {
   const items = o.sections.flatMap((s) => s.items);
@@ -930,11 +992,13 @@ router.get('/:id(\\d+)/attachments/:aid(\\d+)', async (req, res) => {
   res.send(a.data);
 });
 
-router.post('/:id(\\d+)/attachments/:aid(\\d+)/delete', need('drawings'), async (req, res) => {
-  await query(`DELETE FROM order_attachments a USING orders o
-    WHERE a.attachment_id = $1 AND a.order_id = $2 AND o.order_id = a.order_id AND o.status <> 'invoiced'`,
-  [req.params.aid, req.params.id]);
-  res.redirect(`/orders/${req.params.id}#drawings`);
+router.post('/:id(\\d+)/attachments/:aid(\\d+)/delete', need('drawings', 'production'), async (req, res) => {
+  // Production can remove length check photos; drawings need the drawings permission.
+  const { rows: [a] } = await query(`DELETE FROM order_attachments a USING orders o
+    WHERE a.attachment_id = $1 AND a.order_id = $2 AND o.order_id = a.order_id AND o.status <> 'invoiced'
+      AND (a.is_proof OR $3) RETURNING a.is_proof`,
+  [req.params.aid, req.params.id, can('drawings')]);
+  res.redirect(`/orders/${req.params.id}#${a && a.is_proof ? 'photos' : 'drawings'}`);
 });
 
 // ---------------------------------------------------------------------------

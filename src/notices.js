@@ -55,7 +55,7 @@ async function orderReady(orderId) {
     o.fulfillment === 'delivery'
       ? `Your ${what} is ready, and we'll be in touch to set up delivery.`
       : `Your ${what} is ready for pickup at our shop, 805 E Fox Farm Rd Unit B, Cheyenne.`,
-    ...(portal ? ['', `See the order here: ${site()}/portal/orders/${orderId}`] : []),
+    ...(portal ? ['', `See the order and the photos of each line here: ${site()}/portal/orders/${orderId}`] : []),
   ].join('\n');
   await mail.send({ to, subject: `${o.order_number} is ready${o.fulfillment === 'delivery' ? '' : ' for pickup'}`, text, kind: 'order_ready', orderId });
 }

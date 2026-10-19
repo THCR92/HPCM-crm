@@ -367,3 +367,9 @@ tr.invite-row td { border-top: 0; padding-top: 0; }
 /* Portal quote form for a customer who doesn't see line prices. */
 .hide-prices .price-cell, .hide-prices .amount, .hide-prices .price-col, .hide-prices .amount-col { display: none; }
 .order-form input.price[readonly] { border-color: transparent; background: transparent; }
+/* Length check photos */
+.photo-cell { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.photo-cell img { width: 96px; height: 72px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line); display: block; }
+.photos .photo-cell img { width: 160px; height: 120px; }
+.photo-btn { cursor: pointer; }
+tr.needs-photo td:first-child { box-shadow: inset 4px 0 0 #e0a100; }
