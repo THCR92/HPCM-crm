@@ -427,6 +427,7 @@ router.post('/orders/:id(\\d+)/pack/complete', need('production'), async (req, r
   await query(`UPDATE orders SET status = 'ready', ready_at = COALESCE(ready_at, now()),
       inspected_by = COALESCE(inspected_by, $3), updated_by = $2
     WHERE order_id = $1`, [orderId, userName(), checkers]);
+  if (o.status !== 'ready') require('../notices').orderReady(orderId);
   res.redirect(`/orders/${orderId}/pack`);
 });
 

@@ -340,3 +340,27 @@ h2 .section-print { margin-left: .8rem; vertical-align: middle; font-weight: 400
   .count-sheet table.count th { background: #eee !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .count-sheet table.count tr { break-inside: avoid; }
 }
+
+/* ---- customer portal ---------------------------------------------------- */
+.portal-bar { border-radius: var(--radius); margin-bottom: 1rem; }
+.portal-bar .who span { color: var(--muted); }
+.portal-foot { margin-top: 3rem; text-align: center; }
+.portal-answer { display: grid; gap: .8rem; margin-top: 1rem; max-width: 760px; }
+.portal-answer h2 { margin: 0; }
+.portal-answer details summary { cursor: pointer; font-weight: 600; }
+.portal-answer details form { margin-top: .8rem; }
+ol.steps { list-style: none; display: flex; flex-wrap: wrap; gap: .3rem; padding: 0; margin: 0 0 1rem; counter-reset: step; }
+ol.steps li { counter-increment: step; padding: .35rem .7rem .35rem .5rem; border-radius: 999px; background: #eef1f5; color: var(--muted); font-size: .9rem; }
+ol.steps li::before { content: counter(step); display: inline-block; width: 1.3rem; height: 1.3rem; line-height: 1.3rem; text-align: center;
+  border-radius: 50%; background: #fff; margin-right: .35rem; font-size: .8rem; font-weight: 700; }
+ol.steps li.done { background: #d3eed9; color: #145826; }
+ol.steps li.done::before { content: '✓'; }
+ol.steps li.current { background: var(--brand); color: #fff; font-weight: 600; }
+ol.steps li.current::before { color: var(--brand); }
+.portal-settings { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; align-items: center; margin-bottom: .8rem; }
+.invite-link { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.invite-link input { flex: 1 1 18rem; min-width: 0; font-size: .85rem; }
+tr.invite-row td { border-top: 0; padding-top: 0; }
+@media print { .portal-bar, .portal-foot, ol.steps { display: none; } }
+.portal-answer .form-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 700px) { .portal .sheet { overflow-x: auto; } .portal .sheet table.lines { min-width: 560px; } }

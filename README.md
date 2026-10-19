@@ -134,6 +134,18 @@ works out the square feet, linear feet and price for every line.
   Click a column to sort; every table downloads as a spreadsheet (CSV). Every status change
   is recorded (`order_status_history`), and cancelling a quote asks why it was lost.
 
+- **Customer portal** (`/portal`): off for each customer until a Manager or Admin turns it on
+  (customer page > Customer portal), with "Show line prices" and "Show order totals" per customer.
+  One login per customer; adding it gives a link (emailed, or copy it) to set their own password.
+  Customers see their quotes and orders with a status tracker, and approve (ticking that they
+  checked lengths, quantities and colors, with a need-by date and PO) or decline with a reason.
+  Approved quotes stay quotes until the shop confirms them (Orders > "Customer approved" tab).
+  Changing an approved quote's lines or prices asks the customer again. Staff can hide a quote
+  from the portal. Customer logins are separate from staff accounts (own table, cookie, sessions).
+- **Email** (`src/mail.js`, set `SMTP_USER` and `SMTP_PASS` on Render to a Gmail address and an
+  App Password): portal invites and forgot-password links, Admins and Managers hear when a
+  customer approves or declines, and customers hear when an order is ready. Without it, links
+  are copied by hand. Every email is logged in `email_log`.
 - **Deleting** (Admins only, type DELETE to confirm): a customer with no quotes or orders, and a
   quote or cancelled order with no coil run against it and no rental tool still out. Anything else
   is cancelled or left as is, so its history stays. Deleting a customer doesn't touch QuickBooks.

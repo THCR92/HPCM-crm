@@ -21,6 +21,8 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: '1mb' }));
 
 // Everyone signs in with their own account (see src/auth.js).
+// Customers sign in to the portal with their own logins (not staff accounts).
+app.use('/', require('./routes/portal'));
 app.use(require('./auth').middleware());
 app.use('/', require('./routes/users'));
 app.use('/', require('./routes/legal'));

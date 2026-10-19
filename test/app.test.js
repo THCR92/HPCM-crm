@@ -1170,3 +1170,121 @@ test('printing: Print buttons on report pages, count sheets with an optional bli
     }
   }
 });
+
+test('customer portal: invite, set password, see only their quotes, approve; staff confirms', async () => {
+  const form = (path, body, cookie) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(cookie ? { cookie } : {}) }, body: new URLSearchParams(body).toString() });
+  const mk = async () => (await query("INSERT INTO customers (display_name) VALUES ('Portal ' || gen_random_uuid()) RETURNING customer_id")).rows[0].customer_id;
+  const cid = await mk();
+  const other = await mk();
+  const pbr = await productId('PNL-PBR-26');
+  const quote = async (customer) => {
+    const r = await post('/orders', { customer_id: customer, job_name: 'Barn', sections: [{ area: 'roof', items: [{ product_id: pbr, pieces: 10, length_in: 144, unit_price: 5 }] }] });
+    return Number((await r.json()).redirect.split('/').pop());
+  };
+  const id = await quote(cid);
+  const hidden = await quote(cid);
+  const theirs = await quote(other);
+  await query('UPDATE orders SET portal_hidden = true WHERE order_id = $1', [hidden]);
+
+  // Off by default; a Manager turns it on and adds a login. Production can't.
+  let res;
+  const prod = await signIn('production');
+  assert.strictEqual((await form(`/customers/${cid}/portal`, { enabled: '1' }, prod)).status, 403);
+  const manager = await signIn('manager');
+  await form(`/customers/${cid}/portal`, { enabled: '1', line_prices: '1', totals: '1' }, manager);
+  await query('UPDATE customers SET portal_enabled = true WHERE customer_id = $1', [other]);
+  // Email goes through a stand-in for Gmail.
+  const mail = require('../src/mail');
+  const sent = [];
+  mail.io.forceConfigured = true;
+  mail.io.send = async (m) => { sent.push(m); };
+  const email = `buyer-${Date.now()}@example.com`;
+  res = await form(`/customers/${cid}/logins`, { full_name: 'Pat Buyer', email }, manager);
+  assert.match(res.headers.get('location'), /emailed=/);
+  assert.strictEqual(sent[0].to, email);
+  assert.match(sent[0].text, /\/portal\/set-password\//);
+  // One login per customer: adding again just changes it.
+  await form(`/customers/${cid}/logins`, { full_name: 'Pat Buyer', email }, manager);
+  assert.strictEqual((await query('SELECT count(*)::int AS n FROM customer_logins WHERE customer_id = $1', [cid])).rows[0].n, 1);
+  assert.match(await (await fetch(`${base}/customers/${cid}`, { headers: { cookie: manager } })).text(), /\/portal\/set-password\//);
+  const { rows: [l] } = await query('SELECT invite_token FROM customer_logins WHERE email = $1', [email]);
+
+  // Not signed in: off to the portal sign-in (not the staff one).
+  res = await fetch(`${base}/portal`, { redirect: 'manual', anonymous: true });
+  assert.match(res.headers.get('location'), /^\/portal\/login/);
+  res = await fetch(`${base}/portal/set-password/${l.invite_token}`, { anonymous: true });
+  assert.strictEqual(res.status, 200);
+  res = await fetch(`${base}/portal/set-password/${l.invite_token}`, { method: 'POST', redirect: 'manual', anonymous: true,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ full_name: 'Pat Buyer', password: 'roof-pass-1', password2: 'roof-pass-1' }).toString() });
+  assert.strictEqual(res.headers.get('location'), '/portal');
+  const cookie = res.headers.get('set-cookie').split(';')[0];
+  // The link works once.
+  assert.strictEqual((await fetch(`${base}/portal/set-password/${l.invite_token}`, { anonymous: true })).status, 404);
+
+  const home = await (await fetch(`${base}/portal`, { headers: { cookie } })).text();
+  assert.match(home, new RegExp(`/portal/orders/${id}"`));
+  assert.doesNotMatch(home, new RegExp(`/portal/orders/(${hidden}|${theirs})"`));
+  assert.strictEqual((await fetch(`${base}/portal/orders/${theirs}`, { headers: { cookie } })).status, 404);
+  assert.strictEqual((await fetch(`${base}/portal/orders/${hidden}`, { headers: { cookie } })).status, 404);
+  // A portal sign-in doesn't open staff pages.
+  res = await fetch(`${base}/orders`, { headers: { cookie }, redirect: 'manual' });
+  assert.match(res.headers.get('location'), /^\/login/);
+
+  // Prices: line prices and totals each switch off per customer.
+  let page = await (await fetch(`${base}/portal/orders/${id}`, { headers: { cookie } })).text();
+  assert.match(page, /Price each/);
+  assert.match(page, /Approve quote/);
+  await query('UPDATE customers SET portal_line_prices = false, portal_totals = false WHERE customer_id = $1', [cid]);
+  page = await (await fetch(`${base}/portal/orders/${id}`, { headers: { cookie } })).text();
+  assert.doesNotMatch(page, /Price each|Subtotal/);
+
+  // Approving needs the "I checked it" box; it fills in the need-by date.
+  res = await form(`/portal/orders/${id}/decision`, { decision: 'approved' }, cookie);
+  assert.match(res.headers.get('location'), /error=/);
+  await form(`/portal/orders/${id}/decision`, { decision: 'approved', checked: '1', need_by: '2099-01-15', note: 'Thanks' }, cookie);
+  let { rows: [o] } = await query('SELECT status, customer_decision, need_by, customer_decided_by FROM orders WHERE order_id = $1', [id]);
+  assert.deepStrictEqual([o.status, o.customer_decision, o.need_by], ['quote', 'approved', '2099-01-15']);
+  assert.match(o.customer_decided_by, /Pat Buyer/);
+  // Admins and Managers hear about it.
+  await new Promise((r) => setTimeout(r, 200));
+  const told = sent.find((m) => /approved by/.test(m.subject));
+  assert.ok(told && told.to.length, 'managers emailed');
+  assert.match(await (await fetch(`${base}/orders?tab=approved`)).text(), new RegExp(`/orders/${id}"`));
+  assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /Customer approved this quote/);
+
+  // Changing the quote's lines means the customer answers again.
+  const { rows: [line] } = await query('SELECT order_item_id FROM order_items WHERE order_id = $1', [id]);
+  await post(`/orders/${id}`, { customer_id: cid, job_name: 'Barn', sections: [{ area: 'roof', items: [{ order_item_id: line.order_item_id, product_id: pbr, pieces: 12, length_in: 144, unit_price: 5 }] }] });
+  ({ rows: [o] } = await query('SELECT customer_decision FROM orders WHERE order_id = $1', [id]));
+  assert.strictEqual(o.customer_decision, null);
+
+  // Declining needs a reason; the shop sees it.
+  await form(`/portal/orders/${id}/decision`, { decision: 'declined', reason: 'changes', note: 'Make it 14 ft' }, cookie);
+  assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /Customer declined this quote[\s\S]*Make it 14 ft/);
+
+  // Sign in with the password; wrong passwords don't.
+  const login = (password) => fetch(`${base}/portal/login`, { method: 'POST', redirect: 'manual', anonymous: true,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ email, password }).toString() });
+  assert.strictEqual((await login('nope-nope')).status, 401);
+  assert.strictEqual((await login('roof-pass-1')).status, 302);
+
+  // Forgot password emails a new link (same answer for unknown emails).
+  sent.length = 0;
+  await fetch(`${base}/portal/forgot`, { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email }).toString() });
+  assert.match(sent[0].text, /set-password/);
+
+  // Ready for pickup: the customer gets an email.
+  sent.length = 0;
+  await query("UPDATE orders SET status = 'in_production', need_by = '2099-01-15' WHERE order_id = $1", [id]);
+  await form(`/orders/${id}/status`, { status: 'ready' });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(sent.some((m) => m.to === email && /ready for pickup/.test(m.subject)));
+  mail.io.forceConfigured = false;
+
+  // Turning the portal off signs them out.
+  await form(`/customers/${cid}/portal`, {}, manager);
+  res = await fetch(`${base}/portal`, { headers: { cookie }, redirect: 'manual' });
+  assert.match(res.headers.get('location'), /^\/portal\/login/);
+});

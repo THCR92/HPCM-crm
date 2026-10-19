@@ -30,11 +30,12 @@ const PERMISSIONS = {
   catalog: 'Change prices, sales tax, products, colors, finishes and suppliers',
   screws: 'Edit which screws and clips go with panels, trim and accessories',
   reports: 'See the Reports page (sales, customers, colors, production)',
+  portal: 'Turn the customer portal on for customers, invite their logins and choose which prices they see',
 };
 
 const ROLE_DEFAULTS = {
   admin: Object.keys(PERMISSIONS),
-  manager: ['prices', 'quotes', 'approve', 'status', 'customers', 'drawings', 'production', 'inventory', 'screws', 'reports'],
+  manager: ['prices', 'quotes', 'approve', 'status', 'customers', 'drawings', 'production', 'inventory', 'screws', 'reports', 'portal'],
   sales: ['prices', 'quotes', 'approve', 'customers', 'drawings'],
   production: ['drawings', 'production', 'inventory'],
 };
@@ -111,7 +112,8 @@ const isAsset = (p) => /\.(css|js|svg|png|ico|jpg|webp|woff2?)$/.test(p);
 
 function middleware() {
   return (req, res, next) => {
-    if (OPEN_PATHS.includes(req.path) || isAsset(req.path)) return next();
+    // Customers sign in to /portal separately (src/routes/portal.js).
+    if (OPEN_PATHS.includes(req.path) || isAsset(req.path) || req.path === '/portal' || req.path.startsWith('/portal/')) return next();
     loadUser(req).then((user) => {
       if (!user) {
         if (req.method === 'GET' && req.accepts('html')) {

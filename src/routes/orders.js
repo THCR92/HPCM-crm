@@ -6,6 +6,7 @@ const { feetInches } = require('../length');
 const { RUNNABLE, footage, runError } = require('../production');
 const { syncOrderSupplies } = require('../supplies');
 const qbo = require('../qbo');
+const notices = require('../notices');
 const { can, need, userName, isAdmin } = require('../auth');
 const Screws = require('../../public/screws');
 const {
@@ -23,6 +24,7 @@ const AREAS = ['roof', 'wall', 'trim', 'other'];
 const TABS = {
   open: { label: 'Open', where: "o.status IN ('quote','confirmed','in_production','ready')" },
   quote: { label: 'Quotes', where: "o.status = 'quote'" },
+  approved: { label: 'Customer approved', where: "o.status = 'quote' AND o.customer_decision = 'approved'" },
   shop: { label: 'In the shop', where: "o.status IN ('confirmed','in_production','ready')" },
   completed: { label: 'Completed', where: "o.status IN ('completed','invoiced')" },
   all: { label: 'All', where: 'true' },
@@ -37,6 +39,7 @@ const jsonForScript = (v) => raw(JSON.stringify(v).replace(/</g, '\\u003c'));
 async function loadOrder(id) {
   const { rows: [order] } = await query(`
     SELECT o.*, c.display_name AS customer_name, c.phone AS customer_phone, c.email AS customer_email,
+           c.portal_enabled AS customer_portal,
            t.lines_subtotal, t.taxable_subtotal, t.pre_tax_total,
            t.tax_exempt AS tax_exempt_effective, t.tax_amount, t.grand_total,
            (o.created_at AT TIME ZONE 'America/Denver')::date AS quoted_on,
@@ -266,6 +269,12 @@ async function saveOrder(orderId, body) {
 
   return tx(async (db) => {
     const cols = Object.keys(header);
+    // What the customer approves: if the lines or charges change, they answer again.
+    const fingerprint = async () => (await db.query(`
+      SELECT (SELECT string_agg(concat_ws(':', product_id, color_id, pieces, length_in, width_in, unit_price), ',' ORDER BY line_no)
+              FROM order_items WHERE order_id = $1) || '|' || t.grand_total AS f
+      FROM v_order_totals t WHERE t.order_id = $1`, [orderId])).rows[0]?.f;
+    const before = orderId ? await fingerprint() : null;
     if (orderId) {
       const { rows: [cur] } = await db.query('SELECT status FROM orders WHERE order_id = $1 FOR UPDATE', [orderId]);
       if (!cur) throw new UserError('Order not found.');
@@ -361,6 +370,10 @@ async function saveOrder(orderId, body) {
     await db.query(`DELETE FROM order_bundles b USING order_items oi
       WHERE oi.order_item_id = b.order_item_id AND oi.order_id = $1
         AND oi.pieces <> (SELECT sum(pieces) FROM order_bundles x WHERE x.order_item_id = oi.order_item_id)`, [orderId]);
+    if (before && before !== await fingerprint()) {
+      await db.query(`UPDATE orders SET customer_decision = NULL, customer_decided_at = NULL, customer_decided_by = NULL,
+        customer_decision_note = NULL, customer_decline_reason = NULL WHERE order_id = $1 AND status = 'quote'`, [orderId]);
+    }
     return orderId;
   });
 }
@@ -379,13 +392,15 @@ router.get('/', async (req, res) => {
   const q = (req.query.q || '').trim();
   const { rows } = await query(`
     SELECT o.order_id, o.order_number, o.job_name, o.po_number, o.status, o.ordered_on, o.need_by,
-           o.fulfillment, c.display_name AS customer_name, t.grand_total
+           o.fulfillment, o.customer_decision, c.display_name AS customer_name, t.grand_total
     FROM orders o JOIN customers c USING (customer_id) JOIN v_order_totals t USING (order_id)
     WHERE ${TABS[tab].where}
       AND ($1 = '' OR o.order_number ILIKE '%' || $1 || '%' OR o.job_name ILIKE '%' || $1 || '%'
            OR o.po_number ILIKE '%' || $1 || '%' OR c.display_name ILIKE '%' || $1 || '%')
     ORDER BY o.need_by NULLS LAST, o.order_id DESC`, [q]);
   const prices = can('prices');
+  const { rows: [waiting] } = await query(`SELECT count(*)::int AS n FROM orders
+    WHERE status = 'quote' AND customer_decision = 'approved'`);
   res.send(layout({
     title: 'Orders', active: '/orders',
     body: html`
@@ -393,6 +408,8 @@ router.get('/', async (req, res) => {
       <h1>Orders</h1>
       ${can('quotes') ? html`<a class="btn primary" href="/orders/new">+ New quote</a>` : ''}
     </div>
+    ${waiting.n && tab !== 'approved' && can('approve') ? html`<div class="notice">${waiting.n === 1 ? 'A customer approved a quote' : `Customers approved ${waiting.n} quotes`}
+      in the portal. <a href="?tab=approved">Approve ${waiting.n === 1 ? 'it' : 'them'} for the shop</a>.</div>` : ''}
     <div class="tabs">${Object.entries(TABS).map(([k, t]) =>
       html`<a href="?tab=${k}" class="${k === tab ? 'active' : ''}">${t.label}</a>`)}</div>
     <form class="search"><input type="hidden" name="tab" value="${tab}">
@@ -402,7 +419,8 @@ router.get('/', async (req, res) => {
         <th>Need by</th><th></th>${prices ? html`<th class="num">Total</th>` : ''}</tr></thead>
       <tbody>${rows.length ? rows.map((o) => html`
         <tr><td><a href="/orders/${o.order_id}">${o.order_number}</a></td><td>${o.customer_name}</td>
-        <td>${o.job_name}</td><td>${o.po_number}</td><td>${statusBadge(o.status)}</td>
+        <td>${o.job_name}</td><td>${o.po_number}</td><td>${statusBadge(o.status)}${o.status === 'quote' && o.customer_decision
+          ? html` <span class="muted small">${o.customer_decision === 'approved' ? 'customer approved' : 'customer declined'}</span>` : ''}</td>
         <td>${date(o.need_by)}</td><td>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</td>
         ${prices ? html`<td class="num">${money(o.grand_total)}</td>` : ''}</tr>`)
       : html`<tr><td colspan="8" class="empty">No orders here.</td></tr>`}</tbody>
@@ -530,6 +548,8 @@ router.post('/:id(\\d+)/status', async (req, res) => {
              approved_by = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
                                 THEN $4 ELSE approved_by END,
              updated_by = $4,
+             -- Sent back to a quote to be redone: the customer answers it again.
+             customer_decision = CASE WHEN $1::order_status = 'quote' AND status <> 'quote' THEN NULL ELSE customer_decision END,
              completed_at = CASE WHEN $1::order_status = 'completed' THEN COALESCE(completed_at, now()) ELSE completed_at END,
              ready_at = CASE WHEN $1::order_status = 'ready' THEN COALESCE(ready_at, now())
                              WHEN $1::order_status IN ('quote', 'confirmed', 'in_production') THEN NULL
@@ -540,7 +560,33 @@ router.post('/:id(\\d+)/status', async (req, res) => {
   });
   // Completed orders become QuickBooks invoices.
   if (status === 'completed') qbo.orderCompleted(Number(req.params.id));
+  if (status === 'ready' && cur.status !== 'ready') notices.orderReady(Number(req.params.id));
   res.redirect(back);
+});
+
+// What the customer said in the portal, and whether they can see this quote there.
+const { DECLINE_REASONS } = require('./portal-shared');
+function portalNote(o) {
+  if (!o.customer_portal && !o.customer_decision) return '';
+  const when = o.customer_decided_at && new Date(o.customer_decided_at).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' });
+  const toggle = o.customer_portal && can('quotes') && o.status !== 'invoiced' ? html`
+    <form method="post" action="/orders/${o.order_id}/portal" class="inline">
+      <input type="hidden" name="hidden" value="${o.portal_hidden ? '0' : '1'}">
+      <button class="btn small">${o.portal_hidden ? 'Show in customer portal' : 'Hide from customer portal'}</button></form>` : '';
+  const said = o.customer_decision === 'approved'
+    ? html`<div class="notice no-print"><strong>Customer approved this quote</strong> in the portal: ${o.customer_decided_by}, ${when}.
+        ${o.customer_decision_note ? html`<br>“${o.customer_decision_note}”` : ''}
+        ${o.status === 'quote' ? html`<br>Check it, then change the status to Confirmed to approve it for the shop.` : ''}</div>`
+    : o.customer_decision === 'declined'
+      ? html`<div class="alert no-print"><strong>Customer declined this quote</strong> in the portal: ${o.customer_decided_by}, ${when}
+        (${DECLINE_REASONS[o.customer_decline_reason] || 'no reason'}).${o.customer_decision_note ? html`<br>“${o.customer_decision_note}”` : ''}
+        <br>Edit it and they can answer again, or cancel it.</div>` : '';
+  return html`${said}${toggle ? html`<p class="no-print muted small">${o.portal_hidden ? 'Hidden from the customer portal.' : 'The customer can see this in the portal.'} ${toggle}</p>` : ''}`;
+}
+
+router.post('/:id(\\d+)/portal', need('quotes'), async (req, res) => {
+  await query('UPDATE orders SET portal_hidden = $2 WHERE order_id = $1', [req.params.id, req.body.hidden === '1']);
+  res.redirect(`/orders/${req.params.id}`);
 });
 
 // Which statuses this person may move an order to from `from`.
@@ -581,42 +627,14 @@ const totalsRows = (o) => html`
   ${o.deposit_amount ? html`<tr><th>Deposit received</th><td>−${money(o.deposit_amount)}</td></tr>
     <tr><th>Balance due</th><td>${money(o.grand_total - o.deposit_amount)}</td></tr>` : ''}`;
 
-// What the customer sees: one price per piece (the line amount over the pieces),
-// no billing units, no coil supplier. Print it, or save it as a PDF to email.
-router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
-  const o = await loadOrder(req.params.id);
-  if (!o) return res.status(404).send('Order not found');
+// The customer's copy of a quote or order. The portal can hide line prices
+// (linePrices) or the order totals (totals) per customer.
+function customerSheet(o, { linePrices = true, totals = true } = {}) {
   const isQuote = o.status === 'quote';
   const docName = isQuote ? 'Quote' : 'Order';
   const quoteDate = isQuote ? o.quoted_on : o.ordered_on;
-  const email = o.contact_email || o.customer_email;
-  const subject = `${docName} ${o.order_number} from High Plains Custom Metal`;
-  const body = [
-    'Hello,', '',
-    `Attached is ${docName.toLowerCase()} ${o.order_number}${o.job_name ? ` for ${o.job_name}` : ''}.`,
-    `Total: ${money(o.grand_total)}${o.tax_amount ? ' including sales tax' : ''}.`,
-    ...(isQuote ? [`Prices are good until ${date(o.valid_until)}.`] : []),
-    '', 'Thank you,', 'High Plains Custom Metal', '(307) 331-6449',
-  ].join('\n');
-  // Gmail's compose page, filled in; the PDF still has to be attached by hand.
-  const gmail = `https://mail.google.com/mail/?${new URLSearchParams({
-    view: 'cm', fs: '1', to: email || '', su: subject, body })}`;
   const sections = o.sections.filter((sec) => sec.items.length);
-  res.send(layout({
-    title: `${docName} ${o.order_number} (customer)`, active: '/orders',
-    body: html`
-    <div class="page-head no-print">
-      <h1>Customer ${docName.toLowerCase()} ${o.order_number}</h1>
-      <div class="actions">
-        <a class="btn" href="/orders/${o.order_id}">Back</a>
-        <button class="btn primary" onclick="window.print()">Print or save as PDF</button>
-        <a class="btn" href="${gmail}" target="_blank" rel="noopener">Email with Gmail</a>
-      </div>
-    </div>
-    <p class="muted small no-print">To email it: click <strong>Print or save as PDF</strong> and save the PDF, then click
-      <strong>Email with Gmail</strong>. Gmail opens with the ${email ? `customer's address (${email}),` : 'subject and'} message
-      filled in; attach the PDF and send. ${email ? '' : 'Add an email address to the customer or order to fill in the To line.'}
-      ${email ? html`Not using Gmail? <a href="mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}">Use your email app</a>.` : ''}</p>
+  return html`
     <section class="sheet customer-doc">
       <div class="sheet-head">
         <div class="sheet-brand"><img src="/logo.svg" alt="High Plains Custom Metal">
@@ -636,13 +654,13 @@ router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
       <h3 class="area">${sec.is_auto ? 'Screws' : html`${AREA_LABEL[sec.area] || sec.area}${sec.label ? ` · ${sec.label}` : ''}`}</h3>
       <table class="lines">
         <thead><tr><th class="num">Qty</th><th>Length</th><th>Item</th><th>Color</th><th>Size</th>
-          <th class="num">Price each</th><th class="num">Amount</th></tr></thead>
+          ${linePrices ? html`<th class="num">Price each</th><th class="num">Amount</th>` : ''}</tr></thead>
         <tbody>${sec.items.map((i) => html`
           <tr><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
           <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}</td>
           <td>${i.customer_color}</td><td>${sizeCol(i, { shop: false })}</td>
-          <td class="num">${money(i.pieces ? i.line_total / i.pieces : i.line_total)}</td>
-          <td class="num">${money(i.line_total)}</td></tr>`)}</tbody>
+          ${linePrices ? html`<td class="num">${money(i.pieces ? i.line_total / i.pieces : i.line_total)}</td>
+          <td class="num">${money(i.line_total)}</td>` : ''}</tr>`)}</tbody>
       </table>`)}
       <div class="sheet-foot">
         <div>
@@ -650,14 +668,51 @@ router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
           ${isQuote ? html`<p class="muted small">Prices are good for 30 days. Lengths and quantities are
             cut exactly as listed, so please check them before approving.</p>` : ''}
         </div>
-        <table class="totals">
+        ${totals ? html`<table class="totals">
           <tr><th>Materials</th><td>${money(o.lines_subtotal)}</td></tr>
           ${o.delivery_charge ? html`<tr><th>Delivery</th><td>${money(o.delivery_charge)}</td></tr>` : ''}
           ${o.discount_amount ? html`<tr><th>Discount</th><td>−${money(o.discount_amount)}</td></tr>` : ''}
           ${totalsRows(o)}
-        </table>
+        </table>` : ''}
       </div>
-    </section>`,
+    </section>`;
+}
+
+// What the customer sees: one price per piece (the line amount over the pieces),
+// no billing units, no coil supplier. Print it, or save it as a PDF to email.
+router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
+  const o = await loadOrder(req.params.id);
+  if (!o) return res.status(404).send('Order not found');
+  const isQuote = o.status === 'quote';
+  const docName = isQuote ? 'Quote' : 'Order';
+  const email = o.contact_email || o.customer_email;
+  const subject = `${docName} ${o.order_number} from High Plains Custom Metal`;
+  const body = [
+    'Hello,', '',
+    `Attached is ${docName.toLowerCase()} ${o.order_number}${o.job_name ? ` for ${o.job_name}` : ''}.`,
+    `Total: ${money(o.grand_total)}${o.tax_amount ? ' including sales tax' : ''}.`,
+    ...(isQuote ? [`Prices are good until ${date(o.valid_until)}.`] : []),
+    '', 'Thank you,', 'High Plains Custom Metal', '(307) 331-6449',
+  ].join('\n');
+  // Gmail's compose page, filled in; the PDF still has to be attached by hand.
+  const gmail = `https://mail.google.com/mail/?${new URLSearchParams({
+    view: 'cm', fs: '1', to: email || '', su: subject, body })}`;
+  res.send(layout({
+    title: `${docName} ${o.order_number} (customer)`, active: '/orders',
+    body: html`
+    <div class="page-head no-print">
+      <h1>Customer ${docName.toLowerCase()} ${o.order_number}</h1>
+      <div class="actions">
+        <a class="btn" href="/orders/${o.order_id}">Back</a>
+        <button class="btn primary" onclick="window.print()">Print or save as PDF</button>
+        <a class="btn" href="${gmail}" target="_blank" rel="noopener">Email with Gmail</a>
+      </div>
+    </div>
+    <p class="muted small no-print">To email it: click <strong>Print or save as PDF</strong> and save the PDF, then click
+      <strong>Email with Gmail</strong>. Gmail opens with the ${email ? `customer's address (${email}),` : 'subject and'} message
+      filled in; attach the PDF and send. ${email ? '' : 'Add an email address to the customer or order to fill in the To line.'}
+      ${email ? html`Not using Gmail? <a href="mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}">Use your email app</a>.` : ''}</p>
+    ${customerSheet(o)}`,
   }));
 });
 
@@ -714,6 +769,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       </div>
     </div>
     ${req.query.status_error ? html`<div class="alert no-print">${req.query.status_error}</div>` : ''}
+    ${portalNote(o)}
 
     <section class="sheet">
       <div class="sheet-head">
@@ -1115,3 +1171,5 @@ router.post('/:id(\\d+)/runs', need('production'), async (req, res) => {
 });
 
 module.exports = router;
+module.exports.loadOrder = loadOrder;
+module.exports.customerSheet = customerSheet;
