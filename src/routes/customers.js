@@ -118,11 +118,11 @@ async function portalCard(c, req) {
     ${!c.portal_enabled && logins.some((l) => l.active) ? html`<div class="alert">The portal is off for this customer, so their login and links won't work. Tick "Portal on" and Save.</div>` : ''}
     <p class="muted small">Customers sign in at <strong>${req.get('host')}/portal</strong> to see their quotes and orders and approve quotes.
       Quotes they approve still need your approval here. ${c.portal_enabled ? `They see ${shown.length ? shown.join(' and ') : 'no prices'}.` : ''}</p>
-    ${edit ? html`<form method="post" action="/customers/${c.customer_id}/portal" class="portal-settings">
+    ${edit ? html`<form method="post" action="/customers/${c.customer_id}/portal" class="portal-settings" onchange="this.submit()">
       <label class="check"><input type="checkbox" name="enabled" value="1" ${c.portal_enabled ? 'checked' : ''}> Portal on for this customer</label>
       <label class="check"><input type="checkbox" name="line_prices" value="1" ${c.portal_line_prices ? 'checked' : ''}> Show line prices</label>
       <label class="check"><input type="checkbox" name="totals" value="1" ${c.portal_totals ? 'checked' : ''}> Show order totals</label>
-      <button class="btn small">Save</button></form>` : ''}
+      <noscript><button class="btn small">Save</button></noscript><span class="muted small">Saves when you tick a box.</span></form>` : ''}
     ${logins.map((l) => html`<table class="list">
       <thead><tr><th>Login</th><th>Email</th><th>Last signed in</th><th></th></tr></thead>
       <tbody><tr class="${l.active ? '' : 'muted'}">
