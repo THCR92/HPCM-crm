@@ -1474,3 +1474,24 @@ test('customer portal: adding a login turns the portal on; a dead link says why'
   await fetch(`${base}/customers/${c.customer_id}/logins/${l.login_id}/link`, { method: 'POST', redirect: 'manual' });
   assert.match(await (await fetch(`${base}/portal/set-password/${l.invite_token}`, { anonymous: true })).text(), /newer link/);
 });
+
+test('admin email page: shows if email is set up and sends a test', async () => {
+  const mail = require('../src/mail');
+  const form = (path, body) => fetch(base + path, { method: 'POST', body: new URLSearchParams(body), redirect: 'manual' });
+  let res = await fetch(`${base}/admin/email`);
+  assert.match(await res.text(), /isn't set up yet/);
+  const sent = [];
+  mail.io.forceConfigured = true;
+  mail.io.send = async (m) => { sent.push(m); };
+  try {
+    res = await form('/admin/email/test', { to: 'me@example.com' });
+    assert.match(res.headers.get('location'), /sent=me%40example.com/);
+    assert.strictEqual(sent[0].subject, 'Test email from the HPCM CRM');
+    mail.io.send = async () => { throw new Error('535 Username and Password not accepted'); };
+    res = await form('/admin/email/test', { to: 'me@example.com' });
+    assert.match(decodeURIComponent(res.headers.get('location')), /didn't send: 535 Username/);
+    assert.match(await (await fetch(`${base}/admin/email`)).text(), /Failed/);
+  } finally {
+    mail.io.forceConfigured = false;
+  }
+});

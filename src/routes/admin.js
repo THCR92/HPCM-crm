@@ -2,6 +2,7 @@
 const { query, tx } = require('../db');
 const { html, layout, money, num } = require('../html');
 const { need } = require('../auth');
+const mail = require('../mail');
 
 const router = require('../async-router')();
 
@@ -31,9 +32,55 @@ router.get('/admin', need('admin'), async (req, res) => {
       ${card('/colors', 'Colors and finishes', `${c.colors} colors. Add colors, premiums and finishes.`)}
       ${card('/admin/screws', 'Screws and clips', 'Which screws and clips go with each panel and framing, and how many.')}
       ${card('/admin/quickbooks', 'QuickBooks', 'Connect QuickBooks. Customers sync both ways; completed orders become invoices.')}
+      ${card('/admin/email', 'Email', mail.configured() ? 'Email is set up. Send a test and see what the CRM has sent.'
+    : 'Not set up yet. Customers get links you copy by hand.')}
       ${card('/admin/suppliers', 'Suppliers', `${c.suppliers} suppliers. Edit contact details or remove.`)}
     </div>`,
   }));
+});
+
+// ---------------------------------------------------------------------------
+// Email: is it set up, send a test, and what went out lately
+// ---------------------------------------------------------------------------
+router.get('/admin/email', need('admin'), async (req, res) => {
+  const { rows } = await query(`SELECT sent_at, to_address, subject, ok, error FROM email_log ORDER BY sent_at DESC LIMIT 25`);
+  const when = (t) => new Date(t).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' });
+  res.send(layout({
+    title: 'Email', active: '/admin',
+    body: html`
+    <h1>Email</h1>
+    ${req.query.sent ? html`<div class="notice">Test email sent to ${req.query.sent}. Check that inbox (and its spam folder).</div>` : ''}
+    ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
+    <div class="card">
+    ${mail.configured() ? html`
+      <p>Email is set up. The CRM sends from <strong>${process.env.MAIL_FROM || process.env.SMTP_USER}</strong>.</p>
+      <form method="post" action="/admin/email/test" class="row">
+        <label>Send a test email to<input name="to" type="email" required value="${req.user.email}"></label>
+        <button class="btn primary">Send test</button>
+      </form>`
+    : html`<p>Email isn't set up yet. In Render, open the hpcm-crm web service, then Environment, and add
+      <strong>SMTP_USER</strong> (the sending address) and <strong>SMTP_PASS</strong> (the 16-letter App Password, no spaces).
+      Save, wait a few minutes for the site to restart, then come back here.</p>`}
+    </div>
+    <h2>Recently sent</h2>
+    <table class="list">
+      <thead><tr><th>When</th><th>To</th><th>Subject</th><th>Result</th></tr></thead>
+      <tbody>${rows.length ? rows.map((r) => html`<tr><td>${when(r.sent_at)}</td><td>${r.to_address}</td><td>${r.subject}</td>
+        <td>${r.ok ? 'Sent' : html`<span class="missing-text">Failed</span><div class="muted small">${r.error}</div>`}</td></tr>`)
+      : html`<tr><td colspan="4" class="empty">Nothing sent yet.</td></tr>`}</tbody>
+    </table>`,
+  }));
+});
+
+router.post('/admin/email/test', need('admin'), async (req, res) => {
+  const to = String(req.body.to || '').trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return res.redirect('/admin/email?error=' + encodeURIComponent('Enter an email address.'));
+  if (!mail.configured()) return res.redirect('/admin/email?error=' + encodeURIComponent('Email isn\'t set up yet.'));
+  const ok = await mail.send({ to, subject: 'Test email from the HPCM CRM', kind: 'test',
+    text: `This is a test from the HPCM CRM, sent by ${req.user.full_name}. If you can read this, email is working.` });
+  if (ok) return res.redirect('/admin/email?sent=' + encodeURIComponent(to));
+  const { rows: [last] } = await query("SELECT error FROM email_log WHERE kind = 'test' ORDER BY sent_at DESC LIMIT 1");
+  res.redirect('/admin/email?error=' + encodeURIComponent(`The test didn't send: ${last ? last.error : 'unknown problem'}`));
 });
 
 // ---------------------------------------------------------------------------
