@@ -212,22 +212,35 @@ function setPasswordPage(l, token, error) {
   });
 }
 
-const deadLink = () => page(null, {
-  title: 'Link expired',
-  body: html`<div class="login-box"><h1>This link doesn't work anymore</h1>
-    <p>Links to set a password last ${INVITE_DAYS} days and work once. Call us at ${SHOP_PHONE} and we'll send a new one,
-    or <a href="/portal/login">sign in</a> if you've already set your password.</p></div>`,
-});
+// Says why a set-password link doesn't work, so the shop knows what to fix.
+async function deadLink(token) {
+  const { rows: [l] } = token && token.length >= 20 ? await query(`
+    SELECT l.active, l.invite_expires_at > now() AS current, c.portal_enabled, c.active AS customer_active
+    FROM customer_logins l JOIN customers c USING (customer_id) WHERE l.invite_token = $1`, [token]) : { rows: [] };
+  let why;
+  if (!l) {
+    why = html`This link was already used, or a newer link was made after it (only the newest one works).
+      If you've set your password, <a href="/portal/login">sign in</a>. Otherwise call us at ${SHOP_PHONE} for a new link.`;
+  } else if (!l.portal_enabled || !l.customer_active || !l.active) {
+    why = html`Your online account isn't turned on yet. Call us at ${SHOP_PHONE} and we'll turn it on; then this same link will work.`;
+  } else {
+    why = html`Links to set a password last ${INVITE_DAYS} days. Call us at ${SHOP_PHONE} and we'll send a new one.`;
+  }
+  return page(null, {
+    title: 'Link not working',
+    body: html`<div class="login-box"><h1>This link isn't working</h1><p>${why}</p></div>`,
+  });
+}
 
 router.get('/portal/set-password/:token', async (req, res) => {
   const l = await inviteLogin(req.params.token);
-  if (!l) return res.status(404).send(deadLink());
+  if (!l) return res.status(404).send(await deadLink(req.params.token));
   res.send(setPasswordPage(l, req.params.token));
 });
 
 router.post('/portal/set-password/:token', async (req, res) => {
   const l = await inviteLogin(req.params.token);
-  if (!l) return res.status(404).send(deadLink());
+  if (!l) return res.status(404).send(await deadLink(req.params.token));
   const b = req.body;
   const name = String(b.full_name || '').trim();
   const problem = !name ? 'Enter your name.' : passwordProblem(b.password)

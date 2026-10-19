@@ -102,7 +102,8 @@ async function portalCard(c, req) {
       + 'After that, sign in any time at ' + `${req.protocol}://${req.get('host')}/portal` + '\n\nThank you,\nHigh Plains Custom Metal\n(307) 331-6449';
     const gmail = `https://mail.google.com/mail/?${new URLSearchParams({ view: 'cm', fs: '1', to: l.email, su: subject, body })}`;
     return html`<div class="invite-link">
-      <span class="muted small">${l.password_hash ? 'Password reset link' : 'Invite link'}, good until ${date(l.invite_expires_at)}:</span>
+      <span class="muted small">${l.password_hash ? 'Password reset link' : 'Invite link'}, good until ${date(l.invite_expires_at)}
+        (making a new one stops this one working):</span>
       <input readonly value="${url}" onclick="this.select()">
       <button type="button" class="btn small" onclick="navigator.clipboard.writeText(this.previousElementSibling.value); this.textContent = 'Copied'">Copy</button>
       ${mail.configured() ? html`<form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}/email" class="inline">
@@ -114,6 +115,7 @@ async function portalCard(c, req) {
     <h2>Customer portal ${c.portal_enabled ? html`<span class="badge badge-completed">On</span>` : html`<span class="badge badge-quote">Off</span>`}</h2>
     ${req.query.portal_error ? html`<div class="alert">${req.query.portal_error}</div>` : ''}
     ${req.query.emailed ? html`<div class="notice">Emailed the link to ${req.query.emailed}.</div>` : ''}
+    ${!c.portal_enabled && logins.some((l) => l.active) ? html`<div class="alert">The portal is off for this customer, so their login and links won't work. Tick "Portal on" and Save.</div>` : ''}
     <p class="muted small">Customers sign in at <strong>${req.get('host')}/portal</strong> to see their quotes and orders and approve quotes.
       Quotes they approve still need your approval here. ${c.portal_enabled ? `They see ${shown.length ? shown.join(' and ') : 'no prices'}.` : ''}</p>
     ${edit ? html`<form method="post" action="/customers/${c.customer_id}/portal" class="portal-settings">
@@ -168,6 +170,8 @@ router.post('/:id(\\d+)/logins', need('portal'), async (req, res) => {
       ON CONFLICT (customer_id) DO UPDATE SET full_name = EXCLUDED.full_name, email = EXCLUDED.email
       RETURNING login_id, (xmax = 0) AS added`,
     [req.params.id, name, email, newToken(), INVITE_DAYS, userName()]);
+    // Adding a login means they should be able to use it: turn the portal on.
+    await query('UPDATE customers SET portal_enabled = true WHERE customer_id = $1', [req.params.id]);
     // A new login gets its invite by email right away (once email is set up).
     if (l.added && mail.configured() && await emailLink(req, req.params.id, l.login_id)) {
       return res.redirect(`/customers/${req.params.id}?emailed=${encodeURIComponent(email)}#portal`);

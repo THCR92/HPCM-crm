@@ -1414,3 +1414,21 @@ test('length check photos: every line needs one before Ready; the customer sees 
   assert.match(r.headers.get('location'), /#photos$/);
   assert.strictEqual((await query('SELECT count(*)::int AS n FROM order_attachments WHERE attachment_id = $1', [out.attachment_id])).rows[0].n, 0);
 });
+
+test('customer portal: adding a login turns the portal on; a dead link says why', async () => {
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Link ' || gen_random_uuid()) RETURNING customer_id");
+  const email = `link-${Date.now()}@example.com`;
+  await fetch(`${base}/customers/${c.customer_id}/logins`, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ full_name: 'Taylor', email }).toString() });
+  const { rows: [l] } = await query(`SELECT l.login_id, l.invite_token, c.portal_enabled FROM customer_logins l JOIN customers c USING (customer_id)
+    WHERE l.email = $1`, [email]);
+  assert.strictEqual(l.portal_enabled, true);
+  assert.strictEqual((await fetch(`${base}/portal/set-password/${l.invite_token}`, { anonymous: true })).status, 200);
+  // Portal turned off: the page says so (and the link works again once it's on).
+  await query('UPDATE customers SET portal_enabled = false WHERE customer_id = $1', [c.customer_id]);
+  assert.match(await (await fetch(`${base}/portal/set-password/${l.invite_token}`, { anonymous: true })).text(), /isn't turned on yet/);
+  // A newer link replaces it.
+  await query('UPDATE customers SET portal_enabled = true WHERE customer_id = $1', [c.customer_id]);
+  await fetch(`${base}/customers/${c.customer_id}/logins/${l.login_id}/link`, { method: 'POST', redirect: 'manual' });
+  assert.match(await (await fetch(`${base}/portal/set-password/${l.invite_token}`, { anonymous: true })).text(), /newer link/);
+});
