@@ -1,9 +1,12 @@
 // Cut-sheet order form. Reads window.ORDER_FORM = { order, products, colors, customers }
-// and posts the whole order back as JSON. Billable sq ft / LF are previewed
+// and posts the whole order back as JSON. The customer portal uses it too, with
+// `portal` = { prices, totals, action }: the customer is fixed, prices come from the
+// price list (read-only, or hidden), and shop-only fields are left out. Billable sq ft / LF are previewed
 // here with the same rules the database uses; the database is the final word.
 (function () {
   const {
     order, products, colors, customers, sized_pricing: sizedPricing = 'per_inch', screw_rules: screwRules = [],
+    portal = null,
   } = window.ORDER_FORM;
   const root = document.getElementById('order-form');
   const productById = new Map(products.map((p) => [p.id, p]));
@@ -195,7 +198,7 @@
       <td class="width">${widthCell(row, p)}</td>
       <td class="num billed"></td>
       <td class="price-cell"><span class="unit">$</span><input class="price ${needsPrice ? 'missing' : ''}" data-f="unit_price" type="number" step="0.01" min="0"
-            value="${esc(row.unit_price)}" placeholder="${p && p.price === null ? 'price' : ''}" aria-label="Unit price"></td>
+            value="${esc(row.unit_price)}" placeholder="${p && p.price === null ? 'price' : ''}" aria-label="Unit price" ${portal ? 'readonly tabindex="-1"' : ''}></td>
       <td class="num amount"></td>
       <td><button type="button" class="icon" data-act="remove-row" title="Remove line">✕</button></td>
     </tr>`;
@@ -212,7 +215,7 @@
       </div>
       <table class="lines edit">
         <thead><tr><th>Qty</th><th>Length (ft' in")</th><th>Panel / profile</th><th>Color</th>
-          <th>Width</th><th class="num">Billed</th><th>Price</th><th class="num">Amount</th><th></th></tr></thead>
+          <th>Width</th><th class="num">Billed</th><th class="price-col">Price</th><th class="num amount-col">Amount</th><th></th></tr></thead>
         <tbody>${s.items.map((row, ii) => rowHtml(row, si, ii)).join('')}</tbody>
       </table>
       <button type="button" class="btn small" data-act="add-row">+ Add line</button>
@@ -224,11 +227,12 @@
     const field = (name, label, type = 'text', extra = '') =>
       `<label>${label}<input data-h="${name}" type="${type}" value="${esc(h[name] ?? '')}" ${extra}></label>`;
     return `<div class="card form-grid">
-      <label class="span2">Contractor / customer *
+      ${portal ? `<div class="span2"><span class="muted small">Customer</span><br><strong>${esc(customers[0] ? customers[0].name : '')}</strong></div>`
+    : `<label class="span2">Contractor / customer *
         <span class="row"><select data-h="customer_id" required>
           <option value="">Pick a customer…</option>
           ${customers.map((c) => `<option value="${c.id}" ${c.id === Number(h.customer_id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
-        </select><a href="/customers/new" target="_blank" class="small">+ New customer</a></span></label>
+        </select><a href="/customers/new" target="_blank" class="small">+ New customer</a></span></label>`}
       ${field('job_name', 'Job name')}
       ${field('po_number', 'Project / PO #')}
       ${field('need_by', 'Need by', 'date')}
@@ -245,6 +249,7 @@
 
   function footerHtml() {
     const h = state.header;
+    if (portal) return portalFooterHtml();
     const moneyField = (name, label) =>
       `<label>${label}<span class="row"><span class="unit">$</span><input data-h="${name}" type="number" step="0.01" min="0" value="${esc(h[name] || '')}"></span></label>`;
     return `<div class="form-foot">
@@ -273,6 +278,33 @@
         </table>
         <button type="button" class="btn primary big" data-act="save">Save ${!h.status || h.status === 'quote' ? 'quote' : 'order'}</button>
         <a class="btn" href="${h.order_id ? `/orders/${h.order_id}` : '/orders'}">Cancel</a>
+      </div>
+    </div>`;
+  }
+
+  // The portal: a note for the shop, and totals only if this customer sees them.
+  function portalFooterHtml() {
+    const h = state.header;
+    return `<div class="form-foot">
+      <div class="card form-grid">
+        <label class="span2">Notes for us (optional)<textarea data-h="customer_note" rows="3" maxlength="2000"
+          placeholder="Anything we should know: trim details, delivery directions, questions">${esc(h.customer_note ?? '')}</textarea></label>
+        <p class="span2 muted small">Prices are from our current price list. Add drawings for custom trim after you save.
+          Saving doesn't order anything: you'll see the quote and can approve it from there.</p>
+      </div>
+      <div class="card totals-card">
+        <table class="totals" ${portal.totals ? '' : 'hidden'}>
+          <tr><th>Total sq ft</th><td id="t-sqft"></td></tr>
+          <tr><th>Total LF</th><td id="t-lf"></td></tr>
+          <tr hidden><th>Materials</th><td id="t-lines"></td></tr>
+          <tr hidden><th>Delivery</th><td id="t-delivery"></td></tr>
+          <tr hidden><th>Discount</th><td id="t-discount"></td></tr>
+          <tr><th>Subtotal</th><td id="t-subtotal"></td></tr>
+          <tr><th id="t-tax-label">Sales tax</th><td id="t-tax"></td></tr>
+          <tr class="grand"><th>Total</th><td id="t-total"></td></tr>
+        </table>
+        <button type="button" class="btn primary big" data-act="save">Save quote</button>
+        <a class="btn" href="${h.order_id ? `/portal/orders/${h.order_id}` : '/portal'}">Cancel</a>
       </div>
     </div>`;
   }
@@ -330,7 +362,7 @@
       ? '<p class="alert small">This quote has trim but no panels. Pick which screws the trim gets ("Trim screws for").</p>' : '';
     if (!lines.length) return `${pick}${warn}<p class="muted small">Screws and clips are added here from the panels and trim on this quote.</p>`;
     return `${pick}${warn}<table class="lines edit">
-      <thead><tr><th>Qty</th><th>Screws</th><th>Color</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+      <thead><tr><th>Qty</th><th>Screws</th><th>Color</th><th class="num price-col">Price</th><th class="num amount-col">Amount</th></tr></thead>
       <tbody>${lines.map((l) => {
         const p = productById.get(l.product_id);
         const c = colorById.get(l.color_id);
@@ -338,12 +370,13 @@
         return `<tr><td>${l.pieces} ${unit}</td>
           <td>${esc(p ? p.name : '')}<div class="muted small">${esc(l.description)}</div></td>
           <td>${esc(c ? c.label || c.name : '')}</td>
-          <td class="num">${l.unit_price === '' ? '<span class="missing-text">no price set</span>' : money(Number(l.unit_price))}</td>
-          <td class="num">${l.unit_price === '' ? '' : money(round2(l.pieces * l.unit_price))}</td></tr>`;
+          <td class="num price-col">${l.unit_price === '' ? '<span class="missing-text">no price set</span>' : money(Number(l.unit_price))}</td>
+          <td class="num amount-col">${l.unit_price === '' ? '' : money(round2(l.pieces * l.unit_price))}</td></tr>`;
       }).join('')}</tbody></table>`;
   }
 
   function render() {
+    if (portal && !portal.prices) root.classList.add('hide-prices');
     root.innerHTML = `<div id="form-error" class="alert" hidden></div>
       ${headerHtml()}
       <div id="sections">${state.sections.map(sectionHtml).join('')}</div>
@@ -390,7 +423,7 @@
     box.innerHTML = screwControlsHtml();
     if (focused) box.querySelector(`[data-h="${focused}"]`)?.focus();
     root.querySelector('#screws-lines').innerHTML = screwLinesHtml();
-    root.querySelector('#screws-box .section-total').textContent = screwTotal ? money(round2(screwTotal)) : '';
+    root.querySelector('#screws-box .section-total').textContent = screwTotal && (!portal || portal.prices) ? money(round2(screwTotal)) : '';
     const delivery = Number(state.header.delivery_charge) || 0;
     const discount = Number(state.header.discount_amount) || 0;
     root.querySelector('#t-sqft').textContent = fmt(round2(sqft));
@@ -564,7 +597,8 @@
     if (state.header.auto_screws) sections.push({ section_id: state.screwSectionId, area: 'other', label: 'Screws', auto: true, items: [] });
     button.disabled = true;
     try {
-      const res = await fetch(state.header.order_id ? `/orders/${state.header.order_id}` : '/orders', {
+      const url = portal ? portal.action : state.header.order_id ? `/orders/${state.header.order_id}` : '/orders';
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...state.header, sections }),

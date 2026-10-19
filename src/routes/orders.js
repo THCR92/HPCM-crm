@@ -66,7 +66,7 @@ async function loadOrder(id) {
   if (loose.length) sections.push({ section_id: null, area: 'other', label: null, items: loose });
   order.sections = sections;
   const { rows: attachments } = await query(`
-    SELECT a.attachment_id, a.order_item_id, a.filename, a.content_type, a.byte_size, a.note, a.created_at, a.uploaded_by,
+    SELECT a.attachment_id, a.order_item_id, a.filename, a.content_type, a.byte_size, a.note, a.created_at, a.uploaded_by, a.from_customer,
            oi.line_no, p.name AS product_name
     FROM order_attachments a
     LEFT JOIN order_items oi USING (order_item_id)
@@ -255,10 +255,11 @@ async function withScrews(sections, header, productsById) {
   }];
 }
 
-async function saveOrder(orderId, body) {
-  const header = parseHeader(body);
-  header.updated_by = userName();
-  if (!orderId) header.created_by = userName();
+// `who` names the person saving when it isn't a staff sign-in (the customer portal).
+async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
+  const header = { ...parseHeader(body), ...extra };
+  header.updated_by = who;
+  if (!orderId) header.created_by = who;
   const { rows: prodRows } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.taxable, p.max_length_in,
            p.girth_in AS girth, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov,
@@ -770,6 +771,7 @@ router.get('/:id(\\d+)', async (req, res) => {
     </div>
     ${req.query.status_error ? html`<div class="alert no-print">${req.query.status_error}</div>` : ''}
     ${portalNote(o)}
+    ${o.from_portal ? html`<p class="no-print muted small">The customer wrote this quote in the portal, at price list prices.</p>` : ''}
 
     <section class="sheet">
       <div class="sheet-head">
@@ -864,7 +866,7 @@ function drawingsSection(o) {
     <div class="drawing" id="drawing-${a.attachment_id}">
       <div class="drawing-head">
         <strong>${lineLabel(a)}</strong>
-        <span class="muted small">${a.filename} · ${fileSize(a.byte_size)}${a.uploaded_by ? ` · added by ${a.uploaded_by}` : ''}</span>
+        <span class="muted small">${a.filename} · ${fileSize(a.byte_size)}${a.uploaded_by ? ` · added by ${a.uploaded_by}` : ''}${a.from_customer ? ' (customer)' : ''}</span>
         ${a.note ? html`<span>${a.note}</span>` : ''}
         <span class="actions no-print">
           <a class="btn small" href="${url}" target="_blank" rel="noopener">Open full size</a>
@@ -1172,4 +1174,13 @@ router.post('/:id(\\d+)/runs', need('production'), async (req, res) => {
 
 module.exports = router;
 module.exports.loadOrder = loadOrder;
+module.exports.loadCatalog = loadCatalog;
+module.exports.saveOrder = saveOrder;
+module.exports.dbMessage = dbMessage;
+module.exports.UserError = UserError;
+module.exports.jsonForScript = jsonForScript;
+module.exports.ATTACH_TYPES = ATTACH_TYPES;
+module.exports.ATTACH_MAX = ATTACH_MAX;
+module.exports.fileSize = fileSize;
+module.exports.isImage = isImage;
 module.exports.customerSheet = customerSheet;

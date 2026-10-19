@@ -142,6 +142,10 @@ works out the square feet, linear feet and price for every line.
   Approved quotes stay quotes until the shop confirms them (Orders > "Customer approved" tab).
   Changing an approved quote's lines or prices asks the customer again. Staff can hide a quote
   from the portal. Customer logins are separate from staff accounts (own table, cookie, sessions).
+  Customers can also start a quote with the same quote form (priced from the price list; items
+  without a list price and services are left out; delivery, discounts and tax stay ours), change
+  it until they answer it, "Order again" from a past order, and add drawings (PDF or pictures) to
+  a quote or open order. A price staff set on a line stays if the customer edits the quote.
 - **Email** (`src/mail.js`, set `SMTP_USER` and `SMTP_PASS` on Render to a Gmail address and an
   App Password): portal invites and forgot-password links, Admins and Managers hear when a
   customer approves or declines, and customers hear when an order is ready. Without it, links

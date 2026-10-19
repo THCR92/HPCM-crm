@@ -9,8 +9,12 @@
 const crypto = require('crypto');
 const { query } = require('../db');
 const { hashPassword, checkPassword, passwordProblem } = require('../auth');
-const { html, layout, money, date, STATUS_LABEL } = require('../html');
-const { loadOrder, customerSheet } = require('./orders');
+const { html, layout, money, num, date, STATUS_LABEL } = require('../html');
+const express = require('express');
+const {
+  loadOrder, customerSheet, loadCatalog, saveOrder, dbMessage, UserError, jsonForScript,
+  ATTACH_TYPES, ATTACH_MAX, fileSize, isImage,
+} = require('./orders');
 const { INVITE_DAYS, DECLINE_REASONS } = require('./portal-shared');
 const mail = require('../mail');
 const notices = require('../notices');
@@ -83,10 +87,11 @@ const isEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
 
 // ---- page shell ------------------------------------------------------------------
-function page(login, { title, body }) {
+function page(login, { title, body, scripts }) {
   return layout({
     title,
     bare: true,
+    scripts,
     body: html`
     <header class="topbar portal-bar">
       <a class="brand" href="/portal"><img src="/logo.svg" alt="High Plains Custom Metal"></a>
@@ -299,8 +304,9 @@ router.get('/portal', signedIn, async (req, res) => {
   res.send(page(l, {
     title: 'My quotes & orders',
     body: html`
-    <h1>${l.customer_name}</h1>
-    ${rows.length ? '' : html`<p class="muted">Nothing here yet. Quotes we write for you will show up here.</p>`}
+    <div class="page-head"><h1>${l.customer_name}</h1>
+      <div class="actions"><a class="btn primary" href="/portal/quotes/new">+ Start a quote</a></div></div>
+    ${rows.length ? '' : html`<p class="muted">Nothing here yet. Start a quote, or quotes we write for you will show up here.</p>`}
     ${groups.filter(([, list]) => list.length).map(([title, list]) => html`<h2>${title}</h2>${table(list)}`)}`,
   }));
 });
@@ -358,13 +364,17 @@ router.get('/portal/orders/:id(\\d+)', signedIn, async (req, res) => {
     <div class="page-head no-print">
       <h1>${isQuote ? 'Quote' : 'Order'} ${o.order_number}</h1>
       <div class="actions"><a class="btn" href="/portal">Back</a>
+        ${canEdit(o) ? html`<a class="btn primary" href="/portal/orders/${o.order_id}/edit">Edit quote</a>` : ''}
+        ${o.status !== 'quote' ? html`<a class="btn" href="/portal/orders/${o.order_id}/again">Order again</a>` : ''}
         <button class="btn" onclick="window.print()">Print or save as PDF</button></div>
     </div>
     ${req.query.error ? html`<div class="alert no-print">${req.query.error}</div>` : ''}
     <div class="no-print">${steps(o)}</div>
     ${decided || ''}
     ${customerSheet(o, { linePrices: l.portal_line_prices, totals: l.portal_totals })}
-    ${answer}`,
+    ${answer}
+    ${filesSection(o)}`,
+    scripts: ['/attachments.js'],
   }));
 });
 
@@ -443,6 +453,216 @@ router.post('/portal/account', signedIn, async (req, res) => {
     await query('DELETE FROM customer_sessions WHERE login_id = $1 AND session_id <> $2', [l.login_id, cookieValue(req)]);
   }
   back();
+});
+
+// ---- quotes the customer writes ------------------------------------------------------
+// They can change their own quote until they approve or decline it (or we take it over).
+const canEdit = (o) => o.from_portal && o.status === 'quote' && !o.customer_decision;
+
+// Products a customer can pick: anything with a list price (not services or "pricing varies").
+async function portalCatalog(l) {
+  const catalog = await loadCatalog();
+  catalog.products = catalog.products.filter((p) => p.price !== null && p.category !== 'service');
+  if (!l.portal_line_prices) {
+    for (const p of catalog.products) p.price = 0;
+    for (const r of catalog.screw_rules) r.price = 0;
+  }
+  catalog.customers = catalog.customers.filter((c) => c.id === l.customer_id);
+  return catalog;
+}
+
+function formPage(l, { title, order, catalog, action }) {
+  return page(l, {
+    title,
+    body: html`
+    <h1>${title}</h1>
+    <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
+    <script>window.ORDER_FORM = ${jsonForScript({
+    order, ...catalog, portal: { prices: l.portal_line_prices, totals: l.portal_totals, action } })};</script>`,
+    scripts: ['/screws.js', '/order-form.js'],
+  });
+}
+
+const blankQuote = (l, catalog) => {
+  const c = catalog.customers[0] || {};
+  return {
+    order_id: null, customer_id: l.customer_id, fulfillment: c.default_fulfillment || 'pickup',
+    tax_rate: catalog.default_tax_rate, tax_exempt: Boolean(c.tax_exempt), auto_screws: true, framing: 'wood',
+    contact_phone: l.phone || c.phone || null, contact_email: l.email,
+    sections: [{ area: 'roof', items: [] }, { area: 'wall', items: [] }, { area: 'trim', items: [] }],
+  };
+};
+
+router.get('/portal/quotes/new', signedIn, async (req, res) => {
+  const catalog = await portalCatalog(req.login);
+  res.send(formPage(req.login, { title: 'New quote', order: blankQuote(req.login, catalog), catalog, action: '/portal/quotes' }));
+});
+
+// "Order again": a new quote with the same lines at today's prices.
+router.get('/portal/orders/:id(\\d+)/again', signedIn, async (req, res) => {
+  const l = req.login;
+  const o = await customerOrder(l, req.params.id);
+  if (!o) return res.redirect('/portal');
+  const catalog = await portalCatalog(l);
+  const known = new Set(catalog.products.map((p) => p.id));
+  const order = {
+    ...blankQuote(l, catalog), job_name: o.job_name, job_address_text: o.job_address_text, fulfillment: o.fulfillment,
+    auto_screws: o.auto_screws, framing: o.framing, screw_length: o.screw_length, trim_screws_for: o.trim_screws_for,
+    sections: o.sections.filter((sec) => !sec.is_auto).map((sec) => ({
+      area: sec.area, label: sec.label,
+      items: sec.items.filter((i) => known.has(i.product_id)).map((i) => ({
+        product_id: i.product_id, color_id: i.color_id, pieces: i.pieces, length_in: i.length_in, width_in: i.width_in,
+        description: i.description, screw_option: i.screw_option, unit_price: '',
+      })),
+    })),
+  };
+  // Prices fill in from the price list as the form loads each line.
+  for (const sec of order.sections) {
+    for (const i of sec.items) {
+      const p = catalog.products.find((x) => x.id === i.product_id);
+      const c = catalog.colors.find((x) => x.id === i.color_id);
+      i.unit_price = (Math.round(p.price * (1 + (c ? Number(c.upcharge) : 0) / 100) * 100) / 100).toFixed(2);
+    }
+  }
+  res.send(formPage(l, { title: `New quote (from ${o.order_number})`, order, catalog, action: '/portal/quotes' }));
+});
+
+router.get('/portal/orders/:id(\\d+)/edit', signedIn, async (req, res) => {
+  const l = req.login;
+  const o = await customerOrder(l, req.params.id);
+  if (!o || !canEdit(o)) return res.redirect(`/portal/orders/${req.params.id}`);
+  o.tax_exempt = o.tax_exempt_effective;
+  o.customer_note = o.internal_notes ? o.internal_notes.replace(/^Customer note: /, '') : '';
+  res.send(formPage(l, { title: `Edit quote ${o.order_number}`, order: o, catalog: await portalCatalog(l), action: `/portal/orders/${o.order_id}/save` }));
+});
+
+// Saving: only the customer's own job details and lines. Prices always come from the
+// price list here (a line we already priced keeps our price); charges, discounts and
+// tax are ours to set.
+async function savePortalQuote(l, existing, body) {
+  const { rows: prices } = await query(`
+    SELECT p.product_id, p.name, p.category, p.active, cp.unit_price FROM products p LEFT JOIN v_current_prices cp USING (product_id)`);
+  const priceOf = new Map(prices.map((p) => [p.product_id, p]));
+  const { rows: colors } = await query('SELECT color_id, upcharge_pct FROM v_colors');
+  const upOf = new Map(colors.map((c) => [c.color_id, Number(c.upcharge_pct) || 0]));
+  const kept = new Map((existing ? existing.sections.flatMap((sec) => sec.items) : []).map((i) => [i.order_item_id, i]));
+  const sections = (Array.isArray(body.sections) ? body.sections : []).map((sec) => ({
+    ...sec,
+    items: (Array.isArray(sec.items) ? sec.items : []).map((it) => {
+      const p = priceOf.get(Number(it.product_id));
+      if (p && (!p.active || p.category === 'service' || p.unit_price === null)) {
+        throw new UserError(`${p.name} needs a price from us. Leave it out and put it in the notes, or call ${SHOP_PHONE}.`);
+      }
+      const before = kept.get(Number(it.order_item_id));
+      const same = before && before.product_id === Number(it.product_id) && (before.color_id || null) === (Number(it.color_id) || null);
+      const list = p ? Math.round(p.unit_price * (1 + (upOf.get(Number(it.color_id)) || 0) / 100) * 100) / 100 : null;
+      return { ...it, order_item_id: before ? before.order_item_id : null, unit_price: same ? before.unit_price : list };
+    }),
+  }));
+  const note = String(body.customer_note || '').trim().slice(0, 2000);
+  const header = {
+    customer_id: l.customer_id,
+    job_name: body.job_name, po_number: body.po_number, job_address_text: body.job_address_text,
+    contact_phone: body.contact_phone, contact_email: body.contact_email, fulfillment: body.fulfillment,
+    need_by: typeof body.need_by === 'string' && body.need_by >= today() ? body.need_by : null,
+    auto_screws: body.auto_screws, framing: body.framing, screw_length: body.screw_length, trim_screws_for: body.trim_screws_for,
+    // Ours, kept as they are.
+    delivery_charge: existing ? existing.delivery_charge : 0,
+    discount_amount: existing ? existing.discount_amount : 0,
+    deposit_amount: existing ? existing.deposit_amount : 0,
+    tax_rate: existing ? existing.tax_rate : (await query("SELECT value FROM app_settings WHERE key = 'sales_tax_rate'")).rows[0]?.value || 0,
+    tax_exempt: existing ? existing.tax_exempt : null,
+    customer_memo: existing ? existing.customer_memo : null,
+    internal_notes: note ? `Customer note: ${note}` : null,
+    sections,
+  };
+  return saveOrder(existing ? existing.order_id : null, header, { who: `${l.full_name} (customer)`, extra: { from_portal: true } });
+}
+
+const saveRoute = (getExisting) => [signedIn, express.json({ limit: '1mb' }), async (req, res) => {
+  const l = req.login;
+  try {
+    const existing = await getExisting(req);
+    if (existing === false) return res.status(400).json({ ok: false, error: 'This quote can\'t be changed anymore. Call us if something needs to change.' });
+    const id = await savePortalQuote(l, existing, req.body || {});
+    if (!existing) notices.quoteCreated(id);
+    res.json({ ok: true, redirect: `/portal/orders/${id}` });
+  } catch (err) {
+    const msg = dbMessage(err);
+    if (!msg) throw err;
+    res.status(400).json({ ok: false, error: msg });
+  }
+}];
+router.post('/portal/quotes', ...saveRoute(async () => null));
+router.post('/portal/orders/:id(\\d+)/save', ...saveRoute(async (req) => {
+  const o = await customerOrder(req.login, req.params.id);
+  return o && canEdit(o) ? o : false;
+}));
+
+// ---- drawings the customer adds, and the photos we take (part 3) ------------------------
+const OPEN_FOR_FILES = ['quote', 'confirmed', 'in_production'];
+function filesSection(o) {
+  const mine = o.attachments.filter((a) => a.from_customer);
+  const canAdd = OPEN_FOR_FILES.includes(o.status);
+  if (!mine.length && !canAdd) return '';
+  const items = o.sections.flatMap((sec) => sec.items).filter((i) => !i.is_auto);
+  return html`
+  <section id="drawings" class="drawings no-print">
+    <h2>Your drawings &amp; files</h2>
+    ${mine.length ? '' : html`<p class="muted">Add a drawing for custom trim or anything else we should see: a PDF, or a photo of a sketch.</p>`}
+    ${mine.map((a) => {
+    const url = `/portal/orders/${o.order_id}/files/${a.attachment_id}`;
+    return html`<div class="drawing" id="drawing-${a.attachment_id}">
+      <div class="drawing-head"><strong>${a.order_item_id ? `Line ${a.line_no}: ${a.product_name}` : 'Whole order'}</strong>
+        <span class="muted small">${a.filename} · ${fileSize(a.byte_size)}</span>${a.note ? html`<span>${a.note}</span>` : ''}
+        <span class="actions"><a class="btn small" href="${url}" target="_blank" rel="noopener">Open</a></span></div>
+      ${isImage(a) ? html`<a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${a.filename}"></a>` : ''}</div>`;
+  })}
+    ${canAdd ? html`<form class="card attach-form" data-action="/portal/orders/${o.order_id}/files">
+      <label>File (PDF, PNG or JPG)<input type="file" name="file" accept="application/pdf,image/png,image/jpeg,image/gif,image/webp" required></label>
+      <label>For<select name="line"><option value="">Whole order</option>
+        ${items.map((i) => html`<option value="${i.order_item_id}">Line ${i.line_no}: ${num(i.pieces)} × ${i.length_display || 'each'} ${i.product_name}</option>`)}
+      </select></label>
+      <label>Note<input name="note" placeholder="optional"></label>
+      <button class="btn primary">Add file</button><span class="attach-status muted small"></span>
+    </form>` : ''}
+  </section>`;
+}
+
+router.post('/portal/orders/:id(\\d+)/files', signedIn, express.raw({ type: () => true, limit: ATTACH_MAX }), async (req, res) => {
+  const l = req.login;
+  const o = await customerOrder(l, req.params.id);
+  if (!o) return res.status(404).json({ error: 'Not found' });
+  if (!OPEN_FOR_FILES.includes(o.status)) return res.status(400).json({ error: 'This order is past the point of adding drawings. Call us.' });
+  const type = (req.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (!ATTACH_TYPES[type]) return res.status(400).json({ error: 'Add a PDF or a picture (PNG or JPG).' });
+  if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'The file is empty.' });
+  let filename = 'drawing';
+  try { filename = decodeURIComponent(req.get('x-filename') || '') || filename; } catch { /* keep default */ }
+  const lineId = req.query.line ? Number(req.query.line) : null;
+  if (lineId && !o.sections.some((sec) => sec.items.some((i) => i.order_item_id === lineId))) {
+    return res.status(400).json({ error: 'That line isn\'t on this order.' });
+  }
+  const { rows: [a] } = await query(`
+    INSERT INTO order_attachments (order_id, order_item_id, filename, content_type, byte_size, data, note, uploaded_by, from_customer)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true) RETURNING attachment_id`,
+  [o.order_id, lineId, filename.slice(0, 200), type, req.body.length, req.body, String(req.query.note || '').trim().slice(0, 500) || null, l.full_name]);
+  res.json({ ok: true, attachment_id: a.attachment_id });
+});
+
+router.get('/portal/orders/:id(\\d+)/files/:aid(\\d+)', signedIn, async (req, res) => {
+  const o = await customerOrder(req.login, req.params.id);
+  if (!o) return res.status(404).send('Not found');
+  const { rows: [a] } = await query(`SELECT filename, content_type, data FROM order_attachments
+    WHERE attachment_id = $1 AND order_id = $2 AND from_customer`, [req.params.aid, o.order_id]);
+  if (!a) return res.status(404).send('Not found');
+  res.set({
+    'Content-Type': a.content_type,
+    'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(a.filename)}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=86400',
+  });
+  res.send(a.data);
 });
 
 router.use('/portal', (req, res) => res.status(404).send('Page not found'));

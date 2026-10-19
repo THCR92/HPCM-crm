@@ -1288,3 +1288,72 @@ test('customer portal: invite, set password, see only their quotes, approve; sta
   res = await fetch(`${base}/portal`, { headers: { cookie }, redirect: 'manual' });
   assert.match(res.headers.get('location'), /^\/portal\/login/);
 });
+
+test('customer portal: customers write their own quotes at list prices and add drawings', async () => {
+  const mk = async () => (await query("INSERT INTO customers (display_name, portal_enabled) VALUES ('Portal Q ' || gen_random_uuid(), true) RETURNING customer_id")).rows[0].customer_id;
+  const session = async (cid) => {
+    const { rows: [l] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, password_hash)
+      VALUES ($1, 'Sam Roofer', 'sam-' || gen_random_uuid() || '@example.com', 'x') RETURNING login_id`, [cid]);
+    const sid = `ptest-${l.login_id}-${Date.now()}`;
+    await query("INSERT INTO customer_sessions (session_id, login_id, expires_at) VALUES ($1, $2, now() + interval '1 day')", [sid, l.login_id]);
+    return `hpcm_portal=${sid}`;
+  };
+  const cid = await mk();
+  const other = await mk();
+  const cookie = await session(cid);
+  const otherCookie = await session(other);
+  const send = (path, body, c = cookie) => fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json', cookie: c }, body: JSON.stringify(body) });
+
+  let res = await fetch(`${base}/portal/quotes/new`, { headers: { cookie } });
+  assert.strictEqual(res.status, 200);
+  const formHtml = await res.text();
+  assert.doesNotMatch(formHtml, /Portal Q [^"]*"[^}]*Portal Q /, 'only their own customer in the form');
+
+  const pbr = await productId('PNL-PBR-26');
+  const { rows: [list] } = await query('SELECT unit_price FROM v_current_prices WHERE product_id = $1', [pbr]);
+  // Prices sent from the browser and another customer's id are ignored.
+  res = await send('/portal/quotes', { customer_id: other, job_name: 'Shed', delivery_charge: 0, discount_amount: 500,
+    customer_note: 'Gate side first', sections: [{ area: 'roof', items: [{ product_id: pbr, pieces: 4, length_in: 120, unit_price: 0.01 }] }] });
+  let out = await res.json();
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const { rows: [o] } = await query('SELECT customer_id, from_portal, created_by, discount_amount, internal_notes FROM orders WHERE order_id = $1', [id]);
+  assert.deepStrictEqual([o.customer_id, o.from_portal, o.discount_amount], [cid, true, 0]);
+  assert.match(o.created_by, /\(customer\)/);
+  assert.match(o.internal_notes, /Gate side first/);
+  const { rows: [line] } = await query('SELECT order_item_id, unit_price FROM order_items WHERE order_id = $1', [id]);
+  assert.strictEqual(line.unit_price, list.unit_price);
+
+  // Products we price by hand can't go on a portal quote.
+  const flat = await productId('FLAT-FLAT-SHEET');
+  res = await send('/portal/quotes', { sections: [{ area: 'other', items: [{ product_id: flat, pieces: 1, unit_price: 1 }] }] });
+  assert.strictEqual(res.status, 400);
+
+  // They can change it until they answer it; a price we set on a line stays.
+  await query('UPDATE order_items SET unit_price = 4.25 WHERE order_item_id = $1', [line.order_item_id]);
+  res = await send(`/portal/orders/${id}/save`, { job_name: 'Shed', sections: [{ area: 'roof', items: [{ order_item_id: line.order_item_id, product_id: pbr, pieces: 6, length_in: 120, unit_price: 1 }] }] });
+  assert.ok((await res.json()).ok);
+  const { rows: [after] } = await query('SELECT pieces, unit_price FROM order_items WHERE order_item_id = $1', [line.order_item_id]);
+  assert.deepStrictEqual([after.pieces, after.unit_price], [6, 4.25]);
+  assert.match(await (await fetch(`${base}/portal/orders/${id}`, { headers: { cookie } })).text(), /Edit quote/);
+  assert.strictEqual((await send(`/portal/orders/${id}/save`, { sections: [] }, otherCookie)).status, 400);
+  await query("UPDATE orders SET customer_decision = 'approved' WHERE order_id = $1", [id]);
+  assert.strictEqual((await send(`/portal/orders/${id}/save`, { sections: [] })).status, 400);
+
+  // Drawings: theirs only, and not ours.
+  res = await fetch(`${base}/portal/orders/${id}/files?line=${line.order_item_id}`, { method: 'POST',
+    headers: { cookie, 'Content-Type': 'image/png', 'X-Filename': 'trim.png' }, body: Buffer.from('fakepng') });
+  out = await res.json();
+  assert.ok(out.ok, out.error);
+  assert.strictEqual((await fetch(`${base}/portal/orders/${id}/files/${out.attachment_id}`, { headers: { cookie } })).status, 200);
+  assert.strictEqual((await fetch(`${base}/portal/orders/${id}/files/${out.attachment_id}`, { headers: { cookie: otherCookie } })).status, 404);
+  const { rows: [staff] } = await query(`INSERT INTO order_attachments (order_id, filename, content_type, byte_size, data)
+    VALUES ($1, 'shop.png', 'image/png', 3, '\\x010203') RETURNING attachment_id`, [id]);
+  assert.strictEqual((await fetch(`${base}/portal/orders/${id}/files/${staff.attachment_id}`, { headers: { cookie } })).status, 404);
+  assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /trim\.png[\s\S]*\(customer\)/);
+
+  // Order again opens a new quote with the same lines.
+  await query("UPDATE orders SET status = 'completed', need_by = current_date, ordered_on = current_date, completed_at = now() WHERE order_id = $1", [id]);
+  res = await fetch(`${base}/portal/orders/${id}/again`, { headers: { cookie } });
+  assert.match(await res.text(), /New quote \(from/);
+});

@@ -364,3 +364,6 @@ tr.invite-row td { border-top: 0; padding-top: 0; }
 @media print { .portal-bar, .portal-foot, ol.steps { display: none; } }
 .portal-answer .form-grid { grid-template-columns: 1fr 1fr; }
 @media (max-width: 700px) { .portal .sheet { overflow-x: auto; } .portal .sheet table.lines { min-width: 560px; } }
+/* Portal quote form for a customer who doesn't see line prices. */
+.hide-prices .price-cell, .hide-prices .amount, .hide-prices .price-col, .hide-prices .amount-col { display: none; }
+.order-form input.price[readonly] { border-color: transparent; background: transparent; }

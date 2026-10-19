@@ -22,6 +22,21 @@ async function quoteAnswered(orderId) {
   await mail.send({ to: await mail.managers(), subject: `Quote ${o.order_number} ${verb} by ${o.display_name}`, text, kind: `quote_${verb}`, orderId });
 }
 
+// A customer wrote a quote in the portal.
+async function quoteCreated(orderId) {
+  const { rows: [o] } = await query(`
+    SELECT o.order_number, o.job_name, o.created_by, o.internal_notes, c.display_name
+    FROM orders o JOIN customers c USING (customer_id) WHERE o.order_id = $1`, [orderId]);
+  if (!o) return;
+  const text = [
+    `${o.display_name} started quote ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''} in the customer portal (${o.created_by}).`,
+    ...(o.internal_notes ? [o.internal_notes] : []),
+    '', 'It is priced from the price list. They can approve it from the portal; check it when they do.',
+    '', `${site()}/orders/${orderId}`,
+  ].join('\n');
+  await mail.send({ to: await mail.managers(), subject: `New quote ${o.order_number} from ${o.display_name}`, text, kind: 'quote_created', orderId });
+}
+
 // An order is packed and ready: tell the customer (their portal login, or the order's email).
 async function orderReady(orderId) {
   const { rows: [o] } = await query(`
@@ -61,6 +76,6 @@ async function passwordLink(login, url, { reset = false } = {}) {
 const later = (fn) => (...args) => { fn(...args).catch((err) => console.error('Notice failed:', err.message)); };
 
 module.exports = {
-  quoteAnswered: later(quoteAnswered), orderReady: later(orderReady), passwordLink,
-  now: { quoteAnswered, orderReady },
+  quoteAnswered: later(quoteAnswered), quoteCreated: later(quoteCreated), orderReady: later(orderReady), passwordLink,
+  now: { quoteAnswered, quoteCreated, orderReady },
 };
