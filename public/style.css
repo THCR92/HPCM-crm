@@ -373,3 +373,4 @@ tr.invite-row td { border-top: 0; padding-top: 0; }
 .photos .photo-cell img { width: 160px; height: 120px; }
 .photo-btn { cursor: pointer; }
 tr.needs-photo td:first-child { box-shadow: inset 4px 0 0 #e0a100; }
+.handoff-info { max-width: 760px; }

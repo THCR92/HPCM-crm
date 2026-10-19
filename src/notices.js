@@ -1,6 +1,7 @@
 // Emails the CRM sends on its own (see src/mail.js for how sending is set up).
 const { query } = require('./db');
 const mail = require('./mail');
+const { SHOP_HOURS } = require('./routes/portal-shared');
 
 const site = () => (process.env.PUBLIC_URL || 'https://www.hpcmcrm.net').replace(/\/$/, '');
 
@@ -54,7 +55,7 @@ async function orderReady(orderId) {
     `Hello${portal ? ` ${o.login_name.split(' ')[0]}` : ''},`, '',
     o.fulfillment === 'delivery'
       ? `Your ${what} is ready, and we'll be in touch to set up delivery.`
-      : `Your ${what} is ready for pickup at our shop, 805 E Fox Farm Rd Unit B, Cheyenne.`,
+      : `Your ${what} is ready for pickup at our shop, 805 E Fox Farm Rd Unit B, Cheyenne. We're open ${SHOP_HOURS}.`,
     ...(portal ? ['', `See the order and the photos of each line here: ${site()}/portal/orders/${orderId}`] : []),
   ].join('\n');
   await mail.send({ to, subject: `${o.order_number} is ready${o.fulfillment === 'delivery' ? '' : ' for pickup'}`, text, kind: 'order_ready', orderId });

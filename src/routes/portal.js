@@ -15,7 +15,7 @@ const {
   loadOrder, customerSheet, loadCatalog, saveOrder, dbMessage, UserError, jsonForScript,
   ATTACH_TYPES, ATTACH_MAX, fileSize, isImage,
 } = require('./orders');
-const { INVITE_DAYS, DECLINE_REASONS } = require('./portal-shared');
+const { INVITE_DAYS, DECLINE_REASONS, SHOP_HOURS, SHOP_ADDRESS, SHOP_MAP } = require('./portal-shared');
 const mail = require('../mail');
 const proof = require('../proof');
 const notices = require('../notices');
@@ -101,8 +101,8 @@ function page(login, { title, body, scripts }) {
         <form method="post" action="/portal/logout" class="inline"><button class="linkish">Sign out</button></form></div>` : ''}
     </header>
     <div class="portal">${body}</div>
-    <footer class="portal-foot muted small">High Plains Custom Metal · 805 E Fox Farm Rd Unit B, Cheyenne, WY 82007 ·
-      <a href="tel:+13073316449">${SHOP_PHONE}</a></footer>`,
+    <footer class="portal-foot muted small">High Plains Custom Metal · <a href="${SHOP_MAP}" target="_blank" rel="noopener">${SHOP_ADDRESS}</a> ·
+      <a href="tel:+13073316449">${SHOP_PHONE}</a> · Open ${SHOP_HOURS}</footer>`,
   });
 }
 
@@ -312,6 +312,23 @@ router.get('/portal', signedIn, async (req, res) => {
   }));
 });
 
+// Where and when they get it: pickup at the shop, or delivery to the job.
+function handoffBox(o) {
+  if (['quote', 'cancelled'].includes(o.status)) return '';
+  const when = (t) => new Date(t).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' });
+  if (o.handed_off_at) {
+    return html`<div class="card handoff-info no-print"><strong>${o.handoff_method === 'delivery' ? 'Delivered' : 'Picked up'}</strong>
+      ${when(o.handed_off_at)}${o.received_by ? `, received by ${o.received_by}` : ''}.</div>`;
+  }
+  const ready = o.status === 'ready';
+  return html`<div class="card handoff-info no-print">${o.fulfillment === 'delivery'
+    ? html`<strong>${ready ? 'Ready to deliver.' : 'Delivery'}</strong> To ${o.job_address_text || 'the job address on file'}${
+      o.need_by ? html`, needed by ${date(o.need_by)}` : ''}. ${ready ? 'We\'ll call to set up a time.' : ''}`
+    : html`<strong>${ready ? 'Ready for pickup.' : 'Pickup'}</strong> At our shop, <a href="${SHOP_MAP}" target="_blank" rel="noopener">${SHOP_ADDRESS}</a>,
+      ${SHOP_HOURS}.${o.need_by && !ready ? html` We're aiming to have it ready by ${date(o.need_by)}.` : ''}`}
+    Questions? Call ${SHOP_PHONE}.</div>`;
+}
+
 // ---- one quote or order -----------------------------------------------------------------
 async function customerOrder(l, id) {
   const { rows: [ok] } = await query(`SELECT 1 FROM orders o WHERE o.order_id = $2 AND ${VISIBLE}`, [l.customer_id, Number(id) || 0]);
@@ -371,6 +388,7 @@ router.get('/portal/orders/:id(\\d+)', signedIn, async (req, res) => {
     </div>
     ${req.query.error ? html`<div class="alert no-print">${req.query.error}</div>` : ''}
     <div class="no-print">${steps(o)}</div>
+    ${handoffBox(o)}
     ${decided || ''}
     ${customerSheet(o, { linePrices: l.portal_line_prices, totals: l.portal_totals })}
     ${answer}

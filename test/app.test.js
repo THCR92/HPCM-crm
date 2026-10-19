@@ -1406,6 +1406,7 @@ test('length check photos: every line needs one before Ready; the customer sees 
   const cookie = `hpcm_portal=${sid}`;
   const page = await (await fetch(`${base}/portal/orders/${id}`, { headers: { cookie } })).text();
   assert.match(page, /Photos of your order/);
+  assert.match(page, /Ready for pickup\.<\/strong> At our shop[\s\S]*Monday to Friday, 8 am to 4 pm/);
   assert.strictEqual((await fetch(`${base}/portal/orders/${id}/files/${out.attachment_id}`, { headers: { cookie } })).status, 200);
 
   // Production can take a bad photo off.
