@@ -732,11 +732,12 @@ router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
     `Attached is ${docName.toLowerCase()} ${o.order_number}${o.job_name ? ` for ${o.job_name}` : ''}.`,
     `Total: ${money(o.grand_total)}${o.tax_amount ? ' including sales tax' : ''}.`,
     ...(isQuote ? [`Prices are good until ${date(o.valid_until)}.`] : []),
-    '', 'Thank you,', 'High Plains Custom Metal', '(307) 331-6449',
+    '', 'Thank you,', req.user.full_name, 'High Plains Custom Metal', '(307) 331-6449',
   ].join('\n');
-  // Gmail's compose page, filled in; the PDF still has to be attached by hand.
+  // Gmail's compose page, filled in, in the Gmail account of whoever is signed in to the CRM
+  // (authuser picks it when the browser is signed in to several); the PDF is attached by hand.
   const gmail = `https://mail.google.com/mail/?${new URLSearchParams({
-    view: 'cm', fs: '1', to: email || '', su: subject, body })}`;
+    authuser: req.user.email, view: 'cm', fs: '1', to: email || '', su: subject, body })}`;
   res.send(layout({
     title: `${docName} ${o.order_number} (customer)`, active: '/orders',
     body: html`

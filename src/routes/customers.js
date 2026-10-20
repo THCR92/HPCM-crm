@@ -100,7 +100,7 @@ async function portalCard(c, req) {
     const body = `Hi ${l.full_name.split(' ')[0]},\n\nYou can now see your quotes and orders with High Plains Custom Metal online, `
       + `and approve quotes there. Open this link to set your password (it works for ${INVITE_DAYS} days):\n\n${url}\n\n`
       + 'After that, sign in any time at ' + `${req.protocol}://${req.get('host')}/portal` + '\n\nThank you,\nHigh Plains Custom Metal\n(307) 331-6449';
-    const gmail = `https://mail.google.com/mail/?${new URLSearchParams({ view: 'cm', fs: '1', to: l.email, su: subject, body })}`;
+    const gmail = `https://mail.google.com/mail/?${new URLSearchParams({ authuser: req.user.email, view: 'cm', fs: '1', to: l.email, su: subject, body })}`;
     return html`<div class="invite-link">
       <span class="muted small">${l.password_hash ? 'Password reset link' : 'Invite link'}, good until ${date(l.invite_expires_at)}
         (making a new one stops this one working):</span>
