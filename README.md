@@ -175,6 +175,13 @@ works out the square feet, linear feet and price for every line.
     deposit and the CRM's sales tax. Price list items are added to QuickBooks as products the first
     time they are invoiced. With the real company the order then reads Invoiced and is locked; with
     the test (sandbox) company it stays Completed.
+  - estimates written in QuickBooks (from when the connection was made on) come in as quotes, by
+    webhook or the same 10-minute check. A line whose QuickBooks item is a piece-priced CRM product
+    becomes that product; any other line becomes "Item from QuickBooks" (`QBO-ITEM`) with the item's
+    name, quantity and rate. A "Delivery" item goes to the delivery charge, a discount line to the
+    discount. Changes to the estimate keep coming through until someone saves the quote in the CRM;
+    after that the CRM's version stands. The invoice links the estimate (closing it in QuickBooks) and
+    keeps each line's QuickBooks item (migration 036).
   Customers and orders show where they stand, with a "Send to QuickBooks" button to retry.
   QuickBooks works out the tax from the invoice's ship-to address: the shop for pickups, the job's
   saved address for deliveries. While the test company is connected, Admin > QuickBooks lists the

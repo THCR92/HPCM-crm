@@ -398,6 +398,129 @@ async function syncAllCustomers() {
   return { pulled, pushed };
 }
 
+// ---- estimates (QuickBooks -> CRM quotes) ----------------------------------------------
+// Tyler, 2026-10-21: an estimate written in QuickBooks becomes a quote here. Lines whose
+// QuickBooks item is an each-priced CRM product come in as that product; anything else
+// (panels by the foot, items the CRM doesn't have) comes in as "Item from QuickBooks"
+// with the item's name, at the estimate's quantity and rate, so the total matches.
+// Once someone edits the quote in the CRM, the CRM's version stands; until then,
+// changes to the estimate in QuickBooks come through.
+const FROM_QB = 'QuickBooks';
+
+async function pullEstimate(e) {
+  const { rows: [have] } = await query('SELECT order_id, status, updated_by FROM orders WHERE qbo_estimate_id = $1', [e.Id]);
+  if (e.status === 'Deleted') return have ? have.order_id : null;
+  if (have && (have.status !== 'quote' || have.updated_by !== FROM_QB)) return have.order_id;
+  if (!have && e.TxnStatus && e.TxnStatus !== 'Pending') return null;
+  const ref = e.CustomerRef && e.CustomerRef.value;
+  if (!ref) return null;
+  // A sub-customer (job) belongs to its parent customer; its name becomes the job name.
+  let customerId = (await query('SELECT customer_id FROM customers WHERE qbo_customer_id = $1', [ref])).rows[0]?.customer_id;
+  let jobName = null;
+  if (!customerId) {
+    const q = (await api('GET', `customer/${encodeURIComponent(ref)}`)).Customer;
+    if (q && q.ParentRef) {
+      jobName = blank(q.DisplayName);
+      customerId = (await query('SELECT customer_id FROM customers WHERE qbo_customer_id = $1', [q.ParentRef.value])).rows[0]?.customer_id
+        || await pullCustomerById(q.ParentRef.value);
+    } else if (q) customerId = await pullSafely(q);
+  }
+  if (!customerId) throw new QboError(`Estimate ${e.DocNumber || e.Id}: its customer couldn't be brought into the CRM.`);
+
+  const { rows: products } = await query(`SELECT product_id, name, qbo_item_id, qbo_item_name, pricing_unit::text AS unit, sku
+    FROM products WHERE active`);
+  const generic = products.find((p) => p.sku === 'QBO-ITEM');
+  const each = products.filter((p) => ['each', 'bag', 'roll'].includes(p.unit));
+  const lower = (v) => String(v || '').trim().toLowerCase();
+  const items = [];
+  let delivery = 0;
+  let discount = 0;
+  for (const l of e.Line || []) {
+    if (l.DetailType === 'DiscountLineDetail') { discount += Number(l.Amount) || 0; continue; }
+    if (l.DetailType !== 'SalesItemLineDetail') continue;
+    const d = l.SalesItemLineDetail || {};
+    const itemId = d.ItemRef && d.ItemRef.value;
+    const itemName = d.ItemRef && d.ItemRef.name;
+    const amount = Number(l.Amount) || 0;
+    if (/deliver/i.test(itemName || '')) { delivery += amount; continue; }
+    if (!(amount > 0)) continue;
+    const qty = Number(d.Qty) > 0 ? Number(d.Qty) : 1;
+    const price = Number(d.Qty) > 0 && d.UnitPrice !== undefined ? Number(d.UnitPrice) : amount;
+    const match = each.find((p) => itemId && p.qbo_item_id === String(itemId))
+      || each.find((p) => itemName && [lower(p.qbo_item_name), lower(p.name)].includes(lower(itemName)));
+    const product = match || generic;
+    const desc = [match ? null : itemName, l.Description].filter(Boolean).join(': ');
+    items.push({
+      product_id: product.product_id, pieces: qty, unit_price: Math.round(price * 10000) / 10000,
+      description: desc && desc !== (match && match.name) ? desc.slice(0, 4000) : null, qbo_item_id: itemId ? String(itemId) : null,
+    });
+  }
+  if (!items.length) return have ? have.order_id : null;
+  const { rows: [c] } = await query('SELECT tax_exempt FROM customers WHERE customer_id = $1', [customerId]);
+  const { saveOrder } = require('./routes/orders');
+  const tax = (await query("SELECT value FROM app_settings WHERE key = 'sales_tax_rate'")).rows[0];
+  const body = {
+    customer_id: customerId,
+    job_name: jobName,
+    contact_email: blank(e.BillEmail && e.BillEmail.Address),
+    fulfillment: 'pickup',
+    delivery_charge: Math.round(delivery * 100) / 100,
+    discount_amount: Math.round(discount * 100) / 100,
+    tax_rate: tax ? tax.value : 0,
+    tax_exempt: c.tax_exempt || null,
+    customer_memo: blank(e.CustomerMemo && e.CustomerMemo.value),
+    internal_notes: [`From QuickBooks estimate ${e.DocNumber || e.Id}`, blank(e.PrivateNote)].filter(Boolean).join('\n'),
+    auto_screws: false, closures: 'none', accessories_checked: true,
+    sections: [{ area: 'other', label: `QuickBooks estimate ${e.DocNumber || ''}`.trim(), items }],
+  };
+  const orderId = await saveOrder(have ? have.order_id : null, body, { who: FROM_QB, extra: { qbo_estimate_id: String(e.Id) } });
+  if (e.ExpirationDate) await query('UPDATE orders SET quote_expires_on = $1 WHERE order_id = $2', [e.ExpirationDate, orderId]);
+  return orderId;
+}
+
+// One estimate that won't come in doesn't stop the rest; it goes on the QuickBooks activity list.
+async function pullEstimateSafely(e) {
+  try {
+    return await pullEstimate(e);
+  } catch (err) {
+    await query(`INSERT INTO qbo_sync_log (entity, local_table, operation, request_id, qbo_id, succeeded, error, response_body)
+      VALUES ('Estimate', 'orders', 'pull', gen_random_uuid(), $1, false, $2, $3)`,
+    [e.Id, `Estimate ${e.DocNumber || e.Id}: ${err.message}`, e]);
+    return null;
+  }
+}
+
+async function pullEstimateById(qbId) {
+  let e;
+  try {
+    e = (await api('GET', `estimate/${encodeURIComponent(qbId)}`)).Estimate;
+  } catch (err) {
+    if (err.status === 400 || err.status === 404) e = { Id: String(qbId), status: 'Deleted' };
+    else throw err;
+  }
+  return pullEstimateSafely(e);
+}
+
+// Estimates added or changed in QuickBooks since the last check.
+async function checkEstimates() {
+  const conn = await connection();
+  if (!conn) return 0;
+  const started = new Date();
+  const since = conn.estimates_checked_at && Date.now() - new Date(conn.estimates_checked_at) < 29 * 86400000
+    ? new Date(conn.estimates_checked_at) : null;
+  let changed = 0;
+  if (since) {
+    const out = await api('GET', `cdc?entities=Estimate&changedSince=${encodeURIComponent(since.toISOString())}`);
+    for (const r of out.CDCResponse || []) {
+      for (const qr of r.QueryResponse || []) {
+        for (const e of qr.Estimate || []) { await pullEstimateSafely(e); changed += 1; }
+      }
+    }
+  }
+  await query('UPDATE qbo_connection SET estimates_checked_at = $1 WHERE id = 1', [started]);
+  return changed;
+}
+
 // ---- items and invoices ------------------------------------------------------------------
 async function incomeAccountId() {
   const conn = await connection();
@@ -440,7 +563,7 @@ const denverDate = (d) => new Date(d || Date.now()).toLocaleDateString('en-CA', 
 
 async function invoiceBody(o) {
   const { rows: lines } = await query(`
-    SELECT l.*, oi.line_discount, p.product_id, p.category, p.qbo_item_name, p.taxable AS product_taxable
+    SELECT l.*, oi.line_discount, oi.qbo_item_id AS line_qbo_item_id, p.product_id, p.category, p.qbo_item_name, p.taxable AS product_taxable
     FROM v_order_invoice_lines l
     JOIN order_items oi USING (order_item_id)
     JOIN products p ON p.product_id = oi.product_id
@@ -456,7 +579,8 @@ async function invoiceBody(o) {
       // Line discounts go on the discount line, so each line is exactly qty x price.
       Amount: round2(Number(l.qbo_qty) * Number(l.qbo_unit_price)),
       SalesItemLineDetail: {
-        ItemRef: { value: await productItem(l) },
+        // A line from a QuickBooks estimate keeps its QuickBooks item.
+        ItemRef: { value: l.line_qbo_item_id || await productItem(l) },
         Qty: Number(l.qbo_qty), UnitPrice: Number(l.qbo_unit_price), TaxCodeRef: taxCode(l.taxable),
       },
     });
@@ -483,6 +607,8 @@ async function invoiceBody(o) {
     PrivateNote: cut([`From the CRM, order ${o.order_number}`, o.internal_notes].filter(Boolean).join('\n'), 4000),
     ...(email ? { BillEmail: { Address: cut(email, 100) } } : {}),
     ...(Number(o.deposit_amount) > 0 ? { Deposit: round2(o.deposit_amount) } : {}),
+    // Invoicing a quote that came from a QuickBooks estimate closes that estimate.
+    ...(o.qbo_estimate_id ? { LinkedTxn: [{ TxnId: o.qbo_estimate_id, TxnType: 'Estimate' }] } : {}),
     // The CRM's tax (5% on taxable materials) is what the customer was quoted.
     TxnTaxDetail: { TotalTax: round2(o.tax_amount) },
   };
@@ -635,17 +761,18 @@ function verifyWebhook(rawBody, signature) {
 
 // Customer ids in a webhook, in either of QuickBooks' formats (the older
 // eventNotifications one, or the newer list of events).
-function webhookCustomers(payload, realmId) {
+function webhookIds(payload, realmId, entity = 'Customer') {
   const ids = new Set();
   for (const n of (payload && payload.eventNotifications) || []) {
     if (String(n.realmId) !== String(realmId)) continue;
     for (const e of (n.dataChangeEvent && n.dataChangeEvent.entities) || []) {
-      if (e.name === 'Customer' && e.id) ids.add(String(e.id));
+      if (e.name === entity && e.id) ids.add(String(e.id));
     }
   }
+  const type = new RegExp(`^qbo\\.${entity.toLowerCase()}\\.`, 'i');
   for (const e of Array.isArray(payload) ? payload : []) {
     if (String(e.intuitaccountid) !== String(realmId)) continue;
-    if (/^qbo\.customer\./i.test(e.type || '') && e.intuitentityid) ids.add(String(e.intuitentityid));
+    if (type.test(e.type || '') && e.intuitentityid) ids.add(String(e.intuitentityid));
   }
   return [...ids];
 }
@@ -656,14 +783,15 @@ async function handleWebhook(rawBody, signature) {
   if (!conn) return true;
   let payload;
   try { payload = JSON.parse(rawBody.toString('utf8')); } catch { return true; }
-  for (const id of webhookCustomers(payload, conn.realm_id)) later(() => pullCustomerById(id));
+  for (const id of webhookIds(payload, conn.realm_id)) later(() => pullCustomerById(id));
+  for (const id of webhookIds(payload, conn.realm_id, 'Estimate')) later(() => pullEstimateById(id));
   return true;
 }
 
 // The catch-up check, every few minutes while the app runs. It also keeps the
 // QuickBooks sign-in fresh (it lapses after 100 days without use).
 function startChecks() {
-  const tick = () => whenConnected(checkCustomers).catch(() => {});
+  const tick = () => whenConnected(async () => { await checkCustomers(); await checkEstimates(); }).catch(() => {});
   setTimeout(tick, 30 * 1000).unref();
   setInterval(tick, CHECK_EVERY_MS).unref();
 }
@@ -671,6 +799,6 @@ function startChecks() {
 module.exports = {
   io, config, configured, redirectUri, connection, connected, later, idle,
   customerChanged, orderCompleted, invoiceStillOpen, pushCustomer, pushInvoice, pullCustomer, pullCustomerById,
-  checkCustomers, syncAllCustomers, connectUrl, finishConnect, disconnect, handleWebhook, startChecks,
+  checkCustomers, checkEstimates, pullEstimate, pullEstimateById, syncAllCustomers, connectUrl, finishConnect, disconnect, handleWebhook, startChecks,
   QboError, API_BASE,
 };

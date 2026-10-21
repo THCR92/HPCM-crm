@@ -233,6 +233,7 @@ function parseSections(b, productsById) {
         unit_price: price,
         description: text(it.description, 4000),
         screw_option: text(it.screw_option),
+        qbo_item_id: text(it.qbo_item_id),
       };
     });
     return {
@@ -376,7 +377,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
       for (const it of s.items) {
         lineNo += 1;
         const vals = [sectionId, lineNo, it.product.id, it.color_id, it.pieces, it.length_in,
-          it.width_in, it.unit_price, it.description, it.screw_option, !!it.is_added];
+          it.width_in, it.unit_price, it.description, it.screw_option, !!it.is_added, it.qbo_item_id || null];
         let itemId = it.order_item_id;
         if (itemId) {
           const r = await db.query(`
@@ -386,6 +387,8 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
                                             JOIN panel_profiles pp USING (profile_id)
                                             WHERE p.product_id = $3)),
                    unit_price = $8, description = $9, screw_option = $10, is_added = $11,
+                   -- The QuickBooks item a line came from stays with it while it's the same product.
+                   qbo_item_id = CASE WHEN oi.product_id = $3 THEN COALESCE($12, oi.qbo_item_id) ELSE $12 END,
                    pricing_unit = p.pricing_unit, taxable = p.taxable,
                    per_length_in = CASE WHEN p.pricing_unit = 'each' THEN p.standard_length_in END,
                    per_width_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
@@ -393,15 +396,15 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
                    width_add_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
                                        THEN (fn_sized_trim_basis(p.product_id, $7::numeric)).width_add END
             FROM products p
-            WHERE p.product_id = $3 AND oi.order_item_id = $12 AND oi.order_id = $13`,
+            WHERE p.product_id = $3 AND oi.order_item_id = $13 AND oi.order_id = $14`,
           [...vals, itemId, orderId]);
           if (!r.rowCount) itemId = null;
         }
         if (!itemId) {
           const { rows: [r] } = await db.query(`
             INSERT INTO order_items (order_id, section_id, line_no, product_id, color_id, pieces,
-                                     length_in, width_in, unit_price, description, screw_option, is_added)
-            VALUES ($12, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING order_item_id`, [...vals, orderId]);
+                                     length_in, width_in, unit_price, description, screw_option, is_added, qbo_item_id)
+            VALUES ($13, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING order_item_id`, [...vals, orderId]);
           itemId = r.order_item_id;
         }
         if (it.product.category === 'custom_trim') {

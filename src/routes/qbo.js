@@ -159,6 +159,9 @@ router.get('/admin/quickbooks', need('admin'), async (req, res) => {
         <li>Customers added or changed in QuickBooks show up here within a few minutes. QuickBooks sub-customers (jobs) stay in QuickBooks.</li>
         <li>An order becomes a QuickBooks invoice when it's completed (picked up or delivered), with the same number (HP-…).
           Each line keeps its quantity, length and price; delivery, discount and deposit come along, and so does the CRM's sales tax.</li>
+        <li>Estimates written in QuickBooks show up here as quotes within a few minutes. Items the CRM sells by the piece come in as
+          that item; anything else comes in as "Item from QuickBooks" with its name and price, so the total matches. Once someone
+          changes the quote here, later changes to the estimate in QuickBooks are left alone. Invoicing the order closes the estimate.</li>
         <li>Price list items are added to QuickBooks as products the first time they're invoiced.</li>
       </ul>
     </div>

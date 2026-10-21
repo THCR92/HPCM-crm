@@ -1018,7 +1018,7 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
   const realm = `9130${Date.now()}`;
   const run = Date.now();
   // A pretend QuickBooks company.
-  const qb = { customers: new Map(), items: new Map(), invoices: new Map(), vendors: new Set([`Metal Supplier ${run}`]), next: 1 };
+  const qb = { customers: new Map(), items: new Map(), invoices: new Map(), estimates: new Map(), vendors: new Set([`Metal Supplier ${run}`]), next: 1 };
   const addCustomer = (c) => { const id = String(qb.next++); qb.customers.set(id, { ...c, Id: id, SyncToken: '0', Active: true }); return id; };
   const qbOnly = addCustomer({ DisplayName: `QB Only Roofing ${run}`, PrimaryPhone: { FreeFormNumber: '307-555-0100' },
     BillAddr: { Line1: '1 Main St', City: 'Cheyenne', CountrySubDivisionCode: 'WY', PostalCode: '82001' } });
@@ -1049,10 +1049,10 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     if (path === 'customer') return reply(200, { Customer: save(qb.customers, body) });
     if (path === 'item') return reply(200, { Item: save(qb.items, body) });
     if (path === 'invoice') return reply(200, { Invoice: save(qb.invoices, body) });
-    let m = path.match(/^(customer|invoice)\/(\w+)$/);
+    let m = path.match(/^(customer|invoice|estimate)\/([\w-]+)$/);
     if (m) {
-      const rec = (m[1] === 'customer' ? qb.customers : qb.invoices).get(m[2]);
-      return rec ? reply(200, { [m[1] === 'customer' ? 'Customer' : 'Invoice']: rec })
+      const rec = { customer: qb.customers, invoice: qb.invoices, estimate: qb.estimates }[m[1]].get(m[2]);
+      return rec ? reply(200, { [m[1][0].toUpperCase() + m[1].slice(1)]: rec })
         : reply(400, { Fault: { Error: [{ Message: 'Object Not Found' }] } });
     }
     if (path === 'query') {
@@ -1067,7 +1067,10 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
       }
       if (/from Customer startposition/.test(q)) return reply(200, { QueryResponse: { Customer: [...qb.customers.values()] } });
     }
-    if (path === 'cdc') return reply(200, { CDCResponse: [{ QueryResponse: [{ Customer: [] }] }] });
+    if (path === 'cdc') {
+      if (u.searchParams.get('entities') === 'Estimate') return reply(200, { CDCResponse: [{ QueryResponse: [{ Estimate: [...qb.estimates.values()] }] }] });
+      return reply(200, { CDCResponse: [{ QueryResponse: [{ Customer: [] }] }] });
+    }
     throw new Error(`pretend QuickBooks doesn't know ${opts.method || 'GET'} ${path}`);
   };
   const form = (path, body) => fetch(base + path, { method: 'POST', redirect: 'manual',
@@ -1131,6 +1134,57 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     assert.strictEqual((await fetch(`${base}/qbo/webhook`, { method: 'POST', anonymous: true, body: hook, headers: { 'intuit-signature': sign(hook) } })).status, 200);
     await qbo.idle();
     assert.strictEqual((await query('SELECT phone FROM customers WHERE customer_id = $1', [customerId])).rows[0].phone, '307-555-0222');
+
+    // QuickBooks -> CRM: a new estimate becomes a quote. A CRM item keeps its product; anything else
+    // comes in as "Item from QuickBooks"; delivery and discount go to their own boxes.
+    const E = (n) => `E${n}-${run}`;
+    const boot = (await query("SELECT product_id, name FROM products WHERE sku = 'BOOT-7-PIPE-BOOT'")).rows[0];
+    const estimate = { Id: E(1), DocNumber: '1001', TxnStatus: 'Pending', CustomerRef: { value: qbOnly }, ExpirationDate: '2030-02-01',
+      CustomerMemo: { value: 'Thanks!' }, Line: [
+        { DetailType: 'SalesItemLineDetail', Amount: 25, SalesItemLineDetail: { ItemRef: { value: 'Q50', name: boot.name }, Qty: 10, UnitPrice: 2.5 } },
+        { DetailType: 'SalesItemLineDetail', Amount: 80, Description: 'Gold leaf', SalesItemLineDetail: { ItemRef: { value: 'Q51', name: 'Custom Widget' }, Qty: 2, UnitPrice: 40 } },
+        { DetailType: 'SalesItemLineDetail', Amount: 50, SalesItemLineDetail: { ItemRef: { value: 'Q52', name: 'Delivery' }, Qty: 1, UnitPrice: 50 } },
+        { DetailType: 'SubTotalLineDetail', Amount: 155 },
+        { DetailType: 'DiscountLineDetail', Amount: 5, DiscountLineDetail: { PercentBased: false } },
+      ] };
+    qb.estimates.set(E(1), estimate);
+    const estHook = (id) => JSON.stringify({ eventNotifications: [{ realmId: realm, dataChangeEvent: { entities: [{ name: 'Estimate', id, operation: 'Update' }] } }] });
+    const sendHook = async (h) => { await fetch(`${base}/qbo/webhook`, { method: 'POST', anonymous: true, body: h, headers: { 'intuit-signature': sign(h) } }); await qbo.idle(); };
+    await sendHook(estHook(E(1)));
+    const quoteFromQb = async () => (await query(`SELECT o.order_id, o.status, o.created_by, o.customer_id, o.quote_expires_on::text AS expires,
+        t.lines_subtotal, t.delivery_charge, t.discount_amount FROM orders o JOIN v_order_totals t USING (order_id) WHERE o.qbo_estimate_id = $1`, [E(1)])).rows[0];
+    let eq = await quoteFromQb();
+    assert.deepStrictEqual({ ...eq, order_id: undefined }, { order_id: undefined, status: 'quote', created_by: 'QuickBooks', customer_id: pulled.customer_id,
+      expires: '2030-02-01', lines_subtotal: 105, delivery_charge: 50, discount_amount: 5 });
+    const estLines = async () => (await query(`SELECT p.sku, oi.pieces::float AS pieces, oi.unit_price::float AS price, oi.description, oi.qbo_item_id
+      FROM order_items oi JOIN products p USING (product_id) WHERE oi.order_id = $1 ORDER BY oi.qbo_item_id`, [eq.order_id])).rows;
+    assert.deepStrictEqual(await estLines(), [
+      { sku: 'BOOT-7-PIPE-BOOT', pieces: 10, price: 2.5, description: null, qbo_item_id: 'Q50' },
+      { sku: 'QBO-ITEM', pieces: 2, price: 40, description: 'Custom Widget: Gold leaf', qbo_item_id: 'Q51' }]);
+    // Changed in QuickBooks before anyone touches it here: the quote follows.
+    estimate.Line[0] = { ...estimate.Line[0], Amount: 30, SalesItemLineDetail: { ...estimate.Line[0].SalesItemLineDetail, Qty: 12 } };
+    await sendHook(estHook(E(1)));
+    assert.strictEqual((await estLines())[0].pieces, 12);
+    // Once changed in the CRM, the CRM's version stands.
+    await query("UPDATE orders SET updated_by = 'Tyler' WHERE order_id = $1", [eq.order_id]);
+    estimate.Line[0] = { ...estimate.Line[0], Amount: 50, SalesItemLineDetail: { ...estimate.Line[0].SalesItemLineDetail, Qty: 20 } };
+    await sendHook(estHook(E(1)));
+    assert.strictEqual((await estLines())[0].pieces, 12);
+    // The regular check finds new estimates too; closed ones are left alone.
+    qb.estimates.set(E(2), { ...estimate, Id: E(2), DocNumber: '1002' });
+    qb.estimates.set(E(3), { ...estimate, Id: E(3), DocNumber: '1003', TxnStatus: 'Closed' });
+    await query("UPDATE qbo_connection SET estimates_checked_at = now() - interval '1 hour'");
+    await qbo.checkEstimates();
+    assert.deepStrictEqual((await query('SELECT qbo_estimate_id FROM orders WHERE qbo_estimate_id = ANY($1)', [[E(2), E(3)]])).rows, [{ qbo_estimate_id: E(2) }]);
+    // Invoicing it links (and so closes) the estimate, keeping the estimate's items.
+    await query("UPDATE orders SET need_by = '2030-01-01' WHERE order_id = $1", [eq.order_id]);
+    await form(`/orders/${eq.order_id}/status`, { status: 'confirmed' });
+    await addPhotos(eq.order_id);
+    await form(`/orders/${eq.order_id}/status`, { status: 'completed' });
+    await qbo.idle();
+    const estInv = qb.invoices.get((await query('SELECT qbo_invoice_id FROM orders WHERE order_id = $1', [eq.order_id])).rows[0].qbo_invoice_id);
+    assert.deepStrictEqual(estInv.LinkedTxn, [{ TxnId: E(1), TxnType: 'Estimate' }]);
+    assert.deepStrictEqual(estInv.Line.filter((l) => l.SalesItemLineDetail).slice(0, 2).map((l) => l.SalesItemLineDetail.ItemRef.value), ['Q50', 'Q51']);
 
     // A completed order becomes an invoice with the same number, lines, delivery and the CRM's tax.
     const res = await post('/orders', { customer_id: pulled.customer_id, need_by: '2030-01-01', job_name: 'Barn', po_number: 'PO-7',
