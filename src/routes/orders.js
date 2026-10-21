@@ -90,7 +90,7 @@ async function loadCatalog() {
            p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
            pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name,
-           pp.closure_product_id AS closure_id, pp.vented_closure_product_id AS vented_closure_id
+           pp.closure_product_id AS closure_id, pp.outer_closure_product_id AS outer_closure_id, pp.vented_closure_product_id AS vented_closure_id
     FROM products p
     LEFT JOIN v_current_prices cp USING (product_id)
     LEFT JOIN panel_profiles pp USING (profile_id)
@@ -314,7 +314,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.taxable, p.max_length_in,
            p.girth_in AS girth, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov,
            pp.fastening::text AS fastening, p.standard_length_in,
-           pp.closure_product_id AS closure_id, pp.vented_closure_product_id AS vented_closure_id, cp.unit_price AS price
+           pp.closure_product_id AS closure_id, pp.outer_closure_product_id AS outer_closure_id, pp.vented_closure_product_id AS vented_closure_id, cp.unit_price AS price
     FROM products p LEFT JOIN panel_profiles pp USING (profile_id) LEFT JOIN v_current_prices cp USING (product_id)`);
   const productsById = new Map(prodRows.map((p) => [p.id, p]));
   const sections = await withScrews(parseSections(body, productsById), header, productsById);

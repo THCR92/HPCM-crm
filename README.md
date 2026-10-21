@@ -69,8 +69,9 @@ works out the square feet, linear feet and price for every line.
   2', using the same screw as the panels. Trim screws match the trim color and are their own lines;
   the quote picks which screws trim gets (starting from its panels). Totals round up to bags of 250.
   Untick "Figure screws automatically" to type them in instead.
-- **Closures**: new quotes add 1 inside and 1 outside closure for every PBR panel (PBR Closure) and
-  Tuff Rib panel (Inner/Outer Closure), in their own Closures section. Each quote (in the shop or the
+- **Closures**: new quotes add 1 inside and 1 outside closure for every PBR/R or Tuff Rib panel, as
+  separate lines per profile (PBR/R Panel Inner Closure, PBR/R Panel Outer Closure, Tuff Rib Inner
+  Closure, Tuff Rib Outer Closure; migration 037), in their own Closures section. Each quote (in the shop or the
   customer portal) picks Standard, Vented (the outside closure is "Vented Closure (through fastener)")
   or No closures. Quotes made before this start on No closures. In the shop (not the portal) the
   figured counts can be changed on the quote (0 takes a line off; "Use 48" puts it back). Screws and

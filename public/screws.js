@@ -170,9 +170,10 @@
     return { options: [...new Set(own.map((r) => r.option_label))], usual: def ? def.option_label : null };
   }
 
-  // Closures for through-fastener panels: 1 inside and 1 outside for every panel piece.
+  // Closures for through-fastener panels: 1 inside and 1 outside for every panel piece,
+  // each on its own line (Tyler: an Inner Closure and an Outer Closure for each profile).
   // choice: 'standard' | 'vented' (the outside one is vented, for the ridge) | 'none'.
-  // products: as for figure(), plus closure_id, vented_closure_id and price.
+  // products: as for figure(), plus closure_id (inner), outer_closure_id, vented_closure_id and price.
   function closures(lines, products, choice) {
     if (choice !== 'standard' && choice !== 'vented') return { lines: [], missing: [] };
     const groups = new Map();
@@ -190,12 +191,12 @@
       if (!p || p.category !== 'panel' || p.fastening !== 'through_fastened') continue;
       const pieces = Number(l.pieces);
       if (!(pieces > 0)) continue;
-      const solid = Number(p.closure_id) || null;
-      const vented = Number(p.vented_closure_id) || null;
+      const inner = Number(p.closure_id) || null;
+      const outer = choice === 'vented' ? Number(p.vented_closure_id) || null : Number(p.outer_closure_id) || inner;
       const panel = p.profile_name || p.name;
-      if (!solid || (choice === 'vented' && !vented)) { missing.add(panel); continue; }
-      add(solid, pieces, 'inside', panel);
-      add(choice === 'vented' ? vented : solid, pieces, 'outside', panel);
+      if (!inner || !outer) { missing.add(panel); continue; }
+      add(inner, pieces, 'inside', panel);
+      add(outer, pieces, 'outside', panel);
     }
     const out = [];
     for (const [id, g] of groups) {

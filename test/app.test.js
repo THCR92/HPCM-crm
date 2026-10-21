@@ -661,8 +661,8 @@ test('trim screws: own lines in the trim color, choice per line, quote picks the
 test('closures: 1 inside and 1 outside per PBR or Tuff Rib panel; vented or none per quote', async () => {
   const { rows: [c] } = await query(
     "INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
-  const [pbr, tuff, snap, pbrClos, tuffClos, vented] = await Promise.all(['PNL-PBR-26', 'PNL-TR-26', 'PNL-SL-26',
-    'ACC-PBR-CLOSURE', 'ACC-CLOS-IO', 'ACC-VENTED-CLOSURE-THROUGH-F'].map((sku) => productId(sku)));
+  const [pbr, tuff, snap, pbrIn, pbrOut, tuffIn, tuffOut, vented] = await Promise.all(['PNL-PBR-26', 'PNL-TR-26', 'PNL-SL-26',
+    'ACC-PBR-CLOS-INNER', 'ACC-PBR-CLOS-OUTER', 'ACC-TR-CLOS-INNER', 'ACC-TR-CLOS-OUTER', 'ACC-VENTED-CLOSURE-THROUGH-F'].map((sku) => productId(sku)));
   const price = async (pid) => (await query('SELECT unit_price FROM v_current_prices WHERE product_id = $1', [pid])).rows[0].unit_price;
   const order = (closures, sectionId) => ({
     customer_id: c.customer_id, closures, accessories_checked: true,
@@ -681,10 +681,12 @@ test('closures: 1 inside and 1 outside per PBR or Tuff Rib panel; vented or none
   const closures = async () => (await query(`SELECT oi.product_id, oi.pieces::int, oi.unit_price, oi.description, s.section_id, s.label
     FROM order_items oi JOIN order_sections s USING (section_id) WHERE oi.order_id = $1 AND s.is_auto ORDER BY oi.line_no`, [id])).rows;
   let rows = await closures();
-  // Snap lock gets none; 24 PBR panels -> 48 PBR closures; 6 Tuff Rib -> 12.
-  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.pieces, r.label]), [[pbrClos, 48, 'Closures'], [tuffClos, 12, 'Closures']]);
-  assert.strictEqual(rows[0].unit_price, await price(pbrClos));
-  assert.strictEqual(rows[0].description, '1 inside + 1 outside for each of 24 PBR/R Panel pieces');
+  // Snap lock gets none; 24 PBR panels -> 24 inner + 24 outer PBR closures; 6 Tuff Rib -> 6 + 6, each its own line.
+  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.pieces, r.label]),
+    [[pbrIn, 24, 'Closures'], [pbrOut, 24, 'Closures'], [tuffIn, 6, 'Closures'], [tuffOut, 6, 'Closures']]);
+  assert.strictEqual(rows[0].unit_price, await price(pbrIn));
+  assert.strictEqual(rows[0].description, 'Inside: 1 for each of 24 PBR/R Panel pieces');
+  assert.strictEqual(rows[1].description, 'Outside: 1 for each of 24 PBR/R Panel pieces');
   const { rows: [o] } = await query('SELECT closures, accessories_checked FROM orders WHERE order_id = $1', [id]);
   assert.deepStrictEqual([o.closures, o.accessories_checked], ['standard', true]);
 
@@ -692,7 +694,7 @@ test('closures: 1 inside and 1 outside per PBR or Tuff Rib panel; vented or none
   out = await (await post(`/orders/${id}`, order('vented', rows[0].section_id))).json();
   assert.ok(out.ok, out.error);
   rows = await closures();
-  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.pieces]), [[pbrClos, 24], [vented, 30], [tuffClos, 6]]);
+  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.pieces]), [[pbrIn, 24], [vented, 30], [tuffIn, 6]]);
 
   // None: no closures section at all.
   out = await (await post(`/orders/${id}`, order('none', rows[0].section_id))).json();
@@ -703,11 +705,11 @@ test('closures: 1 inside and 1 outside per PBR or Tuff Rib panel; vented or none
   const universal = await productId('ACC-UNIVERSAL-CLOSURE');
   const withAdded = (o) => ({ ...o, sections: [...o.sections.slice(0, 2),
     { area: 'other', label: 'Closures', auto: true, items: [{ product_id: universal, pieces: 3, unit_price: 2.30 }] }] });
-  out = await (await post(`/orders/${id}`, withAdded({ ...order('standard'), closure_qty: { [pbrClos]: 50, [tuffClos]: 0 } }))).json();
+  out = await (await post(`/orders/${id}`, withAdded({ ...order('standard'), closure_qty: { [pbrIn]: 30, [tuffOut]: 0 } }))).json();
   assert.ok(out.ok, out.error);
   rows = await closures();
-  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.pieces]), [[pbrClos, 50], [universal, 3]]);
-  assert.match(rows[0].description, /\(changed from 48\)$/);
+  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.pieces]), [[pbrIn, 30], [pbrOut, 24], [tuffIn, 6], [universal, 3]]);
+  assert.match(rows[0].description, /\(changed from 24\)$/);
   const { rows: added } = await query('SELECT product_id, is_added FROM order_items WHERE order_id = $1 AND is_added', [id]);
   assert.deepStrictEqual(added.map((r) => r.product_id), [universal]);
 });
