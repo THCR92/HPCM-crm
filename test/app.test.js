@@ -369,7 +369,7 @@ test('trim widths are flat widths; the piece price follows the width ($3.40 per 
   // The shared piece price the form and the portal use.
   const { piecePrice, standardWidth } = require('../public/trim-price');
   const r26 = { price: 44.20, unit: 'each', girth: 14, flat_extra: 1, rate: 3.4 };
-  assert.strictEqual(piecePrice(r26, 14), 44.2);
+  assert.strictEqual(piecePrice(r26, 14), 47.6); // $3.40 x 14" flat, the standard width too
   assert.strictEqual(piecePrice(r26, 25), 85);
   assert.strictEqual(piecePrice(r26, 25, 10), 93.5); // 10% color premium
   const g26 = { price: 38.25, unit: 'each', girth: null, rate: 3.4 };

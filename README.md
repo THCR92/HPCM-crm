@@ -45,7 +45,7 @@ works out the square feet, linear feet and price for every line.
   of coil), which coil footage uses. The Price column is the price of one piece at that width, so
   Price x Qty = Amount. 26 ga trim (trim with no gauge on the price list counts as 26 ga) is $3.40
   per flat inch (products.price_per_flat_in); a new line starts at the width its list price is for
-  ($20.40 / $3.40 = 6"). Ridge cap's standard 14" flat (13" finished) stays at its list price $44.20;
+  ($20.40 / $3.40 = 6"). That includes ridge cap at its standard width: 14" flat (13" finished) = $47.60,
   25" flat = $85.00. Trim without a rate but with a standard flat width scales its list price per
   standard finished inch.
 - **Quotes first**: "+ Quote" at the start of the menu and "New quote" buttons; a quote turns

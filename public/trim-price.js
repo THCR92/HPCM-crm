@@ -1,8 +1,8 @@
 // Price of one each-priced piece (trim) at a flat width, shared by the order form and
 // the server (portal quotes), so both agree. Tyler, 2026-10-21: 26 ga trim is $3.40 per
-// inch of flat width (products.price_per_flat_in). The standard width of trim with a set
-// flat width (ridge cap 14" flat) stays at its list price. Trim without a rate but with a
-// standard flat width scales its list price per standard finished inch.
+// inch of flat width (products.price_per_flat_in), at every width (ridge cap 14" flat =
+// $47.60). Trim without a rate but with a standard flat width keeps its list price at that
+// width and scales it per standard finished inch at others.
 (function (root) {
   const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -12,9 +12,11 @@
     const w = Number(width);
     const list = p.price === null || p.price === undefined ? null : Number(p.price);
     let base = list;
-    if (p.unit === 'each' && w > 0 && !(Number(p.girth) > 0 && w === Number(p.girth))) {
+    if (p.unit === 'each' && w > 0) {
       if (Number(p.rate) > 0) base = Number(p.rate) * w;
-      else if (Number(p.girth) > 0 && list !== null) base = (list / (Number(p.girth) - Number(p.flat_extra || 0))) * w;
+      else if (Number(p.girth) > 0 && w !== Number(p.girth) && list !== null) {
+        base = (list / (Number(p.girth) - Number(p.flat_extra || 0))) * w;
+      }
     }
     return base === null ? null : round2(base * (1 + (Number(upcharge) || 0) / 100));
   }
