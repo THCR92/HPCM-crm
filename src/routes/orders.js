@@ -151,6 +151,18 @@ const taxRate = (v) => {
   return Math.round(n * 1000) / 1000;
 };
 
+// In-house changes to the figured closure counts: { product id: whole pieces, 0 or more }.
+function closureQty(v) {
+  if (!v || typeof v !== 'object') return null;
+  const out = {};
+  for (const [k, n] of Object.entries(v)) {
+    if (!(Number(k) > 0) || n === '' || n === null) continue;
+    if (!(Number.isInteger(Number(n)) && Number(n) >= 0)) throw new UserError('Closure quantities must be whole numbers.');
+    out[Number(k)] = Number(n);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function parseHeader(b) {
   const customerId = Number(b.customer_id);
   if (!Number.isInteger(customerId) || customerId <= 0) throw new UserError('Pick a customer.');
@@ -169,6 +181,7 @@ function parseHeader(b) {
     trim_screws_for: ['through_fastened', 'concealed', 'none'].includes(b.trim_screws_for) ? b.trim_screws_for : null,
     closures: ['standard', 'vented'].includes(b.closures) ? b.closures : 'none',
     accessories_checked: b.accessories_checked === true || b.accessories_checked === 'true',
+    closure_qty: closureQty(b.closure_qty),
     delivery_charge: amount(b.delivery_charge, 'Delivery charge'),
     discount_amount: amount(b.discount_amount, 'Discount'),
     deposit_amount: amount(b.deposit_amount, 'Deposit'),
@@ -239,13 +252,14 @@ async function withScrews(sections, header, productsById) {
     if (auto) rest.push({ ...auto, is_auto: false });
     return rest;
   }
-  const lines = rest.flatMap((s) => s.items).map((i) => ({ ...i, product_id: i.product.id }));
+  const lines = rest.filter((s) => !s.is_auto).flatMap((s) => s.items.map((i) => ({ ...i, area: s.area, product_id: i.product.id })));
   const { lines: screws, needsTrimChoice } = Screws.figure(lines, productsById, await loadScrewRules(),
     { framing: header.framing, length: header.screw_length, trimFor: header.trim_screws_for });
   if (needsTrimChoice) {
     throw new UserError('Pick which screws the trim gets ("Trim screws for", in the Screws section at the bottom).');
   }
-  if (!screws.length) return rest;
+  const added = auto ? auto.items.map((i) => ({ ...i, is_added: true })) : [];
+  if (!screws.length && !added.length) return rest;
   const items = screws.map((l) => {
     const p = productsById.get(l.product_id);
     if (l.unit_price === '') {
@@ -261,7 +275,7 @@ async function withScrews(sections, header, productsById) {
   });
   return [...rest, {
     section_id: auto ? auto.section_id : null, area: 'other', label: 'Screws',
-    sort_order: rest.length + 1, items, is_auto: true,
+    sort_order: rest.length + 1, items: [...items, ...added], is_auto: true,
   }];
 }
 
@@ -273,8 +287,8 @@ function withClosures(rest, auto, header, productsById) {
   if (missing.length) {
     throw new UserError(`No ${header.closures === 'vented' ? 'vented ' : ''}closure is set up for ${missing.join(' or ')}. Pick "No closures" and add them as lines.`);
   }
-  if (!figured.length) return rest;
-  const items = figured.map((l) => {
+  const added = auto ? auto.items.map((i) => ({ ...i, is_added: true })) : [];
+  const items = Screws.withClosureQty(figured, header.closure_qty).map((l) => {
     const p = productsById.get(l.product_id);
     if (l.unit_price === '') throw new UserError(`${p.name} has no price yet. Set it on the Price list, or pick "No closures".`);
     return {
@@ -282,9 +296,10 @@ function withClosures(rest, auto, header, productsById) {
       unit_price: l.unit_price, description: l.description, screw_option: null,
     };
   });
+  if (!items.length && !added.length) return rest;
   return [...rest, {
     section_id: auto ? auto.section_id : null, area: 'other', label: 'Closures',
-    sort_order: rest.length + 1, items, is_auto: true,
+    sort_order: rest.length + 1, items: [...items, ...added], is_auto: true,
   }];
 }
 
@@ -360,7 +375,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
       for (const it of s.items) {
         lineNo += 1;
         const vals = [sectionId, lineNo, it.product.id, it.color_id, it.pieces, it.length_in,
-          it.width_in, it.unit_price, it.description, it.screw_option];
+          it.width_in, it.unit_price, it.description, it.screw_option, !!it.is_added];
         let itemId = it.order_item_id;
         if (itemId) {
           const r = await db.query(`
@@ -369,7 +384,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
                    width_in = COALESCE($7, (SELECT pp.coverage_width_in FROM products p
                                             JOIN panel_profiles pp USING (profile_id)
                                             WHERE p.product_id = $3)),
-                   unit_price = $8, description = $9, screw_option = $10,
+                   unit_price = $8, description = $9, screw_option = $10, is_added = $11,
                    pricing_unit = p.pricing_unit, taxable = p.taxable,
                    per_length_in = CASE WHEN p.pricing_unit = 'each' THEN p.standard_length_in END,
                    per_width_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
@@ -377,15 +392,15 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
                    width_add_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
                                        THEN (fn_sized_trim_basis(p.product_id, $7::numeric)).width_add END
             FROM products p
-            WHERE p.product_id = $3 AND oi.order_item_id = $11 AND oi.order_id = $12`,
+            WHERE p.product_id = $3 AND oi.order_item_id = $12 AND oi.order_id = $13`,
           [...vals, itemId, orderId]);
           if (!r.rowCount) itemId = null;
         }
         if (!itemId) {
           const { rows: [r] } = await db.query(`
             INSERT INTO order_items (order_id, section_id, line_no, product_id, color_id, pieces,
-                                     length_in, width_in, unit_price, description, screw_option)
-            VALUES ($11, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING order_item_id`, [...vals, orderId]);
+                                     length_in, width_in, unit_price, description, screw_option, is_added)
+            VALUES ($12, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING order_item_id`, [...vals, orderId]);
           itemId = r.order_item_id;
         }
         if (it.product.category === 'custom_trim') {

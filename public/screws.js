@@ -26,16 +26,27 @@
     const framing = opts.framing === 'steel' ? 'steel' : 'wood';
     const groups = new Map();
     const missing = new Set();
+    // Panel and trim screws of the same kind and color share one line.
     const add = (kind, rule, color, n, what) => {
-      const key = `${kind}|${rule.product_id}|${color}`;
-      const g = groups.get(key) || { kind, rule, color_id: color, count: 0, what: new Map() };
+      const key = `${rule.product_id}|${color}`;
+      const g = groups.get(key) || { kind, rule, color_id: color, count: 0, what: new Map(), trim: new Map() };
+      if (kind === 'panel') g.kind = 'panel';
       g.count += n;
-      g.what.set(what.key, (g.what.get(what.key) || 0) + what.amount);
+      const m = kind === 'trim' ? g.trim : g.what;
+      m.set(what.key, (m.get(what.key) || 0) + what.amount);
       groups.set(key, g);
     };
 
-    // Panels
+    // Panels. Trim with no color gets screws in the panel color (roof panels first).
     const systems = new Set();
+    const panelColor = (() => {
+      const colored = lines.filter((l) => {
+        const p = products.get(Number(l.product_id));
+        return p && p.category === 'panel' && Number(l.color_id);
+      });
+      const roof = colored.find((l) => l.area === 'roof') || colored[0];
+      return roof ? Number(roof.color_id) : null;
+    })();
     for (const l of lines) {
       const p = products.get(Number(l.product_id));
       if (!p || p.category !== 'panel' || !p.profile_id) continue;
@@ -81,7 +92,7 @@
         if (r.basis === 'each') per = Number(r.qty);
         else if (r.basis === 'spacing' && len > 0) per = Math.ceil(len / Number(r.spacing_in) - 1e-9) * Number(r.qty);
         else continue;
-        const color = r.color_match ? Number(l.color_id) || null : null;
+        const color = r.color_match ? Number(l.color_id) || panelColor : null;
         add('trim', screw, color, pieces * per, { key: p.name, amount: pieces });
       }
     }
@@ -95,13 +106,13 @@
       const bagged = r.unit === 'bag';
       const pack = Number(r.pack_size) || 250;
       const noun = r.category === 'fastener' ? 'screws' : /clip/i.test(r.product_name || '') ? 'clips' : 'pieces';
-      const how = g.kind === 'trim'
-        ? `for ${[...g.what].map(([name, n]) => `${fmt(n)} ${name}`).join(', ')}`
-        : [...g.what].map(([k, amount]) => {
-          const [type, qty, spacing] = k.split('|');
-          return type === 'sq' ? `${fmt(amount)} squares x ${qty} per square`
-            : `${qty} every ${fmt(Number(spacing) / 12)}' on ${fmt(amount)}' of panel`;
-        }).join(' + ');
+      const panelHow = [...g.what].map(([k, amount]) => {
+        const [type, qty, spacing] = k.split('|');
+        return type === 'sq' ? `${fmt(amount)} squares x ${qty} per square`
+          : `${qty} every ${fmt(Number(spacing) / 12)}' on ${fmt(amount)}' of panel`;
+      }).join(' + ');
+      const trimHow = g.trim.size ? `for ${[...g.trim].map(([name, n]) => `${fmt(n)} ${name}`).join(', ')}` : '';
+      const how = [panelHow, trimHow].filter(Boolean).join(' + ');
       out.push({
         kind: g.kind,
         product_id: r.product_id,
@@ -109,7 +120,7 @@
         pieces: bagged ? Math.ceil(count / pack) : count,
         unit_price: r.price === null || r.price === undefined ? '' : Number(r.price),
         count,
-        description: `${count} ${noun}${g.kind === 'trim' ? ' ' : ': '}${how}${bagged ? `, ${pack} per bag` : ''}`,
+        description: `${count} ${noun}${panelHow ? ': ' : ' '}${how}${bagged ? `, ${pack} per bag` : ''}`,
       });
     }
     out.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'panel' ? -1 : 1));
@@ -205,9 +216,21 @@
     return { lines: out, missing: [...missing] };
   }
 
+  // In-house changes to the figured counts ({ product id: pieces }); 0 drops the line.
+  function withClosureQty(lines, qty) {
+    if (!qty) return lines;
+    return lines.flatMap((l) => {
+      const n = qty[l.product_id];
+      if (n === undefined || n === null || n === '' || Number(n) === l.pieces) return [l];
+      if (!(Number(n) > 0)) return [];
+      return [{ ...l, pieces: Number(n), count: Number(n), figured: l.pieces,
+        description: `${l.description} (changed from ${l.pieces})` }];
+    });
+  }
+
   const hasRules = (rules, productId) => rules.some((r) => Number(r.item_product_id) === Number(productId));
 
-  const api = { figure, closures, panelRules, itemRules, lengths, lineOptions, hasRules, SYSTEMS };
+  const api = { figure, closures, withClosureQty, panelRules, itemRules, lengths, lineOptions, hasRules, SYSTEMS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Screws = api;
 }(this));

@@ -639,6 +639,15 @@ test('trim screws: own lines in the trim color, choice per line, quote picks the
   assert.deepStrictEqual(rows.map((r) => [r.product_id, r.color_id, r.pieces]), [[woodtite, red, 4], [woodtite, tan, 1]]);
   assert.match(rows[1].description, /^190 screws for 10 Ridge Cap 26 GA, 5 Gable 2x4, 250 per bag$/);
 
+  // Trim with no color is the panel color, so its screws go on the panel screw line.
+  const plain = trim();
+  plain.items.forEach((i) => { i.color_id = null; });
+  out = await save(id, { sections: [panels, plain] });
+  assert.ok(out.ok, out.error);
+  rows = await screws();
+  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.color_id, r.pieces]), [[woodtite, red, 5]]);
+  assert.strictEqual(rows[0].description, '1090 screws: 10 squares x 90 per square + for 10 Ridge Cap 26 GA, 5 Gable 2x4, 250 per bag');
+
   out = await save(id, { sections: [panels, trim('every 9"')] });
   assert.ok(out.ok, out.error);
   rows = await screws();
@@ -706,6 +715,18 @@ test('closures: 1 inside and 1 outside per PBR or Tuff Rib panel; vented or none
   out = await (await post(`/orders/${id}`, order('none', rows[0].section_id))).json();
   assert.ok(out.ok, out.error);
   assert.deepStrictEqual(await closures(), []);
+
+  // In the shop the counts can be changed (0 takes a line off), and lines can be added under them.
+  const universal = await productId('ACC-UNIVERSAL-CLOSURE');
+  const withAdded = (o) => ({ ...o, sections: [...o.sections.slice(0, 2),
+    { area: 'other', label: 'Closures', auto: true, items: [{ product_id: universal, pieces: 3, unit_price: 2.30 }] }] });
+  out = await (await post(`/orders/${id}`, withAdded({ ...order('standard'), closure_qty: { [pbrClos]: 50, [tuffClos]: 0 } }))).json();
+  assert.ok(out.ok, out.error);
+  rows = await closures();
+  assert.deepStrictEqual(rows.map((r) => [r.product_id, r.pieces]), [[pbrClos, 50], [universal, 3]]);
+  assert.match(rows[0].description, /\(changed from 48\)$/);
+  const { rows: added } = await query('SELECT product_id, is_added FROM order_items WHERE order_id = $1 AND is_added', [id]);
+  assert.deepStrictEqual(added.map((r) => r.product_id), [universal]);
 });
 
 test('reports: Admins and Managers only; status changes are logged; lost reasons and win rate count', async () => {

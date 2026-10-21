@@ -67,10 +67,17 @@
   const state = {
     header: { ...order },
     // The automatic Screws section isn't edited by hand; it's figured from the panels.
-    sections: (order.sections || []).filter((s) => !s.is_auto).map((s) => ({
-      section_id: s.section_id || null, area: s.area, label: s.label || '',
-      items: (s.items || []).map(toRow),
-    })),
+    sections: [
+      ...(order.sections || []).filter((s) => !s.is_auto).map((s) => ({
+        section_id: s.section_id || null, area: s.area, label: s.label || '',
+        items: (s.items || []).map(toRow),
+      })),
+      // Lines added by hand under the automatic Screws and Closures (shown in those boxes).
+      ...['Screws', 'Closures'].map((extra) => {
+        const auto = extra === 'Screws' ? autoSection : closureSection;
+        return { extra, area: 'other', label: extra, items: auto ? (auto.items || []).filter((i) => i.is_added).map(toRow) : [] };
+      }),
+    ],
     screwSectionId: autoSection ? autoSection.section_id : null,
     closureSectionId: closureSection ? closureSection.section_id : null,
     screws: { lines: [], missing: [] },
@@ -80,6 +87,8 @@
   // Opening an older order that already has screws typed in: leave them alone.
   if (state.header.auto_screws === undefined) state.header.auto_screws = false;
   if (!state.header.closures) state.header.closures = 'none';
+  state.header.closure_qty = { ...(state.header.closure_qty || {}) };
+  const extraOf = (name) => state.sections.findIndex((s) => s.extra === name);
   let dirty = false;
 
   function lengthIn(row) {
@@ -208,6 +217,20 @@
     </tr>`;
   }
 
+  // "+ Add line" under the automatic Screws or Closures lines.
+  function extraHtml(name) {
+    const si = extraOf(name);
+    const s = state.sections[si];
+    return `<fieldset class="extra-lines" data-s="${si}"><span class="section-total" hidden></span>
+      ${s.items.length ? `<table class="lines edit">
+        <thead><tr><th>Qty</th><th>Length (ft' in")</th><th>Added ${name.toLowerCase()}</th><th>Color</th>
+          <th>Width</th><th class="num">Billed</th><th class="price-col">Price</th><th class="num amount-col">Amount</th><th></th></tr></thead>
+        <tbody>${s.items.map((row, ii) => rowHtml(row, si, ii)).join('')}</tbody>
+      </table>` : ''}
+      <button type="button" class="btn small" data-act="add-row">+ Add line</button>
+    </fieldset>`;
+  }
+
   function sectionHtml(s, si) {
     return `<fieldset class="section" data-s="${si}">
       <div class="section-head">
@@ -320,7 +343,7 @@
   // --------------------------------------------------------------- closures
   // PBR and Tuff Rib: 1 inside and 1 outside closure per panel, figured like screws.
   function panelLines() {
-    return state.sections.flatMap((s) => s.items).map((row) => ({
+    return state.sections.filter((s) => !s.extra).flatMap((s) => s.items).map((row) => ({
       product_id: row.product_id, color_id: row.color_id, pieces: row.pieces, length_in: lengthIn(row), width_in: row.width_in,
       screw_option: row.screw_option,
     }));
@@ -330,11 +353,18 @@
     return p && p.category === 'panel' && p.fastening === 'through_fastened';
   }));
 
+  const showClosures = () => hasClosurePanels() || state.sections[extraOf('Closures')].items.length > 0;
+
   function closuresHtml() {
-    if (!hasClosurePanels()) return '';
     const h = state.header;
     const opt = (v, label) => `<option value="${v}" ${h.closures === v ? 'selected' : ''}>${label}</option>`;
-    const { lines, missing } = state.closures;
+    const { missing } = state.closures;
+    // In the shop the figured counts can be changed (0 takes the line off); customers see them as figured.
+    const lines = portal ? state.closures.lines : state.closures.figured;
+    const qtyOf = (l) => {
+      const n = h.closure_qty[l.product_id];
+      return n === undefined || n === '' ? l.pieces : Number(n);
+    };
     const warn = missing.length ? `<p class="alert small">No ${h.closures === 'vented' ? 'vented ' : ''}closure is set up for
       ${esc(missing.join(' or '))}. Pick "No closures" and add them as lines.</p>` : '';
     const body = h.closures === 'none'
@@ -343,10 +373,14 @@
       <thead><tr><th>Qty</th><th>Closures</th><th></th><th class="num price-col">Price</th><th class="num amount-col">Amount</th></tr></thead>
       <tbody>${lines.map((l) => {
         const p = productById.get(l.product_id);
-        return `<tr><td>${l.pieces}</td>
-          <td>${esc(p ? p.name : '')}<div class="muted small">${esc(l.description)}</div></td><td></td>
+        const n = portal ? l.pieces : qtyOf(l);
+        const changed = !portal && n !== l.pieces;
+        return `<tr><td>${portal ? n : `<input class="qty" data-cq="${l.product_id}" type="number" min="0" step="1" value="${n}"
+            aria-label="Quantity" title="Change how many; clear it to go back to ${l.pieces}">`}</td>
+          <td>${esc(p ? p.name : '')}<div class="muted small">${esc(l.description)}${changed
+            ? ` <strong>Changed from ${l.pieces}.</strong> <button type="button" class="linkish" data-act="closure-reset" data-p="${l.product_id}">Use ${l.pieces}</button>` : ''}</div></td><td></td>
           <td class="num price-col">${l.unit_price === '' ? '<span class="missing-text">no price set</span>' : money(Number(l.unit_price))}</td>
-          <td class="num amount-col">${l.unit_price === '' ? '' : money(round2(l.pieces * l.unit_price))}</td></tr>`;
+          <td class="num amount-col" data-amt="${l.product_id}">${l.unit_price === '' ? '' : money(round2(n * l.unit_price))}</td></tr>`;
       }).join('')}</tbody></table>`;
     return `<div class="section-head screws-head">
         <strong>Closures</strong>
@@ -360,10 +394,10 @@
 
   // ----------------------------------------------------------------- screws
   function figureScrews() {
-    const lines = state.sections.flatMap((s) => s.items).map((row) => ({
+    const lines = state.sections.filter((s) => !s.extra).flatMap((s) => s.items.map((row) => ({
       product_id: row.product_id, color_id: row.color_id, pieces: row.pieces, length_in: lengthIn(row), width_in: row.width_in,
-      screw_option: row.screw_option,
-    }));
+      screw_option: row.screw_option, area: s.area,
+    })));
     return window.Screws.figure(lines, productById, screwRules,
       { framing: state.header.framing, length: state.header.screw_length, trimFor: state.header.trim_screws_for || '' });
   }
@@ -384,6 +418,10 @@
         <span class="section-total"></span>
       </div>
       <div id="screws-lines"></div>`;
+  }
+
+  function renderSections() {
+    return state.sections.map((s, si) => (s.extra ? '' : sectionHtml(s, si))).join('');
   }
 
   // "Trim screws for": shown when a line has trim with screw rules. Blank means
@@ -428,10 +466,10 @@
     if (portal && !portal.prices) root.classList.add('hide-prices');
     root.innerHTML = `<div id="form-error" class="alert" hidden></div>
       ${headerHtml()}
-      <div id="sections">${state.sections.map(sectionHtml).join('')}</div>
+      <div id="sections">${renderSections()}</div>
       <button type="button" class="btn" data-act="add-section">+ Add section</button>
-      <fieldset class="section screws" id="closures-box"></fieldset>
-      <fieldset class="section screws" id="screws-box">${screwControlsHtml()}</fieldset>
+      <div class="section screws" id="closures-box"><div id="closures-auto"></div>${extraHtml('Closures')}</div>
+      <div class="section screws" id="screws-box"><div id="screws-auto">${screwControlsHtml()}</div>${extraHtml('Screws')}</div>
       ${footerHtml()}`;
     recompute();
   }
@@ -459,8 +497,10 @@
       root.querySelector(`fieldset[data-s="${si}"] .section-total`).textContent =
         [sSq ? `${fmt(round2(sSq))} sq ft` : '', sLf ? `${fmt(round2(sLf))} LF` : ''].filter(Boolean).join(' · ');
     });
-    state.closures = hasClosurePanels() ? window.Screws.closures(panelLines(), productById, state.header.closures)
+    const figured = hasClosurePanels() ? window.Screws.closures(panelLines(), productById, state.header.closures)
       : { lines: [], missing: [] };
+    state.closures = { figured: figured.lines, missing: figured.missing,
+      lines: window.Screws.withClosureQty(figured.lines, portal ? null : state.header.closure_qty) };
     let closureTotal = 0;
     for (const l of state.closures.lines) {
       if (l.unit_price === '') continue;
@@ -470,12 +510,22 @@
       if (productById.get(l.product_id)?.taxable !== false) taxable += amt;
     }
     const cbox = root.querySelector('#closures-box');
-    const cfocus = document.activeElement && cbox.contains(document.activeElement);
-    cbox.innerHTML = closuresHtml();
-    if (cfocus) cbox.querySelector('[data-h="closures"]')?.focus();
-    cbox.hidden = !cbox.innerHTML;
+    const cauto = root.querySelector('#closures-auto');
+    const cfocus = document.activeElement && cauto.contains(document.activeElement) ? document.activeElement : null;
+    cbox.hidden = !showClosures();
+    if (cfocus && cfocus.dataset.cq) {
+      // Typing a count: only the amounts change, so the box isn't redrawn under the cursor.
+      for (const l of state.closures.figured) {
+        const cell = cauto.querySelector(`[data-amt="${l.product_id}"]`);
+        const n = state.closures.lines.find((x) => x.product_id === l.product_id)?.pieces || 0;
+        if (cell && l.unit_price !== '') cell.textContent = money(round2(n * l.unit_price));
+      }
+    } else {
+      cauto.innerHTML = cbox.hidden ? '' : closuresHtml();
+      if (cfocus && cfocus.dataset.h) cauto.querySelector(`[data-h="${cfocus.dataset.h}"]`)?.focus();
+    }
     if (!cbox.hidden) {
-      cbox.querySelector('.section-total').textContent = closureTotal && (!portal || portal.prices) ? money(round2(closureTotal)) : '';
+      cauto.querySelector('.section-total').textContent = closureTotal && (!portal || portal.prices) ? money(round2(closureTotal)) : '';
     }
     state.screws = state.header.auto_screws ? figureScrews() : { lines: [], missing: [] };
     let screwTotal = 0;
@@ -486,12 +536,12 @@
       lines += amt;
       if (productById.get(l.product_id)?.taxable !== false) taxable += amt;
     }
-    const box = root.querySelector('#screws-box');
+    const box = root.querySelector('#screws-auto');
     const focused = document.activeElement && box.contains(document.activeElement) ? document.activeElement.dataset.h : null;
     box.innerHTML = screwControlsHtml();
     if (focused) box.querySelector(`[data-h="${focused}"]`)?.focus();
     root.querySelector('#screws-lines').innerHTML = screwLinesHtml();
-    root.querySelector('#screws-box .section-total').textContent = screwTotal && (!portal || portal.prices) ? money(round2(screwTotal)) : '';
+    root.querySelector('#screws-auto .section-total').textContent = screwTotal && (!portal || portal.prices) ? money(round2(screwTotal)) : '';
     const delivery = Number(state.header.delivery_charge) || 0;
     const discount = Number(state.header.discount_amount) || 0;
     root.querySelector('#t-sqft').textContent = fmt(round2(sqft));
@@ -530,6 +580,8 @@
     row.unit_price = listPrice(p, Number(row.color_id));
   }
 
+  root.addEventListener('change', (e) => { if (e.target.dataset.cq) setTimeout(recompute); });
+
   root.addEventListener('input', (e) => {
     const t = e.target;
     dirty = true;
@@ -543,6 +595,10 @@
         const { s, i } = r.tr.dataset;
         r.tr.outerHTML = rowHtml(r.row, s, i);
       }
+    }
+    if (t.dataset.cq) {
+      if (t.value === '') delete state.header.closure_qty[t.dataset.cq];
+      else state.header.closure_qty[t.dataset.cq] = t.value;
     }
     if (t.dataset.h === 'accessories_checked') t.closest('label').classList.toggle('missing', !t.checked);
     if (t.dataset.h === 'auto_screws') { toggleScrews(t.checked); return; }
@@ -564,7 +620,7 @@
   // lines; turning it on replaces a hand-made Screws section.
   function toggleScrews(on) {
     if (on) {
-      const i = state.sections.findIndex((s) => s.label === 'Screws');
+      const i = state.sections.findIndex((s) => s.label === 'Screws' && !s.extra);
       if (i >= 0 && (!state.sections[i].items.some((r) => r.product_id)
           || window.confirm('Replace the Screws section you typed with screws figured from the panels?'))) {
         state.sections.splice(i, 1);
@@ -572,12 +628,15 @@
       state.header.auto_screws = true;
     } else {
       const figured = state.screws.lines;
+      const added = state.sections[extraOf('Screws')];
       state.header.auto_screws = false;
-      if (figured.length) {
-        state.sections.push({
+      if (figured.length || added.items.length) {
+        state.sections.splice(extraOf('Screws'), 0, {
           section_id: state.screwSectionId, area: 'other', label: 'Screws',
-          items: figured.map((l) => toRow({ ...l, unit_price: l.unit_price === '' ? '' : Number(l.unit_price).toFixed(2) })),
+          items: [...figured.map((l) => toRow({ ...l, unit_price: l.unit_price === '' ? '' : Number(l.unit_price).toFixed(2) })),
+            ...added.items],
         });
+        added.items = [];
         state.screwSectionId = null;
       }
     }
@@ -609,15 +668,19 @@
       dirty = true; render();
     }
     if (act === 'add-section') {
-      const used = new Set(state.sections.map((s) => s.area));
+      const used = new Set(state.sections.filter((s) => !s.extra).map((s) => s.area));
       const area = ['roof', 'wall', 'trim'].find((a) => !used.has(a)) || 'other';
-      state.sections.push({ section_id: null, area, label: '', items: [] });
+      state.sections.splice(extraOf('Screws'), 0, { section_id: null, area, label: '', items: [] });
       dirty = true; render();
     }
     if (act === 'remove-section') {
       if (state.sections[si].items.length && !window.confirm('Remove this section and its lines?')) return;
       state.sections.splice(si, 1);
       dirty = true; render();
+    }
+    if (act === 'closure-reset') {
+      delete state.header.closure_qty[e.target.dataset.p];
+      dirty = true; recompute();
     }
     if (act === 'save') save(e.target);
   });
@@ -660,16 +723,24 @@
           screw_option: row.screw_option || null,
         });
       }
-      sections.push({ section_id: s.section_id, area: s.area, label: s.label, items });
+      if (s.extra) s.posted = items;
+      else sections.push({ section_id: s.section_id, area: s.area, label: s.label, items });
     }
+    const addedScrews = state.sections[extraOf('Screws')].posted;
+    const addedClosures = state.sections[extraOf('Closures')].posted;
     if (!state.header.accessories_checked) {
       const box = root.querySelector('.accessories-check');
       box.classList.add('missing');
       return showError('Tick the box by the Save button once you\'ve added any other accessories (pipe boots, jacks, butyl tape, sealant…).');
     }
     // The server figures closures and screws itself; this only keeps the sections' places.
-    if (state.closures.lines.length) sections.push({ section_id: state.closureSectionId, area: 'other', label: 'Closures', auto: true, items: [] });
-    if (state.header.auto_screws) sections.push({ section_id: state.screwSectionId, area: 'other', label: 'Screws', auto: true, items: [] });
+    // Lines added by hand go with them.
+    if (state.closures.lines.length || addedClosures.length) {
+      sections.push({ section_id: state.closureSectionId, area: 'other', label: 'Closures', auto: true, items: addedClosures });
+    }
+    if (state.header.auto_screws) {
+      sections.push({ section_id: state.screwSectionId, area: 'other', label: 'Screws', auto: true, items: addedScrews });
+    } else if (addedScrews.length) sections.push({ section_id: null, area: 'other', label: 'Screws', items: addedScrews });
     button.disabled = true;
     try {
       const url = portal ? portal.action : state.header.order_id ? `/orders/${state.header.order_id}` : '/orders';
@@ -692,6 +763,6 @@
   window.addEventListener('beforeunload', (e) => { if (dirty) e.preventDefault(); });
 
   // Start every section with one empty line to type into.
-  for (const s of state.sections) if (!s.items.length) s.items.push(toRow({}));
+  for (const s of state.sections) if (!s.items.length && !s.extra) s.items.push(toRow({}));
   render();
 }());

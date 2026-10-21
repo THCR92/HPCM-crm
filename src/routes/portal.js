@@ -601,6 +601,8 @@ async function savePortalQuote(l, existing, body) {
     need_by: typeof body.need_by === 'string' && body.need_by >= today() ? body.need_by : null,
     auto_screws: body.auto_screws, framing: body.framing, screw_length: body.screw_length, trim_screws_for: body.trim_screws_for,
     closures: body.closures, accessories_checked: body.accessories_checked,
+    // Changed closure counts are ours to set.
+    closure_qty: existing ? existing.closure_qty : null,
     // Ours, kept as they are.
     delivery_charge: existing ? existing.delivery_charge : 0,
     discount_amount: existing ? existing.discount_amount : 0,
