@@ -87,7 +87,7 @@ async function loadCatalog() {
   const { rows: products } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies, p.taxable,
            p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
-           p.flat_extra_in AS flat_extra, cp.unit_price AS price,
+           p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
            pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name,
            pp.closure_product_id AS closure_id, pp.vented_closure_product_id AS vented_closure_id
@@ -486,7 +486,7 @@ function formPage(res, { title, order, catalog }) {
     <h1>${title}</h1>
     <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
     <script>window.ORDER_FORM = ${jsonForScript({ order, ...catalog })};</script>`,
-    scripts: ['/screws.js', '/order-form.js'],
+    scripts: ['/screws.js', '/trim-price.js', '/order-form.js'],
   }));
 }
 

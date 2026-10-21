@@ -99,19 +99,13 @@
     return ft * 12 + inch;
   }
 
-  function listPrice(product, colorId) {
-    if (!product || product.price === null) return '';
+  // Price of one piece: list price with the color premium; trim at its flat width
+  // (26 ga $3.40 per flat inch; see public/trim-price.js).
+  function listPrice(product, colorId, width) {
     const up = colorId && colorById.get(colorId) ? Number(colorById.get(colorId).upcharge) : 0;
-    return round2(product.price * (1 + up / 100)).toFixed(2);
+    const price = window.TrimPrice.piecePrice(product, width, up);
+    return price === null ? '' : price.toFixed(2);
   }
-
-  // Sized trim, mirroring fn_sized_trim_basis: the width typed is the FLAT width. The standard
-  // flat width is a plain piece at the list price; any other width costs the list price per
-  // standard finished inch x the flat width (ridge cap: $44.20 / 13" x 25" flat = $85.00).
-  const finishedStd = (p) => Number(p.girth) - Number(p.flat_extra || 0);
-  const perWidth = (p) => finishedStd(p);
-  const widthAdd = () => 0;
-  const sizedAt = (p, width) => !!(p.girth && width > 0 && width !== Number(p.girth));
 
   // Mirrors order_items.billable_qty in the database.
   function compute(row) {
@@ -124,16 +118,11 @@
     let qty;
     if (p.unit === 'sqft') qty = len > 0 && width > 0 ? round2((pieces * len * width) / 144) : 0;
     else if (p.unit === 'lf') qty = len > 0 ? round2((pieces * len) / 12) : 0;
-    // Each-priced pieces cut to a length are billed in standard lengths (6 @ 12' = 7.2 x 10'),
-    // and sized trim by standard finished width (10 @ 25" flat ridge cap = 19.23 x 13").
-    else {
-      const byLen = p.standard_length_in && len > 0 ? len / p.standard_length_in : 1;
-      const byWidth = sizedAt(p, width) ? (width + widthAdd(p)) / perWidth(p) : 1;
-      qty = round4(pieces * byLen * byWidth);
-    }
-    const sized = p.unit === 'each' && sizedAt(p, width);
-    const per = p.unit === 'each' && p.standard_length_in && (len > 0 || sized) ? Number(p.standard_length_in) : null;
-    const perW = sized ? perWidth(p) : null;
+    // Each-priced pieces cut to a length are billed in standard lengths (6 @ 12' = 7.2 x 10');
+    // the width is already in the piece price.
+    else qty = round4(pieces * (p.standard_length_in && len > 0 ? len / p.standard_length_in : 1));
+    const per = p.unit === 'each' && p.standard_length_in && len > 0 ? Number(p.standard_length_in) : null;
+    const perW = null;
     const tooLong = !!(p.max_length_in && len > Number(p.max_length_in));
     return { qty, amount: row.unit_price === '' ? 0 : round2(qty * price), unit: p.unit, per, perWidth: perW, tooLong };
   }
@@ -173,11 +162,12 @@
                 value="${esc(row.width_in)}" title="Coverage width, ${Number(p.cov_min)}–${Number(p.cov_max)} in"><span class="unit">" cov.</span>`;
     }
     if (p.unit === 'each' && (p.girth || p.category === 'trim')) {
-      const std = p.girth ? Number(p.girth) : null;
+      const std = window.TrimPrice.standardWidth(p);
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="0.125"
                 value="${esc(row.width_in)}" placeholder="${std || 'flat'}"
-                title="${std ? `Flat width in inches (coil it takes). The list price is for ${std}&quot; flat; other widths are priced by it.`
-                  : 'Flat width in inches (coil it takes). This trim has no standard flat width set, so the price doesn\'t change with it.'}"><span class="unit">" flat</span>`;
+                title="${p.rate ? `Flat width in inches (coil it takes). Priced at $${Number(p.rate).toFixed(2)} per flat inch.`
+                  : std ? `Flat width in inches (coil it takes). The list price is for ${std}&quot; flat; other widths are priced by it.`
+                    : 'Flat width in inches (coil it takes).'}"><span class="unit">" flat</span>`;
     }
     if (p.category === 'custom_trim') {
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="0.125"
@@ -573,15 +563,17 @@
     if (p && p.category === 'panel' && p.unit === 'sqft') {
       const w = Number(row.width_in);
       if (!(w >= Number(p.cov_min) && w <= Number(p.cov_max))) row.width_in = String(Number(p.cov));
-    } else if (p && p.unit === 'each' && p.girth) {
-      if (row.width_in === '' || row.width_in === undefined || row.lastProduct !== p.id) row.width_in = String(Number(p.girth));
-    } else if (p && p.category === 'trim') {
-      if (row.lastProduct !== p.id) row.width_in = '';
+    } else if (p && p.unit === 'each' && (p.girth || p.category === 'trim')) {
+      // A new trim starts at the width its list price is for (e.g. $20.40 / $3.40 = 6").
+      if (row.width_in === '' || row.width_in === undefined || row.lastProduct !== p.id) {
+        const std = window.TrimPrice.standardWidth(p);
+        row.width_in = std ? String(std) : '';
+      }
     } else if (!p || p.category !== 'custom_trim') {
       row.width_in = '';
     }
     row.lastProduct = p ? p.id : null;
-    row.unit_price = listPrice(p, Number(row.color_id));
+    row.unit_price = listPrice(p, Number(row.color_id), row.width_in);
   }
 
   root.addEventListener('change', (e) => { if (e.target.dataset.cq) setTimeout(recompute); });
@@ -598,6 +590,12 @@
         onProductOrColor(r.row);
         const { s, i } = r.tr.dataset;
         r.tr.outerHTML = rowHtml(r.row, s, i);
+      }
+      // Trim: the piece price follows the flat width.
+      const p = productById.get(Number(r.row.product_id));
+      if (t.dataset.f === 'width_in' && p && p.unit === 'each') {
+        r.row.unit_price = listPrice(p, Number(r.row.color_id), r.row.width_in);
+        r.tr.querySelector('[data-f="unit_price"]').value = r.row.unit_price;
       }
     }
     if (t.dataset.cq) {

@@ -8,6 +8,7 @@
 // customer's page (src/routes/customers.js).
 const crypto = require('crypto');
 const { query } = require('../db');
+const TrimPrice = require('../../public/trim-price');
 const { hashPassword, checkPassword, passwordProblem } = require('../auth');
 const { html, layout, money, num, date, STATUS_LABEL } = require('../html');
 const express = require('express');
@@ -512,7 +513,7 @@ function formPage(l, { title, order, catalog, action }) {
     <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
     <script>window.ORDER_FORM = ${jsonForScript({
     order, ...catalog, portal: { prices: l.portal_line_prices, totals: l.portal_totals, action } })};</script>`,
-    scripts: ['/screws.js', '/order-form.js'],
+    scripts: ['/screws.js', '/trim-price.js', '/order-form.js'],
   });
 }
 
@@ -555,7 +556,7 @@ router.get('/portal/orders/:id(\\d+)/again', signedIn, async (req, res) => {
     for (const i of sec.items) {
       const p = catalog.products.find((x) => x.id === i.product_id);
       const c = catalog.colors.find((x) => x.id === i.color_id);
-      i.unit_price = (Math.round(p.price * (1 + (c ? Number(c.upcharge) : 0) / 100) * 100) / 100).toFixed(2);
+      i.unit_price = TrimPrice.piecePrice(p, i.width_in, c ? c.upcharge : 0).toFixed(2);
     }
   }
   res.send(formPage(l, { title: `New quote (from ${o.order_number})`, order, catalog, action: '/portal/quotes' }));
@@ -575,7 +576,9 @@ router.get('/portal/orders/:id(\\d+)/edit', signedIn, async (req, res) => {
 // tax are ours to set.
 async function savePortalQuote(l, existing, body) {
   const { rows: prices } = await query(`
-    SELECT p.product_id, p.name, p.category, p.active, cp.unit_price FROM products p LEFT JOIN v_current_prices cp USING (product_id)`);
+    SELECT p.product_id, p.name, p.category, p.active, cp.unit_price, p.pricing_unit AS unit, p.girth_in AS girth,
+           p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate
+    FROM products p LEFT JOIN v_current_prices cp USING (product_id)`);
   const priceOf = new Map(prices.map((p) => [p.product_id, p]));
   const { rows: colors } = await query('SELECT color_id, upcharge_pct FROM v_colors');
   const upOf = new Map(colors.map((c) => [c.color_id, Number(c.upcharge_pct) || 0]));
@@ -588,8 +591,10 @@ async function savePortalQuote(l, existing, body) {
         throw new UserError(`${p.name} needs a price from us. Leave it out and put it in the notes, or call ${SHOP_PHONE}.`);
       }
       const before = kept.get(Number(it.order_item_id));
-      const same = before && before.product_id === Number(it.product_id) && (before.color_id || null) === (Number(it.color_id) || null);
-      const list = p ? Math.round(p.unit_price * (1 + (upOf.get(Number(it.color_id)) || 0) / 100) * 100) / 100 : null;
+      const same = before && before.product_id === Number(it.product_id) && (before.color_id || null) === (Number(it.color_id) || null)
+        // Trim priced by its width keeps our price only at the same width.
+        && (!p || p.unit !== 'each' || Number(before.width_in || 0) === Number(it.width_in || 0));
+      const list = p ? TrimPrice.piecePrice({ ...p, price: p.unit_price }, it.width_in, upOf.get(Number(it.color_id))) : null;
       return { ...it, order_item_id: before ? before.order_item_id : null, unit_price: same ? before.unit_price : list };
     }),
   }));
