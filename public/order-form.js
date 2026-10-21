@@ -5,7 +5,7 @@
 // here with the same rules the database uses; the database is the final word.
 (function () {
   const {
-    order, products, colors, customers, sized_pricing: sizedPricing = 'per_inch', screw_rules: screwRules = [],
+    order, products, colors, customers, screw_rules: screwRules = [],
     portal = null,
   } = window.ORDER_FORM;
   const root = document.getElementById('order-form');
@@ -105,13 +105,13 @@
     return round2(product.price * (1 + up / 100)).toFixed(2);
   }
 
-  // Sized trim basis, mirroring fn_sized_trim_basis: width is the finished width;
-  // the flat strip is flat_extra wider (ridge cap: 24" finished = 25" flat).
+  // Sized trim, mirroring fn_sized_trim_basis: the width typed is the FLAT width. The standard
+  // flat width is a plain piece at the list price; any other width costs the list price per
+  // standard finished inch x the flat width (ridge cap: $44.20 / 13" x 25" flat = $85.00).
   const finishedStd = (p) => Number(p.girth) - Number(p.flat_extra || 0);
-  const perWidth = (p) => (sizedPricing === 'flat' ? Number(p.girth) : finishedStd(p));
-  const widthAdd = (p) => (sizedPricing === 'finished' ? 0 : Number(p.flat_extra || 0));
-  // per_inch: the standard width is a plain piece at the list price.
-  const sizedAt = (p, width) => !!(p.girth && width > 0 && !(sizedPricing === 'per_inch' && width === finishedStd(p)));
+  const perWidth = (p) => finishedStd(p);
+  const widthAdd = () => 0;
+  const sizedAt = (p, width) => !!(p.girth && width > 0 && width !== Number(p.girth));
 
   // Mirrors order_items.billable_qty in the database.
   function compute(row) {
@@ -125,7 +125,7 @@
     if (p.unit === 'sqft') qty = len > 0 && width > 0 ? round2((pieces * len * width) / 144) : 0;
     else if (p.unit === 'lf') qty = len > 0 ? round2((pieces * len) / 12) : 0;
     // Each-priced pieces cut to a length are billed in standard lengths (6 @ 12' = 7.2 x 10'),
-    // and sized trim in standard widths (10 @ 24" ridge cap = 18.46 x 13").
+    // and sized trim by standard finished width (10 @ 25" flat ridge cap = 19.23 x 13").
     else {
       const byLen = p.standard_length_in && len > 0 ? len / p.standard_length_in : 1;
       const byWidth = sizedAt(p, width) ? (width + widthAdd(p)) / perWidth(p) : 1;
@@ -172,10 +172,12 @@
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="${p.cov_min}" max="${p.cov_max}"
                 value="${esc(row.width_in)}" title="Coverage width, ${Number(p.cov_min)}–${Number(p.cov_max)} in"><span class="unit">" cov.</span>`;
     }
-    if (p.unit === 'each' && p.girth) {
+    if (p.unit === 'each' && (p.girth || p.category === 'trim')) {
+      const std = p.girth ? Number(p.girth) : null;
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="0.125"
-                value="${esc(row.width_in)}" placeholder="${finishedStd(p)}"
-                title="Finished width in inches. The list price is for ${finishedStd(p)}&quot;; other widths scale it."><span class="unit">" wide</span>`;
+                value="${esc(row.width_in)}" placeholder="${std || 'flat'}"
+                title="${std ? `Flat width in inches (coil it takes). The list price is for ${std}&quot; flat; other widths are priced by it.`
+                  : 'Flat width in inches (coil it takes). This trim has no standard flat width set, so the price doesn\'t change with it.'}"><span class="unit">" flat</span>`;
     }
     if (p.category === 'custom_trim') {
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="0.125"
@@ -572,7 +574,9 @@
       const w = Number(row.width_in);
       if (!(w >= Number(p.cov_min) && w <= Number(p.cov_max))) row.width_in = String(Number(p.cov));
     } else if (p && p.unit === 'each' && p.girth) {
-      if (row.width_in === '' || row.width_in === undefined || row.lastProduct !== p.id) row.width_in = String(finishedStd(p));
+      if (row.width_in === '' || row.width_in === undefined || row.lastProduct !== p.id) row.width_in = String(Number(p.girth));
+    } else if (p && p.category === 'trim') {
+      if (row.lastProduct !== p.id) row.width_in = '';
     } else if (!p || p.category !== 'custom_trim') {
       row.width_in = '';
     }

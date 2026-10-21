@@ -216,8 +216,9 @@ function parseSections(b, productsById) {
       if (p.category === 'custom_trim' && !(width > 0)) {
         throw new UserError(`${where(ii + 1)}: enter the girth (flat width in inches) for custom trim.`);
       }
-      // Trim with a standard flat width (ridge cap 13") can be made wider or narrower.
-      const sized = p.unit === 'each' && p.girth > 0;
+      // Any trim (and anything with a standard flat width) takes a flat width: wider or
+      // narrower ridge cap is priced by it; other trim just tells the shop the strip.
+      const sized = p.unit === 'each' && (p.girth > 0 || p.category === 'trim');
       if (width !== null && !(width > 0)) throw new UserError(`${where(ii + 1)}: width must be more than zero.`);
       if (p.category !== 'panel' && p.category !== 'custom_trim' && !sized) width = null;
       const price = blank(it.unit_price) ? null : Number(it.unit_price);
@@ -662,16 +663,16 @@ const sizeCol = (i, { shop = true } = {}) => {
   if (i.pricing_unit === 'sqft' && i.width_in) {
     return `${num(i.width_in, 3)}" ${i.category === 'custom_trim' ? 'girth' : 'cov.'}`;
   }
-  if (i.per_width_in && i.width_in) {
-    return `${num(i.width_in, 3)}" wide${shop && i.product_flat_extra ? ` (${num(i.width_in + i.product_flat_extra, 3)}" flat)` : ''}`;
+  if (i.pricing_unit === 'each' && i.width_in) {
+    return `${num(i.width_in, 3)}" flat${shop && i.product_flat_extra ? ` (${num(i.width_in - i.product_flat_extra, 3)}" finished)` : ''}`;
   }
   return '';
 };
 
 // Flat strip of coil one piece takes: panels use the product's girth (if any);
-// trim uses the line's width plus how much wider the flat strip is (ridge cap +1").
+// trim uses the line's (flat) width, or the product's standard flat width.
 const lineGirth = (i) => (i.category === 'panel' ? i.product_girth_in
-  : i.width_in != null ? i.width_in + (i.product_flat_extra || 0) : i.product_girth_in);
+  : i.width_in != null ? i.width_in : i.product_girth_in);
 
 // Subtotal, tax and total rows shared by the cut sheet and the customer copy.
 const totalsRows = (o) => html`

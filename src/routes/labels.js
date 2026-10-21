@@ -136,7 +136,8 @@ async function labelPage(req, res, { title, labels, back }) {
 
 const lineText = (i) => {
   const len = i.length_display ? ` × ${i.length_display}` : '';
-  const width = i.pricing_unit === 'sqft' && i.category === 'custom_trim' && i.width_in ? ` (${num(i.width_in, 3)}" girth)` : '';
+  const width = !i.width_in ? '' : i.pricing_unit === 'sqft' && i.category === 'custom_trim' ? ` (${num(i.width_in, 3)}" girth)`
+    : i.pricing_unit === 'each' ? ` (${num(i.width_in, 3)}" flat)` : '';
   return `${num(i.pieces)}${len} ${i.product_name}${width}`;
 };
 

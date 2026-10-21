@@ -41,14 +41,12 @@ works out the square feet, linear feet and price for every line.
   be undone, and the first run moves a confirmed order to In production.
 - **Stock**: panels and trim cut ahead or left over, by product, color and length. Add
   pieces (optionally cut from a coil) and take them out when sold or scrapped.
-- **Trim at other widths**: trim with a flat width on the price list (ridge cap is 13") gets
-  a width box on the order. The price scales by width and length: 10 pieces of 24" ridge cap
-  at 10' bill as 10 x 24/13 = 18.46 x the 13" price.
-- **Ridge cap flat width**: ridge cap is entered by finished width; the flat strip is 1" wider
-  (13" = 14" flat, 24" = 25" flat). Coil footage uses the flat width. Pricing basis is the
-  `sized_trim_pricing` setting, default `per_inch`: the standard 13" piece is the list price
-  ($44.20 = $3.40 per finished inch) and any other width is $3.40 x its flat width
-  (24" = $3.40 x 25 = $85.00), recouping some of the drop. Other values: `flat`, `mixed`, `finished`.
+- **Trim widths (flat)**: every trim line has a width box, and the width is the FLAT width (inches
+  of coil), which coil footage uses. Trim with a standard flat width on the Price list is priced by
+  it: the standard width is the list price, any other width is the list price per standard finished
+  inch x its flat width. Ridge cap: 14" flat (13" finished) = $44.20, i.e. $3.40 per inch, so 25"
+  flat (24" finished) = $3.40 x 25 = $85.00. Trim with no standard flat width keeps its list price;
+  the width just tells the shop the strip.
 - **Quotes first**: "+ Quote" at the start of the menu and "New quote" buttons; a quote turns
   into an order when it's approved.
 - **Customer quote / copy** (`/orders/:id/customer`): what the customer sees. One price per

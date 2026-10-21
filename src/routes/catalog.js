@@ -38,7 +38,8 @@ router.get('/products', need('prices'), async (req, res) => {
     from today on; orders already written keep the price they were written at.</p>
     <p class="muted">Trim and downspouts are priced per 10' piece; other lengths are billed in proportion
     (a 20' piece counts as two). <strong>Flat width</strong> is how wide a strip of coil one piece takes;
-    it decides how many pieces come out across a coil when production is logged.</p>
+    it decides how many pieces come out across a coil when production is logged. Quotes take a flat width on every
+    trim line; for a trim with a flat width set here, a line at another width is priced by it (list price per inch).</p>
     ${req.query.saved ? html`<div class="notice">Saved.</div>` : ''}
     ${Object.entries(groups).map(([cat, items]) => {
     const cut = ['trim', 'downspout'].includes(cat);
