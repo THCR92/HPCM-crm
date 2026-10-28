@@ -1555,3 +1555,14 @@ test('admin email page: shows if email is set up and sends a test', async () => 
     mail.io.forceConfigured = false;
   }
 });
+
+test('typos too big for the database get a plain message, not a server error', async () => {
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const pbr = await productId('PNL-PBR-26');
+  const ridge = (await query("SELECT product_id FROM products WHERE name = 'Ridge Cap 26 GA'")).rows[0].product_id;
+  const save = async (item) => (await post('/orders', { customer_id: c.customer_id, accessories_checked: true,
+    sections: [{ area: 'roof', items: [item] }] })).json();
+  assert.match((await save({ product_id: pbr, pieces: 4, length_in: 12000, unit_price: 5 })).error, /length of 1,000' looks wrong/);
+  assert.match((await save({ product_id: ridge, pieces: 4, width_in: 1400, unit_price: 5 })).error, /width of 1400" looks wrong/);
+  assert.match((await save({ product_id: pbr, pieces: 4, length_in: 120, unit_price: 50000000 })).error, /price of \$50000000 looks wrong/);
+});

@@ -204,8 +204,10 @@ function parseSections(b, productsById) {
       if (!p) throw new UserError(`${where(ii + 1)}: pick a product.`);
       const pieces = Number(it.pieces);
       if (!(pieces > 0)) throw new UserError(`${where(ii + 1)}: quantity must be more than zero.`);
+      if (pieces >= 1e7) throw new UserError(`${where(ii + 1)}: a quantity of ${it.pieces} looks wrong.`);
       const length = blank(it.length_in) ? null : Number(it.length_in);
       if (length !== null && !(length > 0)) throw new UserError(`${where(ii + 1)}: length must be more than zero.`);
+      if (length >= 10000) throw new UserError(`${where(ii + 1)}: a length of ${Math.round(length / 12).toLocaleString('en-US')}' looks wrong. Check the feet and inches boxes.`);
       if (length !== null && p.max_length_in && length > p.max_length_in) {
         throw new UserError(`${where(ii + 1)}: ${p.name} can be at most ${p.max_length_in / 12}' long.`);
       }
@@ -220,9 +222,11 @@ function parseSections(b, productsById) {
       // narrower ridge cap is priced by it; other trim just tells the shop the strip.
       const sized = p.unit === 'each' && (p.girth > 0 || p.category === 'trim');
       if (width !== null && !(width > 0)) throw new UserError(`${where(ii + 1)}: width must be more than zero.`);
+      if (width >= 1000) throw new UserError(`${where(ii + 1)}: a width of ${it.width_in}" looks wrong. Widths are in inches.`);
       if (p.category !== 'panel' && p.category !== 'custom_trim' && !sized) width = null;
       const price = blank(it.unit_price) ? null : Number(it.unit_price);
       if (price === null || !(price >= 0)) throw new UserError(`${where(ii + 1)}: ${p.name} needs a price.`);
+      if (price >= 1e7) throw new UserError(`${where(ii + 1)}: a price of $${it.unit_price} looks wrong.`);
       return {
         order_item_id: Number(it.order_item_id) || null,
         product: p,
@@ -435,6 +439,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
 const dbMessage = (err) => {
   if (err instanceof UserError) return err.message;
   if (err.code === 'P0001' || err.code === '23514') return err.message; // trigger / check messages
+  if (err.code === '22003') return 'A number on this quote is far too big (a quantity, length, width, price or total). Check for a typo.';
   return null;
 };
 
