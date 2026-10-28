@@ -751,7 +751,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...state.header, sections }),
       });
-      const out = await res.json().catch(() => ({ ok: false, error: 'The server had a problem saving this order.' }));
+      const out = await res.json().catch(() => ({ ok: false,
+        error: res.redirected || res.status === 401 || res.status === 403
+          ? 'You were signed out or this account can\'t save quotes. Open a new tab, sign in, then come back and press Save again.'
+          : `The server had a problem saving this order (error ${res.status}).` }));
       if (!out.ok) return showError(out.error);
       dirty = false;
       window.location = out.redirect;

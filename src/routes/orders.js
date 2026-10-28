@@ -535,8 +535,10 @@ const saveHandler = (getId) => async (req, res) => {
     res.json({ ok: true, redirect: `/orders/${id}` });
   } catch (err) {
     const msg = dbMessage(err);
-    if (!msg) throw err;
-    res.status(400).json({ ok: false, error: msg });
+    if (msg) return res.status(400).json({ ok: false, error: msg });
+    // Anything unexpected: say what it was, so it can be reported and fixed.
+    console.error('Saving order failed', getId(req), JSON.stringify(req.body), err);
+    res.status(500).json({ ok: false, error: `The server had a problem saving this quote (${err.message}). Nothing was saved. Please send this message to Claude.` });
   }
 };
 router.post('/', need('quotes'), saveHandler(() => null));
