@@ -1562,7 +1562,13 @@ test('typos too big for the database get a plain message, not a server error', a
   const ridge = (await query("SELECT product_id FROM products WHERE name = 'Ridge Cap 26 GA'")).rows[0].product_id;
   const save = async (item) => (await post('/orders', { customer_id: c.customer_id, accessories_checked: true,
     sections: [{ area: 'roof', items: [item] }] })).json();
-  assert.match((await save({ product_id: pbr, pieces: 4, length_in: 12000, unit_price: 5 })).error, /length of 1,000' looks wrong/);
+  assert.match((await save({ product_id: pbr, pieces: 4, length_in: 1200000, unit_price: 5 })).error, /length of 100,000' looks wrong/);
+  // A square-footage quote: one panel at the whole length (Tyler: 2,782' for 3,709 sq ft).
+  const snap = await productId('PNL-SL-26');
+  const whole = await save({ product_id: snap, pieces: 1, length_in: 2782 * 12, width_in: 16, unit_price: 3.65 });
+  assert.ok(whole.ok, whole.error);
+  const { rows: [t] } = await query('SELECT lines_subtotal FROM v_order_totals WHERE order_id = $1', [Number(whole.redirect.split('/').pop())]);
+  assert.strictEqual(Number(t.lines_subtotal), 13539.05); // 3,709.33 sq ft x $3.65
   assert.match((await save({ product_id: ridge, pieces: 4, width_in: 1400, unit_price: 5 })).error, /width of 1400" looks wrong/);
   assert.match((await save({ product_id: pbr, pieces: 4, length_in: 120, unit_price: 50000000 })).error, /price of \$50000000 looks wrong/);
 });

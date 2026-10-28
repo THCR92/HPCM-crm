@@ -207,7 +207,7 @@ function parseSections(b, productsById) {
       if (pieces >= 1e7) throw new UserError(`${where(ii + 1)}: a quantity of ${it.pieces} looks wrong.`);
       const length = blank(it.length_in) ? null : Number(it.length_in);
       if (length !== null && !(length > 0)) throw new UserError(`${where(ii + 1)}: length must be more than zero.`);
-      if (length >= 10000) throw new UserError(`${where(ii + 1)}: a length of ${Math.round(length / 12).toLocaleString('en-US')}' looks wrong. Check the feet and inches boxes.`);
+      if (length >= 1e6) throw new UserError(`${where(ii + 1)}: a length of ${Math.round(length / 12).toLocaleString('en-US')}' looks wrong. Check the feet and inches boxes.`);
       if (length !== null && p.max_length_in && length > p.max_length_in) {
         throw new UserError(`${where(ii + 1)}: ${p.name} can be at most ${p.max_length_in / 12}' long.`);
       }
