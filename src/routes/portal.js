@@ -513,7 +513,7 @@ function formPage(l, { title, order, catalog, action }) {
     <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
     <script>window.ORDER_FORM = ${jsonForScript({
     order, ...catalog, portal: { prices: l.portal_line_prices, totals: l.portal_totals, action } })};</script>`,
-    scripts: ['/screws.js', '/trim-price.js', '/order-form.js'],
+    scripts: ['/combo.js', '/screws.js', '/trim-price.js', '/order-form.js'],
   });
 }
 

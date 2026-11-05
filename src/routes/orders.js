@@ -496,7 +496,7 @@ function formPage(res, { title, order, catalog }) {
     <h1>${title}</h1>
     <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
     <script>window.ORDER_FORM = ${jsonForScript({ order, ...catalog })};</script>`,
-    scripts: ['/screws.js', '/trim-price.js', '/order-form.js'],
+    scripts: ['/combo.js', '/screws.js', '/trim-price.js', '/order-form.js'],
   }));
 }
 

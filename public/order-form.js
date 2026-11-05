@@ -197,7 +197,7 @@
         <input class="ft" data-f="ft" inputmode="numeric" value="${esc(row.ft)}" placeholder="${lenPlaceholder}" aria-label="Feet" ${needsLength ? 'required' : ''}><span class="unit">'</span>
         <input class="in" data-f="inch" value="${esc(row.inch)}" aria-label="Inches"><span class="unit">"</span>
       </td>
-      <td><select data-f="product_id" class="product">${productOptions(row.product_id)}</select>
+      <td><select data-f="product_id" class="product" data-combo aria-label="Item">${productOptions(row.product_id)}</select>
         <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${screwOptionHtml(row, p)}</td>
       <td><select data-f="color_id" class="color">${colorOptions(row.color_id)}</select></td>
       <td class="width">${widthCell(row, p)}</td>
@@ -248,7 +248,7 @@
     return `<div class="card form-grid">
       ${portal ? `<div class="span2"><span class="muted small">Customer</span><br><strong>${esc(customers[0] ? customers[0].name : '')}</strong></div>`
     : `<label class="span2">Contractor / customer *
-        <span class="row"><select data-h="customer_id" required>
+        <span class="row"><select data-h="customer_id" data-combo aria-label="Customer" required>
           <option value="">Pick a customer…</option>
           ${customers.map((c) => `<option value="${c.id}" ${c.id === Number(h.customer_id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
         </select><a href="/customers/new" target="_blank" class="small">+ New customer</a></span></label>`}
