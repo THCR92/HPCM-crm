@@ -390,3 +390,6 @@ label.accessories-check.missing { color: var(--danger, #b42318); font-weight: 60
 .combo-option.active, .combo-option:hover { background: #e6f0f8; }
 .combo-group { padding: .35rem .6rem .15rem; font-size: .75rem; font-weight: 700; text-transform: uppercase; color: var(--muted, #666); }
 .combo-empty { padding: .35rem .6rem; color: var(--muted, #666); }
+fieldset.gauge-picks { border: 1px solid var(--line, #ddd); border-radius: 6px; padding: .3rem .6rem; display: flex; gap: .8rem; flex-wrap: wrap; align-items: center; }
+fieldset.gauge-picks legend { font-size: .85em; color: var(--muted); padding: 0 .3rem; }
+fieldset.gauge-picks label { flex: 0 0 auto; }

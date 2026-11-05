@@ -189,6 +189,46 @@ test('one supplier can list the same color in several finishes; new finishes can
   assert.match(page, /Premium/);
 });
 
+test('colors by gauge: chart colors are loaded, gauges are saved, suppliers can come off the lists', async () => {
+  const { loadCatalog } = require('../src/routes/orders');
+  // The supplier charts are loaded; Metal Wholesale is off the lists.
+  const { rows: [chart] } = await query(`SELECT
+      (SELECT count(*) FROM v_colors WHERE supplier_name = 'CoilSpot' AND active)::int AS coilspot,
+      (SELECT array_agg(g.gauge ORDER BY g.gauge) FROM colors c JOIN suppliers s USING (supplier_id)
+         JOIN color_gauges cg USING (color_id) JOIN gauges g USING (gauge_id)
+         WHERE s.name ~* 'sheffield' AND c.name = 'Dark Bronze' AND c.finish = 'smooth') AS bronze,
+      (SELECT count(*) FROM colors c JOIN suppliers s USING (supplier_id) WHERE s.name ~* 'metal\s*wholesale' AND c.active)::int AS mw`);
+  assert.strictEqual(chart.coilspot, 35);
+  assert.deepStrictEqual(chart.bronze.map(Number), [22, 24]);
+  assert.strictEqual(chart.mw, 0);
+
+  const tag = Math.random().toString(36).slice(2, 8);
+  const form = (path, body) => fetch(base + path, { method: 'POST', body: new URLSearchParams(body), redirect: 'manual' });
+  await form('/suppliers', { name: `Gauge Test ${tag}` });
+  const { rows: [s] } = await query('SELECT supplier_id FROM suppliers WHERE name = $1', [`Gauge Test ${tag}`]);
+  const g = Object.fromEntries((await query('SELECT gauge, gauge_id FROM gauges')).rows.map((r) => [r.gauge, r.gauge_id]));
+  const body = new URLSearchParams({ supplier_id: s.supplier_id, name: 'Only 29', finish: 'smooth' });
+  body.append('gauge', g[29]);
+  await fetch(`${base}/colors`, { method: 'POST', body, redirect: 'manual' });
+  const { rows: [c] } = await query('SELECT color_id FROM colors WHERE supplier_id = $1', [s.supplier_id]);
+  let cat = await loadCatalog();
+  assert.deepStrictEqual(cat.colors.find((x) => x.id === c.color_id).gauges.map(Number), [29]);
+  const page = await (await fetch(`${base}/colors`)).text();
+  assert.match(page, /29 ga/);
+
+  // Edit: tick 26 and 29.
+  const edit = new URLSearchParams({ supplier_id: s.supplier_id, name: 'Only 29', finish: 'smooth', active: '1' });
+  edit.append('gauge', g[26]); edit.append('gauge', g[29]);
+  await fetch(`${base}/colors/${c.color_id}`, { method: 'POST', body: edit, redirect: 'manual' });
+  cat = await loadCatalog();
+  assert.deepStrictEqual(cat.colors.find((x) => x.id === c.color_id).gauges.map(Number), [26, 29]);
+
+  // The supplier comes off the lists: its colors leave the quote form.
+  await form(`/admin/suppliers/${s.supplier_id}`, { name: `Gauge Test ${tag}` });
+  cat = await loadCatalog();
+  assert.ok(!cat.colors.some((x) => x.id === c.color_id));
+});
+
 test('coils by linear foot: receive, run against an order line, mismatch check, undo, correct, stock', async () => {
   const tag = Math.random().toString(36).slice(2, 8);
   const form = (path, body) => fetch(base + path, { method: 'POST', body: new URLSearchParams(body), redirect: 'manual' });

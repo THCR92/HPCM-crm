@@ -441,12 +441,13 @@ router.get('/admin/suppliers', need('catalog'), async (req, res) => {
     <h1>Suppliers</h1>
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
     <p class="muted">Add new suppliers on the <a href="/colors">Colors</a> page. A supplier with colors can't be
-      removed; hide its colors instead.</p>
+      removed; untick "Show on the lists" instead. A supplier off the lists isn't offered for new colors, and its colors aren't offered on quotes.</p>
     ${rows.map((s) => html`
     <form method="post" action="/admin/suppliers/${s.supplier_id}" class="card form-row">
       <label>Name<input name="name" value="${s.name}" required></label>
       <label>Phone<input name="phone" value="${s.phone}" type="tel"></label>
       <label>Email<input name="email" value="${s.email}" type="email"></label>
+      <label class="check"><input type="checkbox" name="active" value="1" ${s.active ? 'checked' : ''}> Show on the lists</label>
       <span class="muted small">${s.colors} colors</span>
       <button class="btn">Save</button>
       ${s.colors ? '' : html`<button class="btn danger" name="remove" value="1"
@@ -462,8 +463,9 @@ router.post('/admin/suppliers/:id(\\d+)', need('catalog'), async (req, res) => {
     if (b.remove === '1') {
       await query('DELETE FROM suppliers WHERE supplier_id = $1', [req.params.id]);
     } else {
-      await query('UPDATE suppliers SET name = $2, phone = $3, email = $4 WHERE supplier_id = $1',
-        [req.params.id, String(b.name || '').trim(), String(b.phone || '').trim() || null, String(b.email || '').trim() || null]);
+      await query('UPDATE suppliers SET name = $2, phone = $3, email = $4, active = $5 WHERE supplier_id = $1',
+        [req.params.id, String(b.name || '').trim(), String(b.phone || '').trim() || null, String(b.email || '').trim() || null,
+          b.active === '1']);
     }
   } catch (err) {
     if (err.code === '23503') return back('That supplier still has colors or coils, so it can\'t be removed.');

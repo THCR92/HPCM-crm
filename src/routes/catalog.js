@@ -79,8 +79,24 @@ router.post('/products/:id(\\d+)/price', need('catalog'), async (req, res) => {
 });
 
 const loadFinishes = async () => (await query('SELECT * FROM color_finishes ORDER BY sort_order, label')).rows;
+const loadGauges = async () => (await query('SELECT gauge_id, gauge FROM gauges ORDER BY gauge')).rows;
+// Suppliers for the pickers: the ones shown on the lists, plus the color's own supplier.
+const loadSuppliers = async (keep) => (await query(
+  'SELECT * FROM suppliers WHERE active OR supplier_id = $1 ORDER BY name', [keep || null])).rows;
+const GAUGES_SQL = `(SELECT array_agg(g.gauge ORDER BY g.gauge) FROM color_gauges cg JOIN gauges g USING (gauge_id)
+                     WHERE cg.color_id = v_colors.color_id) AS gauges`;
+const gaugeText = (list) => (list && list.length ? `${list.join(', ')} ga` : 'Any');
 
-function colorFields(c, suppliers, finishes) {
+// The gauges a color is stocked in. None ticked = it goes with any gauge.
+async function saveGauges(colorId, gaugeIds) {
+  await query('DELETE FROM color_gauges WHERE color_id = $1', [colorId]);
+  if (gaugeIds.length) {
+    await query(`INSERT INTO color_gauges (color_id, gauge_id)
+                 SELECT $1, gauge_id FROM gauges WHERE gauge_id = ANY ($2::smallint[])`, [colorId, gaugeIds]);
+  }
+}
+
+function colorFields(c, suppliers, finishes, gauges, picked = []) {
   const opt = (val, cur, label) => html`<option value="${val}" ${String(val) === String(cur) ? 'selected' : ''}>${label}</option>`;
   return html`
       <label>Supplier *
@@ -93,7 +109,11 @@ function colorFields(c, suppliers, finishes) {
       <label>Finish
         <select name="finish">${finishes.map((f) => opt(f.finish, c.finish || 'smooth', f.label))}</select></label>
       <label>Price premium %<input name="upcharge_pct" type="number" step="0.01" min="0" value="${c.upcharge_pct ?? 0}"></label>
-      <label class="check"><input type="checkbox" name="special" value="1" ${c.is_stock_color === false ? 'checked' : ''}> Special order (not stocked)</label>`;
+      <label class="check"><input type="checkbox" name="special" value="1" ${c.is_stock_color === false ? 'checked' : ''}> Special order (not stocked)</label>
+      <fieldset class="gauge-picks"><legend>Stocked in (leave all empty for any gauge)</legend>
+        ${gauges.map((g) => html`<label class="check"><input type="checkbox" name="gauge" value="${g.gauge_id}"
+          ${picked.map(Number).includes(Number(g.gauge)) ? 'checked' : ''}> ${g.gauge} ga</label>`)}
+      </fieldset>`;
 }
 
 function colorFromBody(b) {
@@ -104,6 +124,7 @@ function colorFromBody(b) {
     finish: typeof b.finish === 'string' && b.finish ? b.finish : 'smooth',
     upcharge_pct: Math.max(0, Number(b.upcharge_pct) || 0),
     is_stock_color: b.special !== '1',
+    gauge_ids: [].concat(b.gauge || []).map(Number).filter((n) => n > 0),
   };
 }
 
@@ -130,16 +151,31 @@ router.post('/settings/tax', need('catalog'), async (req, res) => {
 });
 
 router.get('/colors', async (req, res) => {
-  const { rows: colors } = await query(
-    'SELECT * FROM v_colors ORDER BY supplier_name NULLS FIRST, active DESC, name, finish_sort');
-  const { rows: suppliers } = await query('SELECT * FROM suppliers ORDER BY name');
+  const { rows: colors } = await query(`
+    SELECT v_colors.*, s.active AS supplier_active, ${GAUGES_SQL}
+    FROM v_colors LEFT JOIN suppliers s USING (supplier_id)
+    ORDER BY s.active DESC NULLS FIRST, supplier_name NULLS FIRST, finish_sort, v_colors.name`);
+  const suppliers = await loadSuppliers();
   const finishes = await loadFinishes();
+  const gauges = await loadGauges();
   const groups = new Map();
   for (const c of colors) {
     const key = c.supplier_name || 'No supplier yet';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(c);
+    if (!groups.has(key)) groups.set(key, { off: c.supplier_active === false, list: [] });
+    groups.get(key).list.push(c);
   }
+  const table = (list) => html`
+      <table class="list">
+        <thead><tr><th>Color</th><th>Code</th><th>Finish</th><th>Stocked in</th><th>Stock or special</th><th class="num">Premium</th><th></th></tr></thead>
+        <tbody>${list.map((c) => html`
+          <tr class="${c.active ? '' : 'inactive'}"><td>${c.name}${c.active ? '' : html` <span class="muted small">(hidden)</span>`}${
+            c.paint_system ? html`<div class="muted small">${c.paint_system}</div>` : ''}</td>
+          <td>${c.manufacturer_code}</td><td>${c.finish_label}</td><td>${gaugeText(c.gauges)}</td>
+          <td>${c.is_stock_color ? 'Stock' : 'Special order'}</td>
+          <td class="num">${Number(c.upcharge_pct) ? `${Number(c.upcharge_pct)}%` : ''}</td>
+          <td class="num">${edit ? html`<a href="/colors/${c.color_id}/edit">Edit</a>` : ''}</td></tr>`)}
+        </tbody>
+      </table>`;
   const edit = can('catalog');
   res.send(layout({
     title: 'Colors', active: '/colors',
@@ -148,7 +184,8 @@ router.get('/colors', async (req, res) => {
     <p class="muted">Each color belongs to the supplier it comes from, because the same color name
     from two suppliers doesn't match. The price premium is added to the price of any panel or trim
     ordered in that color (use it for textured, metallic, PVDF and special-order colors). The same color name can be listed
-    more than once for a supplier if it comes in more than one finish..</p>
+    more than once for a supplier if it comes in more than one finish. "Stocked in" is the gauges a color comes in:
+    a quote line only offers the colors stocked in its gauge (trim with no gauge counts as 26 ga).</p>
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
     ${edit ? html`<h2>Add a supplier</h2>
     <form method="post" action="/suppliers" class="card form-row">
@@ -160,7 +197,7 @@ router.get('/colors', async (req, res) => {
     <h2>Add a color</h2>
     ${suppliers.length ? html`
     <form method="post" action="/colors" class="card form-row">
-      ${colorFields({}, suppliers, finishes)}
+      ${colorFields({}, suppliers, finishes, gauges)}
       <button class="btn primary">Add color</button>
     </form>` : html`<p class="card muted">Add a supplier first, then its colors.</p>`}
     <details class="card">
@@ -170,18 +207,17 @@ router.get('/colors', async (req, res) => {
         <button class="btn">Add finish</button>
       </form>
     </details>` : ''}
-    ${[...groups].map(([supplier, list]) => html`
-      <h2>${supplier}</h2>
-      <table class="list">
-        <thead><tr><th>Color</th><th>Code</th><th>Finish</th><th>Stock or special</th><th class="num">Premium</th><th></th></tr></thead>
-        <tbody>${list.map((c) => html`
-          <tr class="${c.active ? '' : 'inactive'}"><td>${c.name}${c.active ? '' : html` <span class="muted small">(hidden)</span>`}</td>
-          <td>${c.manufacturer_code}</td><td>${c.finish_label}</td>
-          <td>${c.is_stock_color ? 'Stock' : 'Special order'}</td>
-          <td class="num">${Number(c.upcharge_pct) ? `${Number(c.upcharge_pct)}%` : ''}</td>
-          <td class="num">${edit ? html`<a href="/colors/${c.color_id}/edit">Edit</a>` : ''}</td></tr>`)}
-        </tbody>
-      </table>`)}
+    ${[...groups].map(([supplier, { off, list }]) => {
+      const shown = list.filter((c) => c.active);
+      const hidden = list.filter((c) => !c.active);
+      if (off) {
+        return html`<details class="card"><summary>${supplier} (taken off the lists, ${list.length} colors)</summary>${table(list)}</details>`;
+      }
+      return html`
+      <h2>${supplier} <span class="muted small">${shown.length} colors</span></h2>
+      ${shown.length ? table(shown) : ''}
+      ${hidden.length ? html`<details><summary class="muted">${hidden.length} hidden colors</summary>${table(hidden)}</details>` : ''}`;
+    })}
     ${colors.length ? '' : html`<p class="muted">No colors yet.</p>`}`,
   }));
 });
@@ -214,9 +250,10 @@ router.post('/finishes', need('catalog'), async (req, res) => {
 router.post('/colors', need('catalog'), async (req, res) => {
   const c = colorFromBody(req.body);
   try {
-    await query(`INSERT INTO colors (supplier_id, name, manufacturer_code, finish, upcharge_pct, is_stock_color)
-                 VALUES ($1, $2, $3, $4, $5, $6)`,
+    const { rows: [added] } = await query(`INSERT INTO colors (supplier_id, name, manufacturer_code, finish, upcharge_pct, is_stock_color)
+                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING color_id`,
     [c.supplier_id, c.name, c.manufacturer_code, c.finish, c.upcharge_pct, c.is_stock_color]);
+    await saveGauges(added.color_id, c.gauge_ids);
     res.redirect('/colors');
   } catch (err) {
     res.redirect(`/colors?error=${encodeURIComponent(colorError(err, c))}`);
@@ -224,10 +261,11 @@ router.post('/colors', need('catalog'), async (req, res) => {
 });
 
 router.get('/colors/:id(\\d+)/edit', need('catalog'), async (req, res) => {
-  const { rows: [c] } = await query('SELECT * FROM colors WHERE color_id = $1', [req.params.id]);
+  const { rows: [c] } = await query(`SELECT v_colors.*, ${GAUGES_SQL} FROM v_colors WHERE color_id = $1`, [req.params.id]);
   if (!c) return res.status(404).send('Color not found');
-  const { rows: suppliers } = await query('SELECT * FROM suppliers ORDER BY name');
+  const suppliers = await loadSuppliers(c.supplier_id);
   const finishes = await loadFinishes();
+  const gauges = await loadGauges();
   res.send(layout({
     title: `Edit ${c.name}`, active: '/colors',
     body: html`
@@ -235,7 +273,7 @@ router.get('/colors/:id(\\d+)/edit', need('catalog'), async (req, res) => {
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
     <p class="muted">Changing the premium only affects new order lines. Orders already written keep their prices.</p>
     <form method="post" action="/colors/${c.color_id}" class="card form-row">
-      ${colorFields(c, suppliers, finishes)}
+      ${colorFields(c, suppliers, finishes, gauges, c.gauges || [])}
       <label class="check"><input type="checkbox" name="active" value="1" ${c.active ? 'checked' : ''}> Show on new orders</label>
       <button class="btn primary">Save color</button>
       <a class="btn" href="/colors">Cancel</a>
@@ -251,6 +289,7 @@ router.post('/colors/:id(\\d+)', need('catalog'), async (req, res) => {
                  WHERE color_id = $8`,
     [c.supplier_id, c.name, c.manufacturer_code, c.finish, c.upcharge_pct, c.is_stock_color,
       req.body.active === '1', req.params.id]);
+    await saveGauges(req.params.id, c.gauge_ids);
     res.redirect('/colors');
   } catch (err) {
     res.redirect(`/colors/${req.params.id}/edit?error=${encodeURIComponent(colorError(err, c))}`);

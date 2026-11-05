@@ -91,16 +91,19 @@ async function loadCatalog() {
            p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
            p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
-           pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name,
+           pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name, g.gauge,
            pp.closure_product_id AS closure_id, pp.outer_closure_product_id AS outer_closure_id, pp.vented_closure_product_id AS vented_closure_id
     FROM products p
     LEFT JOIN v_current_prices cp USING (product_id)
     LEFT JOIN panel_profiles pp USING (profile_id)
+    LEFT JOIN gauges g USING (gauge_id)
     WHERE p.active AND p.category <> 'delivery'
     ORDER BY array_position(enum_range(NULL::product_category), p.category), p.name`);
   const { rows: colors } = await query(`
-    SELECT color_id AS id, name, label, supplier_name AS supplier, finish, finish_label, upcharge_pct AS upcharge
-    FROM v_colors WHERE active ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
+    SELECT color_id AS id, name, label, supplier_name AS supplier, finish, finish_label, upcharge_pct AS upcharge,
+           -- The gauges a color is stocked in; none listed = any gauge.
+           (SELECT array_agg(g.gauge ORDER BY g.gauge) FROM color_gauges cg JOIN gauges g USING (gauge_id) WHERE cg.color_id = v_colors.color_id) AS gauges
+    FROM v_colors WHERE active AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.supplier_id = v_colors.supplier_id AND NOT s.active) ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
   const { rows: customers } = await query(`
     SELECT customer_id AS id, display_name AS name, phone, email, default_fulfillment, tax_exempt
     FROM customers WHERE active ORDER BY lower(display_name)`);

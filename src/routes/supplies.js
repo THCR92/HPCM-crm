@@ -69,7 +69,7 @@ router.get('/supplies', async (req, res) => {
   const { rows: products } = await query(`
     SELECT product_id, name, category, stock_by_color FROM products WHERE track_stock AND active
     ORDER BY array_position(enum_range(NULL::product_category), category), name`);
-  const { rows: colors } = await query(`SELECT color_id, label FROM v_colors WHERE active ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
+  const { rows: colors } = await query(`SELECT color_id, label FROM v_colors WHERE active AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.supplier_id = v_colors.supplier_id AND NOT s.active) ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
   const lowCount = all.filter(low).length;
   const prices = can('prices');
   const totalValue = all.reduce((a, r) => a + (r.value > 0 ? r.value : 0), 0);

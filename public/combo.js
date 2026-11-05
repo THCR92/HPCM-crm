@@ -93,7 +93,8 @@
       setTimeout(() => {
         if (select.isConnected) return;
         const row = at && document.querySelector(at);
-        const next = row && (row.querySelector('select.color') || row.querySelector('.qty'));
+        // data-combo-next: where to go next, first match wins (e.g. "select.color, .qty").
+        const next = row && (select.dataset.comboNext || '').split(',').map((q) => row.querySelector(q.trim())).find(Boolean);
         if (next) next.focus();
       });
     }

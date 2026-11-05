@@ -135,16 +135,24 @@
       `<optgroup label="${esc(CATEGORY[cat] || cat)}">${list.map((p) =>
         `<option value="${p.id}" ${p.id === Number(selected) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</optgroup>`).join('')}`;
   }
-  // Grouped by supplier: the same color name from two suppliers is a different color.
-  function colorOptions(selected) {
+  // The gauge a line's color has to come in: the product's gauge; trim with no gauge is 26 ga.
+  const lineGauge = (p) => (!p ? null : Number(p.gauge) || (['trim', 'custom_trim'].includes(p.category) ? 26 : null));
+  const madeIn = (c, gauge) => !gauge || !c.gauges || !c.gauges.length || c.gauges.map(Number).includes(gauge);
+
+  // Grouped by supplier: the same color name from two suppliers is a different color. Only the
+  // colors stocked in the line's gauge are offered (Tyler 2026-11-05); a color already on the line stays.
+  function colorOptions(selected, p) {
+    const gauge = lineGauge(p);
     const groups = new Map();
     for (const c of colors) {
+      if (!madeIn(c, gauge) && c.id !== Number(selected)) continue;
       const key = c.supplier || 'No supplier';
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(c);
     }
     const opt = (c) => `<option value="${c.id}" ${c.id === Number(selected) ? 'selected' : ''}>${esc(c.name)}${
-      c.finish && c.finish !== 'smooth' ? ` (${c.finish_label})` : ''}${Number(c.upcharge) ? ` +${Number(c.upcharge)}%` : ''}</option>`;
+      c.finish && c.finish !== 'smooth' ? ` (${c.finish_label})` : ''}${Number(c.upcharge) ? ` +${Number(c.upcharge)}%` : ''}${
+      madeIn(c, gauge) ? '' : ` (not stocked in ${gauge} ga)`}</option>`;
     // A line saved with a color that is now hidden still shows it.
     const hidden = selected && !colorById.has(Number(selected)) && order.hidden_colors
       ? order.hidden_colors.filter((c) => c.id === Number(selected)).map(opt).join('') : '';
@@ -197,9 +205,9 @@
         <input class="ft" data-f="ft" inputmode="numeric" value="${esc(row.ft)}" placeholder="${lenPlaceholder}" aria-label="Feet" ${needsLength ? 'required' : ''}><span class="unit">'</span>
         <input class="in" data-f="inch" value="${esc(row.inch)}" aria-label="Inches"><span class="unit">"</span>
       </td>
-      <td><select data-f="product_id" class="product" data-combo aria-label="Item">${productOptions(row.product_id)}</select>
+      <td><select data-f="product_id" class="product" data-combo data-combo-next="select.color, .qty" aria-label="Item">${productOptions(row.product_id)}</select>
         <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${screwOptionHtml(row, p)}</td>
-      <td><select data-f="color_id" class="color">${colorOptions(row.color_id)}</select></td>
+      <td><select data-f="color_id" class="color" data-combo data-combo-next=".width input, .price" aria-label="Color">${colorOptions(row.color_id, p)}</select></td>
       <td class="width">${widthCell(row, p)}</td>
       <td class="num billed"></td>
       <td class="price-cell"><span class="unit">$</span><input class="price ${needsPrice ? 'missing' : ''}" data-f="unit_price" type="number" step="0.01" min="0"
