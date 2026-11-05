@@ -141,6 +141,8 @@ async function productForm(res, p, error, back) {
       <label>Longest piece we can make (ft)<input name="max_ft" type="number" step="0.01" min="0"
         value="${p.max_length_in ? num(p.max_length_in / 12, 3) : ''}"></label>
       <label>Flat width (inches of coil)<input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}"></label>
+      <label>Trim: price per inch of flat width ($)<input name="price_per_flat_in" type="number" step="0.01" min="0"
+        value="${p.price_per_flat_in ?? ''}" placeholder="${isNew ? '26 ga trim: 3.40 if blank' : 'blank = list price per piece'}"></label>
       <label>SKU<input name="sku" value="${p.sku}" placeholder="made from the name if blank"></label>
       ${isNew ? html`<label>Price<input name="unit_price" type="number" step="0.01" min="0" value="${p.unit_price ?? ''}" placeholder="leave blank to enter it on each quote"></label>` : ''}
       <label class="check"><input type="checkbox" name="is_cut_to_length" value="1" ${p.is_cut_to_length ? 'checked' : ''}> Every line needs a length</label>
@@ -171,6 +173,8 @@ const productFromBody = (b) => ({
   standard_length_in: optNum(b.standard_ft, 12),
   max_length_in: optNum(b.max_ft, 12),
   girth_in: optNum(b.girth_in),
+  // Trim priced by the inch of flat width, per piece (26 ga $3.40, 24 ga parapet $4.40).
+  price_per_flat_in: optNum(b.price_per_flat_in) || null,
   is_cut_to_length: b.is_cut_to_length === '1',
   taxable: b.taxable === '1',
   active: b.active === '1',
@@ -184,6 +188,7 @@ function productProblem(p) {
   if (!p.name) return 'Enter a name.';
   if (p.category === 'panel' && (!p.profile_id || !p.gauge_id)) return 'A panel needs a profile and a gauge.';
   if (p.category === 'custom_trim' && p.pricing_unit !== 'sqft') return 'Custom trim is priced per sq ft.';
+  if (p.price_per_flat_in !== null && p.category !== 'trim') return 'Only trim is priced per inch of flat width.';
   for (const k of ['standard_length_in', 'max_length_in', 'girth_in']) {
     if (p[k] !== null && !(p[k] > 0)) return 'Lengths and widths must be more than zero.';
   }
@@ -193,7 +198,7 @@ const dbProblem = (err) => (err.code === '23505' ? 'Another product already uses
   : err.code === '23514' ? 'Those settings don\'t fit together (a panel needs a profile and gauge; custom trim is per sq ft).' : null);
 
 const COLS = ['name', 'sku', 'category', 'pricing_unit', 'profile_id', 'gauge_id', 'standard_length_in',
-  'max_length_in', 'girth_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental'];
+  'max_length_in', 'girth_in', 'price_per_flat_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental'];
 
 router.get('/admin/products/new', need('catalog'), async (req, res) => {
   // "Copy" on the Price list: a new product that starts with another one's settings and price.
@@ -215,8 +220,9 @@ router.post('/admin/products', need('catalog'), async (req, res) => {
         VALUES (${COLS.map((_, i) => `$${i + 1}`).join(', ')}, $${COLS.length + 1}) RETURNING product_id`,
       [...COLS.map((c) => p[c]), price === null]);
       // All 26 ga trim (and trim with no gauge) is priced per flat inch at the shop's rate (Tyler 2026-10-21).
-      await db.query(`UPDATE products n SET price_per_flat_in = (SELECT max(price_per_flat_in) FROM products WHERE category = 'trim')
-        WHERE n.product_id = $1 AND n.category = 'trim'
+      await db.query(`UPDATE products n SET price_per_flat_in = (SELECT max(price_per_flat_in) FROM products WHERE category = 'trim'
+          AND (gauge_id IS NULL OR gauge_id = (SELECT gauge_id FROM gauges WHERE gauge = 26)))
+        WHERE n.product_id = $1 AND n.category = 'trim' AND n.price_per_flat_in IS NULL
           AND (n.gauge_id IS NULL OR n.gauge_id = (SELECT gauge_id FROM gauges WHERE gauge = 26))`, [r.product_id]);
       if (price !== null) {
         await db.query(`INSERT INTO product_prices (product_id, unit_price, effective_from, source)

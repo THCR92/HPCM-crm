@@ -605,6 +605,21 @@ test('admin can add a product with a price and remove it', async () => {
   await fetch(`${base}/admin/products/${p.product_id}/remove`, { method: 'POST', redirect: 'manual' });
   assert.strictEqual((await query('SELECT 1 FROM products WHERE product_id = $1', [p.product_id])).rowCount, 0);
 
+  // Trim with its own per-inch price (Parapet Cap 24 GA, $4.40 per flat inch).
+  const g24 = (await query('SELECT gauge_id FROM gauges WHERE gauge = 24')).rows[0].gauge_id;
+  const pname = `Parapet Cap 24 GA ${Date.now()}`;
+  await fetch(`${base}/admin/products`, { method: 'POST', redirect: 'manual',
+    body: new URLSearchParams({ name: pname, category: 'trim', pricing_unit: 'each', gauge_id: g24, standard_ft: '10',
+      price_per_flat_in: '4.40', taxable: '1' }) });
+  const { rows: [pc] } = await query('SELECT product_id, price_per_flat_in FROM products WHERE name = $1', [pname]);
+  assert.strictEqual(pc.price_per_flat_in, 4.4);
+  // The migration sets it on a 24 ga parapet cap added without one.
+  await query('UPDATE products SET price_per_flat_in = NULL WHERE product_id = $1', [pc.product_id]);
+  await query(require('fs').readFileSync(require('path').join(__dirname, '../db/migrations/043_parapet_cap_rates.sql'), 'utf8'));
+  assert.strictEqual((await query('SELECT price_per_flat_in FROM products WHERE product_id = $1', [pc.product_id])).rows[0].price_per_flat_in, 4.4);
+  assert.strictEqual((await query("SELECT price_per_flat_in FROM products WHERE sku = 'TRM-PARAPET-CAP'")).rows[0].price_per_flat_in, 3.4);
+  await query('DELETE FROM products WHERE product_id = $1', [pc.product_id]);
+
   // From the Price list: "+ Add product" and "copy" open the form and come back to the Price list.
   const list = await (await fetch(`${base}/products`)).text();
   assert.match(list, /href="\/admin\/products\/new\?back=products"/);
