@@ -542,6 +542,8 @@ router.get('/:id(\\d+)/edit', need('quotes'), async (req, res) => {
 const saveHandler = (getId) => async (req, res) => {
   try {
     const id = await saveOrder(getId(req), req.body);
+    // A confirmed order's QuickBooks invoice gets the changes (quotes aren't sent).
+    qbo.orderCompleted(id);
     res.json({ ok: true, redirect: `/orders/${id}` });
   } catch (err) {
     const msg = dbMessage(err);
@@ -629,8 +631,9 @@ router.post('/:id(\\d+)/status', async (req, res) => {
     // Boots, screws and other supplies come out of stock when the order is completed.
     await syncOrderSupplies(db, Number(req.params.id), userName());
   });
-  // Completed orders become QuickBooks invoices.
-  if (status === 'completed') qbo.orderCompleted(Number(req.params.id));
+  // An order goes to QuickBooks as an invoice when it's confirmed (Tyler 2026-11-05), and is
+  // sent again when it's completed so the invoice has any changes and the order reads Invoiced.
+  if (status === 'completed' || (APPROVED.includes(status) && cur.status === 'quote')) qbo.orderCompleted(Number(req.params.id));
   if (status === 'ready' && cur.status !== 'ready') notices.orderReady(Number(req.params.id));
   res.redirect(back);
 });
@@ -867,15 +870,14 @@ router.get('/:id(\\d+)', async (req, res) => {
         <span class="area-total">${sectionTotals(s.items)}</span></h3>
       <table class="lines">
         <thead><tr><th class="num">Qty</th><th>Length</th><th>Panel / profile</th><th>Gauge</th><th>Color</th>
-          <th>Width</th>${prices ? html`<th class="num">Billed</th><th class="num">Price</th><th class="num">Amount</th>` : ''}</tr></thead>
+          <th>Width</th><th class="done-col">Done</th></tr></thead>
         <tbody>${s.items.length ? s.items.map((i) => html`
-          <tr><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
+          <tr class="${i.done_at ? 'line-done' : ''}"><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
           <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}
             ${i.attachments.map((a) => html`<div class="small"><a href="#drawing-${a.attachment_id}">📎 Drawing: ${a.filename}</a></div>`)}</td>
           <td>${i.gauge || ''}</td><td>${i.color_name}</td><td>${sizeCol(i)}</td>
-          ${prices ? html`<td class="num">${billed(i)}</td>
-          <td class="num">${money(i.unit_price)}</td><td class="num">${money(i.line_total)}</td>` : ''}</tr>`)
-        : html`<tr><td colspan="9" class="empty">Nothing in this section.</td></tr>`}</tbody>
+          <td class="done-col">${doneCell(o, i)}</td></tr>`)
+        : html`<tr><td colspan="7" class="empty">Nothing in this section.</td></tr>`}</tbody>
       </table>`)}
 
       <div class="sheet-foot">
@@ -891,18 +893,29 @@ router.get('/:id(\\d+)', async (req, res) => {
             o.updated_by && o.updated_by !== o.created_by ? ` · last changed by ${o.updated_by}` : ''}</p>` : ''}
           <table class="shop-use">
             <tr><th>Completed by</th><td>${o.completed_by}</td><th>Inspected by</th><td>${o.inspected_by}</td></tr>
-            <tr><th>Invoice #</th><td>${o.qbo_doc_number}</td><th>Date</th><td>${date(o.completed_at)}</td></tr>
+            <tr><th>Date</th><td>${date(o.completed_at)}</td><th></th><td></td></tr>
           </table>
-          ${await qboLine(o)}
         </div>
-        ${prices ? html`<table class="totals">
-          <tr><th>Materials</th><td>${money(o.lines_subtotal)}</td></tr>
-          ${o.delivery_charge ? html`<tr><th>Delivery</th><td>${money(o.delivery_charge)}</td></tr>` : ''}
-          ${o.discount_amount ? html`<tr><th>Discount</th><td>−${money(o.discount_amount)}</td></tr>` : ''}
-          ${totalsRows(o)}
-        </table>` : ''}
       </div>
     </section>
+    ${prices ? html`
+    <section class="no-print prices-block">
+      <h2>Prices</h2>
+      <p class="muted small">For the office only: prices don't show on the cut list, on screen or printed.</p>
+      ${await qboLine(o)}
+      <table class="list">
+        <thead><tr><th class="num">Line</th><th>Item</th><th class="num">Billed</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+        <tbody>${o.sections.flatMap((s) => s.items).map((i) => html`
+          <tr><td class="num">${i.line_no}</td><td>${num(i.pieces)} × ${i.length_display || ''} ${i.product_name}${i.color_name ? `, ${i.color_name}` : ''}</td>
+          <td class="num">${billed(i)}</td><td class="num">${money(i.unit_price)}</td><td class="num">${money(i.line_total)}</td></tr>`)}</tbody>
+      </table>
+      <table class="totals">
+        <tr><th>Materials</th><td>${money(o.lines_subtotal)}</td></tr>
+        ${o.delivery_charge ? html`<tr><th>Delivery</th><td>${money(o.delivery_charge)}</td></tr>` : ''}
+        ${o.discount_amount ? html`<tr><th>Discount</th><td>−${money(o.discount_amount)}</td></tr>` : ''}
+        ${totalsRows(o)}
+      </table>
+    </section>` : ''}
     ${photosSection(o)}
     ${drawingsSection(o)}
     ${rentals}
@@ -1067,9 +1080,13 @@ router.post('/:id(\\d+)/attachments/:aid(\\d+)/delete', need('drawings', 'produc
 // ---------------------------------------------------------------------------
 const canRent = () => can('inventory') || can('quotes');
 
-// Where a completed order stands with QuickBooks, with a button to send it again.
+// Where a confirmed order stands with QuickBooks, with a button to send it again.
 async function qboLine(o) {
-  if (!['completed', 'invoiced'].includes(o.status) || !can('prices') || !(await qbo.connected())) return '';
+  if (!can('prices') || !(await qbo.connected())) return '';
+  if (o.status === 'cancelled' && o.qbo_invoice_id) {
+    return html`<p class="no-print warn-text">Cancelled, but invoice ${o.qbo_doc_number} is still in QuickBooks: void or delete it there.</p>`;
+  }
+  if (!APPROVED.concat('invoiced').includes(o.status)) return '';
   const retry = can('approve') || can('status') ? html` <form method="post" action="/orders/${o.order_id}/qbo" class="inline">
     <button class="btn small">${o.qbo_invoice_id ? 'Send again' : 'Send to QuickBooks'}</button></form>` : '';
   if (o.qbo_sync_status === 'error') return html`<p class="no-print"><span class="warn-text">Not in QuickBooks: ${o.qbo_last_error}</span>${retry}</p>`;
@@ -1191,9 +1208,13 @@ async function productionSection(o, req) {
     FROM v_coils WHERE status IN ('received','in_stock','on_machine')
     ORDER BY color_label, gauge, coil_tag`) : { rows: [] };
   const back = `/orders/${o.order_id}`;
+  // Optional until the coil inventory is counted (Tyler 2026-11-05): folded away unless used.
+  const open = runs.length || req.query.error;
   return html`
-  <section class="no-print" id="production">
-    <h2>Production</h2>
+  <details class="no-print" id="production" ${open ? 'open' : ''}>
+    <summary><h2 class="inline-h">Coil used <span class="muted small">(optional)</span></h2></summary>
+    <p class="muted small">Not needed to finish an order: tick lines done on the cut list instead. Log which coil a line
+      was run from here once the coil inventory is counted.</p>
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
     <table class="list">
       <thead><tr><th>Line</th><th>Run</th><th>Coil</th><th class="num">Used</th><th>By</th><th>When</th><th></th></tr></thead>
@@ -1237,8 +1258,46 @@ async function productionSection(o, req) {
         (for trim with a flat width set, pieces that fit side by side across the coil share the same footage). Change it if more came off the coil,
         and put any wasted footage under scrap.</p>
     </form>` : ''}
-  </section>`;
+  </details>`;
 }
+
+// ---------------------------------------------------------------------------
+// Done boxes on the cut list: tick a line when it's made; the date and the
+// initials of whoever ticked it show beside the box (Tyler 2026-11-05).
+// ---------------------------------------------------------------------------
+const DONE_STATUSES = ['confirmed', 'in_production', 'ready', 'completed'];
+const canTick = (o) => DONE_STATUSES.includes(o.status) && (can('production') || can('status'));
+const initials = (name) => String(name || '').split(/\s+/).filter(Boolean).map((w) => w[0].toUpperCase()).join('') || null;
+const shortDate = (d) => new Date(d).toLocaleDateString('en-US', { timeZone: 'America/Denver', month: 'numeric', day: 'numeric', year: '2-digit' });
+
+function doneCell(o, i) {
+  const mark = i.done_at ? html`<span class="done-mark" title="${i.done_by_name || ''}">${shortDate(i.done_at)} ${i.done_by || ''}</span>` : '';
+  if (!canTick(o)) return html`<span class="done-box">${i.done_at ? '☑' : '☐'}</span> ${mark}`;
+  return html`<form method="post" action="/orders/${o.order_id}/lines/${i.order_item_id}/done" class="inline done-form">
+    <label class="done-label"><input type="checkbox" name="done" value="1" ${i.done_at ? 'checked' : ''}
+      onchange="this.form.submit()" aria-label="Line ${i.line_no} done"> ${mark}</label>
+    <noscript><button class="btn small">Save</button></noscript></form>`;
+}
+
+router.post('/:id(\\d+)/lines/:line(\\d+)/done', async (req, res) => {
+  const orderId = Number(req.params.id);
+  const back = `/orders/${orderId}`;
+  const { rows: [o] } = await query('SELECT order_id, status FROM orders WHERE order_id = $1', [orderId]);
+  if (!o) return res.status(404).send('Order not found');
+  if (!canTick(o)) return res.redirect(`${back}?status_error=${encodeURIComponent('Lines can be ticked done once the order is confirmed.')}`);
+  const name = userName();
+  await tx(async (db) => {
+    if (req.body.done === '1') {
+      await db.query(`UPDATE order_items SET done_at = COALESCE(done_at, now()), done_by = COALESCE(done_by, $3), done_by_name = COALESCE(done_by_name, $4)
+        WHERE order_item_id = $1 AND order_id = $2`, [Number(req.params.line), orderId, initials(name), name]);
+      await db.query(`UPDATE orders SET status = 'in_production' WHERE order_id = $1 AND status = 'confirmed'`, [orderId]);
+    } else {
+      await db.query('UPDATE order_items SET done_at = NULL, done_by = NULL, done_by_name = NULL WHERE order_item_id = $1 AND order_id = $2',
+        [Number(req.params.line), orderId]);
+    }
+  });
+  res.redirect(back);
+});
 
 router.post('/:id(\\d+)/runs', need('production'), async (req, res) => {
   const orderId = Number(req.params.id);

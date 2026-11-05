@@ -229,6 +229,36 @@ test('colors by gauge: chart colors are loaded, gauges are saved, suppliers can 
   assert.ok(!cat.colors.some((x) => x.id === c.color_id));
 });
 
+test('cut list: no prices; lines ticked done with date and initials; a changed line is un-ticked', async () => {
+  const form = (path, body) => fetch(base + path, { method: 'POST', body: new URLSearchParams(body), redirect: 'manual' });
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Cut List ' || gen_random_uuid()) RETURNING customer_id");
+  const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'roof', items: [
+    { product_id: await productId('PNL-SL-26'), pieces: 4, length_in: 120, width_in: 18, unit_price: 3.65 }] }] });
+  const id = Number((await res.json()).redirect.split('/').pop());
+  const sheet = async () => {
+    const page = await (await fetch(`${base}/orders/${id}`)).text();
+    return page.slice(page.indexOf('<section class="sheet">'), page.indexOf('</section>', page.indexOf('<section class="sheet">')));
+  };
+  assert.doesNotMatch(await sheet(), /\$|Amount|Subtotal/);
+  const { rows: [line] } = await query('SELECT order_item_id FROM order_items WHERE order_id = $1', [id]);
+  // A quote's lines can't be ticked.
+  await form(`/orders/${id}/lines/${line.order_item_id}/done`, { done: '1' });
+  assert.strictEqual((await query('SELECT done_at FROM order_items WHERE order_item_id = $1', [line.order_item_id])).rows[0].done_at, null);
+  await form(`/orders/${id}/status`, { status: 'confirmed' });
+  await form(`/orders/${id}/lines/${line.order_item_id}/done`, { done: '1' });
+  const { rows: [d] } = await query(`SELECT oi.done_at, oi.done_by, o.status FROM order_items oi JOIN orders o USING (order_id)
+    WHERE order_item_id = $1`, [line.order_item_id]);
+  assert.ok(d.done_at);
+  assert.strictEqual(d.done_by, 'TA', 'initials of "Test admin"');
+  assert.strictEqual(d.status, 'in_production');
+  assert.match(await sheet(), /checked/);
+  // Changing the count un-ticks it; the price change alone wouldn't.
+  await query('UPDATE order_items SET unit_price = 4 WHERE order_item_id = $1', [line.order_item_id]);
+  assert.ok((await query('SELECT done_at FROM order_items WHERE order_item_id = $1', [line.order_item_id])).rows[0].done_at);
+  await query('UPDATE order_items SET pieces = 5 WHERE order_item_id = $1', [line.order_item_id]);
+  assert.strictEqual((await query('SELECT done_at FROM order_items WHERE order_item_id = $1', [line.order_item_id])).rows[0].done_at, null);
+});
+
 test('coils by linear foot: receive, run against an order line, mismatch check, undo, correct, stock', async () => {
   const tag = Math.random().toString(36).slice(2, 8);
   const form = (path, body) => fetch(base + path, { method: 'POST', body: new URLSearchParams(body), redirect: 'manual' });
@@ -1242,12 +1272,17 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     assert.deepStrictEqual(estInv.LinkedTxn, [{ TxnId: E(1), TxnType: 'Estimate' }]);
     assert.deepStrictEqual(estInv.Line.filter((l) => l.SalesItemLineDetail).slice(0, 2).map((l) => l.SalesItemLineDetail.ItemRef.value), ['Q50', 'Q51']);
 
-    // A completed order becomes an invoice with the same number, lines, delivery and the CRM's tax.
+    // A confirmed order becomes an invoice with the same number, lines, delivery and the CRM's tax;
+    // completing it sends it again.
     const res = await post('/orders', { customer_id: pulled.customer_id, need_by: '2030-01-01', job_name: 'Barn', po_number: 'PO-7',
       delivery_charge: 75, sections: [{ area: 'roof', items: [
         { product_id: await productId('PNL-SL-26'), pieces: 10, length_in: 120, width_in: 18, unit_price: 3.65 }] }] });
     const id = Number((await res.json()).redirect.split('/').pop());
     await form(`/orders/${id}/status`, { status: 'confirmed' });
+    await qbo.idle();
+    const { rows: [early] } = await query('SELECT status, qbo_invoice_id FROM orders WHERE order_id = $1', [id]);
+    assert.ok(early.qbo_invoice_id, 'invoiced when confirmed');
+    assert.strictEqual(early.status, 'confirmed', 'a confirmed order stays in the shop steps');
     await addPhotos(id);
     await form(`/orders/${id}/status`, { status: 'completed' });
     await qbo.idle();

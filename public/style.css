@@ -393,3 +393,15 @@ label.accessories-check.missing { color: var(--danger, #b42318); font-weight: 60
 fieldset.gauge-picks { border: 1px solid var(--line, #ddd); border-radius: 6px; padding: .3rem .6rem; display: flex; gap: .8rem; flex-wrap: wrap; align-items: center; }
 fieldset.gauge-picks legend { font-size: .85em; color: var(--muted); padding: 0 .3rem; }
 fieldset.gauge-picks label { flex: 0 0 auto; }
+/* Done boxes on the cut list */
+.done-col { white-space: nowrap; width: 1%; }
+.done-label { display: inline-flex; align-items: center; gap: .4rem; cursor: pointer; }
+.done-label input { width: 1.3rem; height: 1.3rem; }
+.done-mark { font-size: .85em; }
+.done-box { font-size: 1.2em; }
+tr.line-done td { background: #eef7ee; }
+.prices-block { margin-top: 1.5rem; }
+.prices-block .totals { margin: .8rem 0 0 auto; }
+details#production { margin-top: 1.5rem; }
+details#production > summary { cursor: pointer; }
+h2.inline-h { display: inline; }

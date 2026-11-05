@@ -600,7 +600,8 @@ async function invoiceBody(o) {
   return {
     ...(ship ? { ShipAddr: ship } : {}),
     DocNumber: o.order_number,
-    TxnDate: denverDate(o.completed_at),
+    // The day the order was confirmed (ordered_on), which is when it's invoiced now.
+    TxnDate: o.ordered_on || denverDate(o.completed_at),
     CustomerRef: { value: o.qbo_customer_id },
     Line,
     ...(memo ? { CustomerMemo: { value: cut(memo, 1000) } } : {}),
@@ -641,11 +642,12 @@ async function invoiceStillOpen(qboInvoiceId) {
   return voided ? null : inv.DocNumber || 'this order\'s invoice';
 }
 
-const INVOICEABLE = ['completed', 'invoiced'];
+// Invoiced when confirmed (Tyler 2026-11-05); sent again when completed.
+const INVOICEABLE = ['confirmed', 'in_production', 'ready', 'completed', 'invoiced'];
 
-// Sends a completed order to QuickBooks as an invoice (or updates the one it
-// already has). With the real QuickBooks company the order then reads Invoiced
-// and is locked; with the test company it stays Completed.
+// Sends a confirmed order to QuickBooks as an invoice (or updates the one it
+// already has). Once the order is completed, with the real QuickBooks company it
+// then reads Invoiced and is locked; with the test company it stays Completed.
 async function pushInvoice(orderId) {
   const { rows: [o] } = await query(`
     SELECT o.*, c.qbo_customer_id, c.email AS customer_email, t.tax_amount, t.tax_exempt AS tax_exempt_effective
@@ -665,7 +667,7 @@ async function pushInvoice(orderId) {
     const conn = await connection();
     await query(`UPDATE orders SET qbo_invoice_id = $1, qbo_doc_number = $2, qbo_sync_token = $3,
         qbo_sync_status = 'synced', qbo_synced_at = now(), qbo_last_error = NULL,
-        status = CASE WHEN $4 THEN 'invoiced'::order_status ELSE status END
+        status = CASE WHEN $4 AND status = 'completed' THEN 'invoiced'::order_status ELSE status END
       WHERE order_id = $5`,
     [out.Invoice.Id, out.Invoice.DocNumber || o.order_number, out.Invoice.SyncToken, conn.environment === 'production', o.order_id]);
     return out.Invoice.Id;

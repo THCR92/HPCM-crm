@@ -36,7 +36,8 @@ async function coilPlan(orderIds) {
              CASE WHEN p.category = 'panel' THEN p.girth_in
                   ELSE COALESCE(oi.width_in, p.girth_in) END AS girth,
              oi.color_id, col.label AS color_label, p.gauge_id, g.gauge,
-             COALESCE((SELECT sum(r.pieces) FROM production_runs r WHERE r.order_item_id = oi.order_item_id), 0) AS run_pieces
+             COALESCE((SELECT sum(r.pieces) FROM production_runs r WHERE r.order_item_id = oi.order_item_id), 0) AS run_pieces,
+             oi.done_at IS NOT NULL AS done
       FROM order_items oi
       JOIN products p USING (product_id)
       JOIN v_colors col ON col.color_id = oi.color_id
@@ -60,7 +61,8 @@ async function coilPlan(orderIds) {
   // Feet still needed per order and material.
   const needs = new Map(); // order_id -> Map(key -> need)
   for (const l of lines) {
-    const left = l.pieces - l.run_pieces;
+    // A line ticked done on the cut list needs no more coil.
+    const left = l.done ? 0 : l.pieces - l.run_pieces;
     const key = `${l.color_id}:${l.gauge_id ?? 'any'}`;
     const feet = footage(left, l.length_in,
       { girth: l.girth, coilWidth: Math.max(widest.get(key) || 0, TRIM_COIL_WIDTH) });
@@ -90,6 +92,11 @@ async function coilPlan(orderIds) {
     byOrder.set(id, items);
   }
   const toOrder = [...shortTotals.values()].sort((a, b) => b.lf - a.lf);
+  // No coil entered at all yet (the inventory isn't counted): nothing to check against.
+  if (!stock.length) {
+    for (const items of byOrder.values()) for (const n of items) n.short = 0;
+    return { byOrder, toOrder: [], noCoil: true };
+  }
   return { byOrder, toOrder };
 }
 
@@ -195,7 +202,8 @@ router.get('/', async (req, res) => {
           <li><span>${t.color}${t.gauge ? html` <span class="ga">${t.gauge} ga</span>` : ''}</span>
             <b>short ${num(t.lf, 0)} ft</b></li>`)}</ul>
         ${plan.toOrder.length > 4 ? html`<p class="more">+${plan.toOrder.length - 4} more colors</p>` : ''}`
-      : html`<p class="lead">Coil on hand covers every approved job.</p>`}
+      : plan.noCoil ? html`<p class="lead">No coil entered yet, so there's nothing to check.</p>`
+        : html`<p class="lead">Coil on hand covers every approved job.</p>`}
     </section>
     <section class="panel ready">
       <h2>Ready and waiting</h2>
