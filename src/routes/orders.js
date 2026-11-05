@@ -53,7 +53,9 @@ async function loadOrder(id) {
   const { rows: items } = await query(`
     SELECT oi.*, p.name AS product_name, p.sku, p.category, p.is_rental, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
            p.flat_extra_in AS product_flat_extra,
-           g.gauge, col.label AS color_name,
+           g.gauge,
+           -- The color without its coil supplier, on the cut sheet too (Tyler 2026-11-05).
+           col.name || CASE WHEN col.finish <> 'smooth' THEN ' (' || col.finish_label || ')' ELSE '' END AS color_name,
            col.name || CASE WHEN col.finish <> 'smooth' THEN ' (' || col.finish_label || ')' ELSE '' END AS customer_color,
            fn_format_length(oi.length_in) AS length_display, ts.girth_in
     FROM order_items oi

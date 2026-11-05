@@ -173,7 +173,8 @@ async function orderLines(orderId) {
   const { rows } = await query(`
     SELECT oi.order_item_id, oi.line_no, oi.pieces, oi.pricing_unit, oi.width_in, oi.packed_at, oi.packed_by,
            fn_format_length(oi.length_in) AS length_display, p.name AS product_name, p.category, p.bundle_size,
-           col.label AS color, g.gauge, os.area, os.label AS section_label, COALESCE(os.sort_order, 999) AS section_sort
+           col.name || CASE WHEN col.finish <> 'smooth' THEN ' (' || col.finish_label || ')' ELSE '' END AS color,
+           g.gauge, os.area, os.label AS section_label, COALESCE(os.sort_order, 999) AS section_sort
     FROM order_items oi JOIN products p USING (product_id)
     LEFT JOIN v_colors col ON col.color_id = oi.color_id
     LEFT JOIN gauges g ON g.gauge_id = p.gauge_id
