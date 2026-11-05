@@ -112,7 +112,10 @@ router.get('/admin/products', need('catalog'), async (req, res) => {
   }));
 });
 
-async function productForm(res, p, error) {
+// Where to go after saving: back to the Price list when the form was opened from there.
+const backTo = (b) => (b && b.back === 'products' ? '/products?saved=1' : '/admin/products?saved=1');
+
+async function productForm(res, p, error, back) {
   const { rows: profiles } = await query('SELECT profile_id, name FROM panel_profiles ORDER BY name');
   const { rows: gauges } = await query('SELECT gauge_id, gauge FROM gauges ORDER BY gauge');
   const isNew = !p.product_id;
@@ -122,7 +125,10 @@ async function productForm(res, p, error) {
     body: html`
     <h1>${isNew ? 'Add product' : `Edit ${p.name}`}</h1>
     ${error ? html`<div class="alert">${error}</div>` : ''}
+    ${p.copied_from ? html`<p class="muted">Starting from ${p.copied_from}'s settings. Change the name and anything else that differs.
+      Panels on the same profile get the same screws and closures.</p>` : ''}
     <form method="post" action="${isNew ? '/admin/products' : `/admin/products/${p.product_id}`}" class="card form-grid" style="max-width:760px">
+      ${back === 'products' ? html`<input type="hidden" name="back" value="products">` : ''}
       <label class="span2">Name *<input name="name" value="${p.name}" required></label>
       <label>Type *<select name="category">${Object.entries(CATEGORIES).map(([k, v]) => opt(k, p.category || 'trim', v))}</select></label>
       <label>Priced *<select name="pricing_unit">${Object.entries(UNITS).map(([k, v]) => opt(k, p.pricing_unit || 'each', v))}</select></label>
@@ -136,7 +142,7 @@ async function productForm(res, p, error) {
         value="${p.max_length_in ? num(p.max_length_in / 12, 3) : ''}"></label>
       <label>Flat width (inches of coil)<input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}"></label>
       <label>SKU<input name="sku" value="${p.sku}" placeholder="made from the name if blank"></label>
-      ${isNew ? html`<label>Price<input name="unit_price" type="number" step="0.01" min="0" placeholder="leave blank if it varies"></label>` : ''}
+      ${isNew ? html`<label>Price<input name="unit_price" type="number" step="0.01" min="0" value="${p.unit_price ?? ''}" placeholder="leave blank to enter it on each quote"></label>` : ''}
       <label class="check"><input type="checkbox" name="is_cut_to_length" value="1" ${p.is_cut_to_length ? 'checked' : ''}> Every line needs a length</label>
       <label class="check"><input type="checkbox" name="taxable" value="1" ${p.taxable !== false ? 'checked' : ''}> Taxable</label>
       <label class="check"><input type="checkbox" name="track_stock" value="1" ${p.track_stock ? 'checked' : ''}> Count on hand (Supplies page)</label>
@@ -145,7 +151,7 @@ async function productForm(res, p, error) {
       <span></span>
       ${isNew ? '' : html`<label class="check"><input type="checkbox" name="active" value="1" ${p.active ? 'checked' : ''}> Show on new quotes</label>`}
       <div class="span2 actions"><button class="btn primary">${isNew ? 'Add product' : 'Save'}</button>
-        <a class="btn" href="/admin/products">Cancel</a></div>
+        <a class="btn" href="${back === 'products' ? '/products' : '/admin/products'}">Cancel</a></div>
     </form>
     ${isNew ? '' : html`<p class="muted">Change the price on the <a href="/products">Price list</a> page so the price history is kept.
       Screws for this product: <a href="/admin/screws?for=${p.category === 'panel' && p.profile_id ? `p:${p.profile_id}` : `i:${p.product_id}`}">screw rules</a>.</p>
@@ -189,19 +195,29 @@ const dbProblem = (err) => (err.code === '23505' ? 'Another product already uses
 const COLS = ['name', 'sku', 'category', 'pricing_unit', 'profile_id', 'gauge_id', 'standard_length_in',
   'max_length_in', 'girth_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental'];
 
-router.get('/admin/products/new', need('catalog'), (req, res) => productForm(res, { taxable: true }));
+router.get('/admin/products/new', need('catalog'), async (req, res) => {
+  // "Copy" on the Price list: a new product that starts with another one's settings and price.
+  const { rows: [from] } = req.query.from ? await query(`SELECT p.*, cp.unit_price FROM products p
+    LEFT JOIN v_current_prices cp USING (product_id) WHERE p.product_id = $1`, [Number(req.query.from) || 0]) : { rows: [] };
+  const p = from ? { ...from, product_id: null, sku: '', copied_from: from.name } : { taxable: true };
+  productForm(res, p, null, req.query.back);
+});
 
 router.post('/admin/products', need('catalog'), async (req, res) => {
   const p = productFromBody(req.body);
   p.sku ||= makeSku(p.name);
   const problem = productProblem(p);
-  if (problem) return productForm(res, p, problem);
+  if (problem) return productForm(res, p, problem, req.body.back);
   const price = optNum(req.body.unit_price);
   try {
     await tx(async (db) => {
       const { rows: [r] } = await db.query(`INSERT INTO products (${COLS.join(', ')}, price_varies)
         VALUES (${COLS.map((_, i) => `$${i + 1}`).join(', ')}, $${COLS.length + 1}) RETURNING product_id`,
       [...COLS.map((c) => p[c]), price === null]);
+      // All 26 ga trim (and trim with no gauge) is priced per flat inch at the shop's rate (Tyler 2026-10-21).
+      await db.query(`UPDATE products n SET price_per_flat_in = (SELECT max(price_per_flat_in) FROM products WHERE category = 'trim')
+        WHERE n.product_id = $1 AND n.category = 'trim'
+          AND (n.gauge_id IS NULL OR n.gauge_id = (SELECT gauge_id FROM gauges WHERE gauge = 26))`, [r.product_id]);
       if (price !== null) {
         await db.query(`INSERT INTO product_prices (product_id, unit_price, effective_from, source)
           VALUES ($1, $2, current_date, 'Added in CRM')`, [r.product_id, price]);
@@ -210,31 +226,31 @@ router.post('/admin/products', need('catalog'), async (req, res) => {
   } catch (err) {
     const msg = dbProblem(err);
     if (!msg) throw err;
-    return productForm(res, p, msg);
+    return productForm(res, p, msg, req.body.back);
   }
-  res.redirect('/admin/products?saved=1');
+  res.redirect(backTo(req.body));
 });
 
 router.get('/admin/products/:id(\\d+)', need('catalog'), async (req, res) => {
   const { rows: [p] } = await query('SELECT * FROM products WHERE product_id = $1', [req.params.id]);
   if (!p) return res.status(404).send('Product not found');
-  productForm(res, p);
+  productForm(res, p, null, req.query.back);
 });
 
 router.post('/admin/products/:id(\\d+)', need('catalog'), async (req, res) => {
   const p = { ...productFromBody(req.body), product_id: Number(req.params.id) };
   p.sku ||= makeSku(p.name);
   const problem = productProblem(p);
-  if (problem) return productForm(res, p, problem);
+  if (problem) return productForm(res, p, problem, req.body.back);
   try {
     await query(`UPDATE products SET ${COLS.map((c, i) => `${c} = $${i + 1}`).join(', ')}, active = $${COLS.length + 1}
       WHERE product_id = $${COLS.length + 2}`, [...COLS.map((c) => p[c]), p.active, p.product_id]);
   } catch (err) {
     const msg = dbProblem(err);
     if (!msg) throw err;
-    return productForm(res, p, msg);
+    return productForm(res, p, msg, req.body.back);
   }
-  res.redirect('/admin/products?saved=1');
+  res.redirect(backTo(req.body));
 });
 
 // Delete if no order or stock uses it; otherwise hide it from new quotes.

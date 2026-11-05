@@ -103,8 +103,11 @@
       const r = g.rule;
       const count = Math.ceil(g.count - 1e-9);
       if (!count) continue;
+      // Screws always come in full bags (Tyler 2026-11-05): priced per bag, that's bags; priced
+      // per screw, the count rounds up to a full bag.
       const bagged = r.unit === 'bag';
       const pack = Number(r.pack_size) || 250;
+      const fullBags = !bagged && r.category === 'fastener';
       const noun = r.category === 'fastener' ? 'screws' : /clip/i.test(r.product_name || '') ? 'clips' : 'pieces';
       const panelHow = [...g.what].map(([k, amount]) => {
         const [type, qty, spacing] = k.split('|');
@@ -117,10 +120,10 @@
         kind: g.kind,
         product_id: r.product_id,
         color_id: g.color_id,
-        pieces: bagged ? Math.ceil(count / pack) : count,
+        pieces: bagged ? Math.ceil(count / pack) : fullBags ? Math.ceil(count / pack) * pack : count,
         unit_price: r.price === null || r.price === undefined ? '' : Number(r.price),
         count,
-        description: `${count} ${noun}${panelHow ? ': ' : ' '}${how}${bagged ? `, ${pack} per bag` : ''}`,
+        description: `${count} ${noun}${panelHow ? ': ' : ' '}${how}${bagged || fullBags ? `, ${pack} per bag` : ''}`,
       });
     }
     out.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'panel' ? -1 : 1));
@@ -174,6 +177,7 @@
   // each on its own line (Tyler: an Inner Closure and an Outer Closure for each profile).
   // choice: 'standard' | 'vented' (the outside one is vented, for the ridge) | 'none'.
   // products: as for figure(), plus closure_id (inner), outer_closure_id, vented_closure_id and price.
+  const CLOSURE_PACK = 5;
   function closures(lines, products, choice) {
     if (choice !== 'standard' && choice !== 'vented') return { lines: [], missing: [] };
     const groups = new Map();
@@ -208,10 +212,11 @@
         kind: 'closure',
         product_id: id,
         color_id: null,
-        pieces: g.count,
+        // Closures are sold in 5s (Tyler 2026-11-05): round up to the next 5.
+        pieces: Math.ceil(g.count / CLOSURE_PACK) * CLOSURE_PACK,
         unit_price: !c || c.price === null || c.price === undefined ? '' : Number(c.price),
         count: g.count,
-        description: parts.join('; '),
+        description: parts.join('; ') + (g.count % CLOSURE_PACK ? `; ${g.count} rounded up to sell in ${CLOSURE_PACK}s` : ''),
       });
     }
     return { lines: out, missing: [...missing] };

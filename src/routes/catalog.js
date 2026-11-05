@@ -33,7 +33,8 @@ router.get('/products', need('prices'), async (req, res) => {
             style="width:6rem">%</label>
         <button class="btn small">Save</button>
       </form>` : html`<span>Sales tax for new quotes: ${tax ? Number(tax.value) : ''}%</span>`}
-      ${can('screws') ? html`<a class="btn" href="/admin/screws">Screws and clips</a>` : ''}</div>
+      ${can('screws') ? html`<a class="btn" href="/admin/screws">Screws and clips</a>` : ''}
+      ${edit ? html`<a class="btn primary" href="/admin/products/new?back=products">+ Add product</a>` : ''}</div>
     <p class="muted">Prices are for standard stock colors. Change a price here and new order lines use it
     from today on; orders already written keep the price they were written at.</p>
     <p class="muted">Trim and downspouts are priced per 10' piece; other lengths are billed in proportion
@@ -48,7 +49,8 @@ router.get('/products', need('prices'), async (req, res) => {
       <table class="list">
         <thead><tr><th>Product</th><th>Unit</th>${cut ? html`<th>Flat width</th>` : ''}<th class="num">Price</th><th>Since</th><th></th></tr></thead>
         <tbody>${items.map((p) => html`
-          <tr><td>${p.name}<div class="muted small">${p.sku}${can('screws') && p.category !== 'panel' ? html` · <a href="/admin/screws?for=i:${p.product_id}">screws</a>` : ''}</div></td>
+          <tr><td>${p.name}<div class="muted small">${p.sku}${edit ? html` · <a href="/admin/products/${p.product_id}?back=products">edit</a>
+            · <a href="/admin/products/new?from=${p.product_id}&back=products" title="Start a new product with this one's settings">copy</a>` : ''}${can('screws') && p.category !== 'panel' ? html` · <a href="/admin/screws?for=i:${p.product_id}">screws</a>` : ''}</div></td>
           <td>${p.pricing_unit === 'each' && p.standard_length_in ? `per ${num(p.standard_length_in / 12)}' piece` : UNIT_LABEL[p.pricing_unit]}</td>
           ${cut ? html`<td>${edit ? html`<form method="post" action="/products/${p.product_id}/girth" class="inline">
             <input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}" placeholder="inches" style="width:5.5rem">
