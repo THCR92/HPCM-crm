@@ -22,6 +22,9 @@ test.before(async () => {
   server = app.listen(0);
   base = `http://localhost:${server.address().port}`;
   sessions.admin = await signIn('admin');
+  // The photo checks below expect photos to be required (Admin can turn it on; off by default).
+  await query(`INSERT INTO app_settings (key, value) VALUES ('require_length_photos', '1')
+    ON CONFLICT (key) DO UPDATE SET value = '1'`);
   global.fetch = (url, opts = {}) => {
     const headers = new Headers(opts.headers || {});
     if (String(url).startsWith(base) && !headers.has('cookie') && !opts.anonymous) headers.set('cookie', sessions.admin);
@@ -1307,6 +1310,11 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     assert.strictEqual(o.status, 'completed', 'test company keeps orders Completed');
     const inv = qb.invoices.get(o.qbo_invoice_id);
     assert.strictEqual(inv.DocNumber, o.order_number);
+    // Due Net 15 from pickup or delivery (here: completed today); payment asked for at pickup.
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
+    const due = new Date(`${today}T12:00:00Z`); due.setUTCDate(due.getUTCDate() + 15);
+    assert.strictEqual(inv.DueDate, due.toISOString().slice(0, 10));
+    assert.match(inv.CustomerMemo.value, /Payment is requested at pickup or delivery/);
     assert.strictEqual(inv.CustomerRef.value, qbOnly);
     assert.deepStrictEqual(inv.Line.map((l) => [l.Amount, l.SalesItemLineDetail.Qty, l.SalesItemLineDetail.TaxCodeRef.value]),
       [[547.5, 150, 'TAX'], [75, 1, 'NON']]);
@@ -1577,6 +1585,23 @@ test('customer portal: customers write their own quotes at list prices and add d
   await query("UPDATE orders SET status = 'completed', need_by = current_date, ordered_on = current_date, completed_at = now() WHERE order_id = $1", [id]);
   res = await fetch(`${base}/portal/orders/${id}/again`, { headers: { cookie } });
   assert.match(await res.text(), /New quote \(from/);
+});
+
+test('length check photos can be turned off: an order completes without them', async () => {
+  const form = (path, body) => fetch(base + path, { method: 'POST', body: new URLSearchParams(body), redirect: 'manual' });
+  await form('/admin/settings/photos', {});
+  try {
+    const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('No Photos ' || gen_random_uuid()) RETURNING customer_id");
+    const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'roof', items: [
+      { product_id: await productId('PNL-SL-26'), pieces: 2, length_in: 120, width_in: 18, unit_price: 3.65 }] }] });
+    const id = Number((await res.json()).redirect.split('/').pop());
+    await form(`/orders/${id}/status`, { status: 'confirmed' });
+    await form(`/orders/${id}/status`, { status: 'completed' });
+    assert.strictEqual((await query('SELECT status FROM orders WHERE order_id = $1', [id])).rows[0].status, 'completed');
+    assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /Optional for now/);
+  } finally {
+    await form('/admin/settings/photos', { on: '1' });
+  }
 });
 
 test('length check photos: every line needs one before Ready; the customer sees them', async () => {

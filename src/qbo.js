@@ -594,7 +594,8 @@ async function invoiceBody(o) {
   }
   const discount = round2(Number(o.discount_amount) + lines.reduce((s, l) => s + Number(l.line_discount || 0), 0));
   if (discount > 0) Line.push({ DetailType: 'DiscountLineDetail', Amount: discount, DiscountLineDetail: { PercentBased: false } });
-  const memo = [o.job_name && `Job: ${o.job_name}`, o.po_number && `PO: ${o.po_number}`, o.customer_memo].filter(Boolean).join('\n');
+  const memo = [o.job_name && `Job: ${o.job_name}`, o.po_number && `PO: ${o.po_number}`, o.customer_memo,
+    PAY_NOTE].filter(Boolean).join('\n');
   const email = o.contact_email || o.customer_email;
   const ship = await shipTo(o);
   return {
@@ -602,6 +603,7 @@ async function invoiceBody(o) {
     DocNumber: o.order_number,
     // The day the order was confirmed (ordered_on), which is when it's invoiced now.
     TxnDate: o.ordered_on || denverDate(o.completed_at),
+    DueDate: dueDate(o),
     CustomerRef: { value: o.qbo_customer_id },
     Line,
     ...(memo ? { CustomerMemo: { value: cut(memo, 1000) } } : {}),
@@ -613,6 +615,21 @@ async function invoiceBody(o) {
     // The CRM's tax (5% on taxable materials) is what the customer was quoted.
     TxnTaxDetail: { TotalTax: round2(o.tax_amount) },
   };
+}
+
+// Due Net 15 from pickup or delivery (Tyler 2026-11-06). Until it goes out, the Need-by date
+// (when the customer needs it) stands in for the pickup or delivery day; the invoice is sent
+// again when the order is picked up or delivered, with the real day.
+const PAY_NOTE = 'Payment is requested at pickup or delivery. Due Net 15 from pickup or delivery.';
+const addDays = (ymd, n) => {
+  const d = new Date(`${ymd}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+function dueDate(o) {
+  const out = o.delivered_on || (o.handed_off_at && denverDate(o.handed_off_at))
+    || (o.completed_at && denverDate(o.completed_at)) || o.need_by || o.ordered_on || denverDate();
+  return addDays(out, 15);
 }
 
 // QuickBooks works out sales tax from where the goods go: the shop for pickups,

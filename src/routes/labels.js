@@ -287,7 +287,8 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
   const done = bundles.filter((b) => b.packed_at).length;
   const open = PACK_STATUSES.includes(o.status);
   const photos = await proof.photosByLine(o.order_id);
-  const needPhotos = lines.filter((l) => !(photos.get(l.order_item_id) || []).length);
+  const required = await proof.photosRequired();
+  const needPhotos = required ? lines.filter((l) => !(photos.get(l.order_item_id) || []).length) : [];
   const msg = req.query.ok ? html`<div class="notice pack-flash ok">✓ ${req.query.ok}</div>`
     : req.query.err ? html`<div class="alert pack-flash">✗ ${req.query.err}</div>` : '';
   const act = (code, label, extra = '') => html`<form method="post" action="/orders/${o.order_id}/pack" class="inline">
@@ -327,7 +328,7 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
             <a class="small" href="/labels/order/${o.order_id}?line=${l.order_item_id}">labels</a></td>
         </tr>
         <tr class="photo-row"><td></td><td colspan="5"><span class="muted small">Length check photo${
-          (photos.get(l.order_item_id) || []).length ? '' : html` <strong class="warn-text">needed</strong>`}</span>
+          (photos.get(l.order_item_id) || []).length || !required ? '' : html` <strong class="warn-text">needed</strong>`}</span>
           ${proof.photoCell({ orderId: o.order_id, lineId: l.order_item_id, photos: photos.get(l.order_item_id) || [],
             canAdd: open, base: `/orders/${o.order_id}/attachments` })}</td></tr>
         ${l.bundles.map((b) => html`<tr class="bundle ${b.packed_at ? 'packed' : ''}">
@@ -435,7 +436,7 @@ router.post('/orders/:id(\\d+)/pack/complete', need('production'), async (req, r
   if (!bundles.length || bundles.some((b) => !b.packed_at)) {
     return res.redirect(`/orders/${orderId}/pack?err=${encodeURIComponent('Some bundles aren\'t checked yet.')}`);
   }
-  const missing = await proof.missingPhotos(orderId);
+  const missing = await proof.blockingPhotos(orderId);
   if (missing.length) return res.redirect(`/orders/${orderId}/pack?err=${encodeURIComponent(proof.missingText(missing))}`);
   // Checked and packed: ready to leave. Scanning the whole-order label at
   // pickup or delivery completes it.
@@ -507,7 +508,7 @@ router.post('/orders/:id(\\d+)/handoff', async (req, res) => {
   if (!HANDOFF_FROM.includes(o.status)) return back(`This order is ${o.status}.`);
   // Going straight out without being marked Ready still needs the length check photos.
   if (o.status !== 'ready' && HANDOFF_FROM.includes(o.status)) {
-    const missing = await proof.missingPhotos(orderId);
+    const missing = await proof.blockingPhotos(orderId);
     if (missing.length) return back(proof.missingText(missing));
   }
   const bundles = (await orderLines(orderId)).flatMap((l) => l.bundles);

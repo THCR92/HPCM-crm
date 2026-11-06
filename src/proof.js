@@ -16,6 +16,18 @@ async function missingPhotos(orderId, db = { query }) {
   return rows;
 }
 
+// Whether the photos are required before Ready / Completed. Off for now (Tyler 2026-11-06);
+// Admin can turn it back on from the Admin page.
+async function photosRequired(db = { query }) {
+  const { rows: [s] } = await db.query("SELECT value FROM app_settings WHERE key = 'require_length_photos'");
+  return !!s && s.value === '1';
+}
+
+// Lines still missing a photo when photos are required; none when they aren't.
+async function blockingPhotos(orderId, db = { query }) {
+  return (await photosRequired(db)) ? missingPhotos(orderId, db) : [];
+}
+
 const missingText = (rows) => `Take a length check photo of every line first (a tape measure on the pieces). Still needed: ${
   rows.map((r) => `line ${r.line_no} (${r.length_display ? `${r.length_display} ` : ''}${r.product_name})`).join(', ')}.`;
 
@@ -41,4 +53,4 @@ const photoCell = ({ orderId, lineId, photos = [], canAdd, base }) => html`<div 
     <span class="photo-status muted small"></span></form>` : ''}
 </div>`;
 
-module.exports = { NEEDS_PHOTO, missingPhotos, missingText, photosByLine, photoCell };
+module.exports = { NEEDS_PHOTO, missingPhotos, blockingPhotos, photosRequired, missingText, photosByLine, photoCell };

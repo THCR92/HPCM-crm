@@ -19,7 +19,8 @@ router.get('/admin', need('admin'), async (req, res) => {
     (SELECT count(*) FROM products WHERE active)::int AS products,
     (SELECT count(*) FROM colors WHERE active)::int AS colors,
     (SELECT count(*) FROM suppliers)::int AS suppliers,
-    (SELECT value FROM app_settings WHERE key = 'sales_tax_rate') AS tax`);
+    (SELECT value FROM app_settings WHERE key = 'sales_tax_rate') AS tax,
+    (SELECT value = '1' FROM app_settings WHERE key = 'require_length_photos') AS photos`);
   const card = (href, title, text) => html`<a class="card admin-card" href="${href}"><h2>${title}</h2><p>${text}</p></a>`;
   res.send(layout({
     title: 'Admin', active: '/admin',
@@ -31,12 +32,23 @@ router.get('/admin', need('admin'), async (req, res) => {
       ${card('/admin/products', 'Products', `${c.products} products. Add new ones, rename, change units, or remove.`)}
       ${card('/colors', 'Colors and finishes', `${c.colors} colors. Add colors, premiums and finishes.`)}
       ${card('/admin/screws', 'Screws and clips', 'Which screws and clips go with each panel and framing, and how many.')}
-      ${card('/admin/quickbooks', 'QuickBooks', 'Connect QuickBooks. Customers sync both ways; completed orders become invoices.')}
+      ${card('/admin/quickbooks', 'QuickBooks', 'Connect QuickBooks. Customers sync both ways; confirmed orders become invoices.')}
       ${card('/admin/email', 'Email', mail.configured() ? 'Email is set up. Send a test and see what the CRM has sent.'
     : 'Not set up yet. Customers get links you copy by hand.')}
       ${card('/admin/suppliers', 'Suppliers', `${c.suppliers} suppliers. Edit contact details or remove.`)}
-    </div>`,
+    </div>
+    <form method="post" action="/admin/settings/photos" class="card form-row" style="margin-top:1rem">
+      <label class="check"><input type="checkbox" name="on" value="1" ${c.photos ? 'checked' : ''}>
+        Require a length check photo of every line before an order is Ready or Completed</label>
+      <button class="btn">Save</button>
+    </form>`,
   }));
+});
+
+router.post('/admin/settings/photos', need('admin'), async (req, res) => {
+  await query(`INSERT INTO app_settings (key, value) VALUES ('require_length_photos', $1)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, [req.body.on === '1' ? '1' : '0']);
+  res.redirect('/admin');
 });
 
 // ---------------------------------------------------------------------------

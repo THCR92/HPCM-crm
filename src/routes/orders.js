@@ -604,7 +604,7 @@ router.post('/:id(\\d+)/status', async (req, res) => {
   }
   // Ready (or completed without going through Ready) needs a length check photo of every line.
   if (status === 'ready' || (status === 'completed' && !['ready', 'completed'].includes(cur.status))) {
-    const missing = await proof.missingPhotos(Number(req.params.id));
+    const missing = await proof.blockingPhotos(Number(req.params.id));
     if (missing.length) return res.redirect(`${back}?status_error=${encodeURIComponent(proof.missingText(missing))}#photos`);
   }
   // Why a quote was lost, for the Reports page.
@@ -916,7 +916,7 @@ router.get('/:id(\\d+)', async (req, res) => {
         ${totalsRows(o)}
       </table>
     </section>` : ''}
-    ${photosSection(o)}
+    ${photosSection(o, await proof.photosRequired())}
     ${drawingsSection(o)}
     ${rentals}
     ${production}`,
@@ -937,7 +937,7 @@ const fileSize = (n) => (n >= 1024 * 1024 ? `${num(n / 1024 / 1024, 1)} MB` : `$
 const PHOTO_STATUSES = ['confirmed', 'in_production', 'ready', 'completed'];
 const canPhoto = () => can('production') || can('drawings');
 
-function photosSection(o) {
+function photosSection(o, required) {
   if (!PHOTO_STATUSES.includes(o.status) && !o.photos.length) return '';
   const lines = o.sections.flatMap((sec) => sec.items).filter((i) => !['service', 'delivery'].includes(i.category) && !i.is_rental);
   if (!lines.length) return '';
@@ -946,8 +946,9 @@ function photosSection(o) {
   return html`
   <section id="photos" class="photos no-print">
     <h2>Length check photos</h2>
-    <p class="muted small">Before it's marked ready, each line gets a photo of its pieces with a tape measure showing the length.
-      ${missing ? html`<strong>${missing} of ${lines.length} line${lines.length === 1 ? '' : 's'} still need${missing === 1 ? 's' : ''} one.</strong>` : 'Every line has one.'}
+    <p class="muted small">${required ? 'Before it\'s marked ready, each line gets' : 'Optional for now: each line can get'} a photo of its pieces with a tape measure showing the length.
+      ${missing ? (required ? html`<strong>${missing} of ${lines.length} line${lines.length === 1 ? '' : 's'} still need${missing === 1 ? 's' : ''} one.</strong>`
+    : `${lines.length - missing} of ${lines.length} have one.`) : 'Every line has one.'}
       ${o.customer_portal ? 'The customer sees these in the portal.' : ''}</p>
     <table class="list photo-lines">
       <thead><tr><th>Line</th><th>Pieces</th><th>Photos</th></tr></thead>
