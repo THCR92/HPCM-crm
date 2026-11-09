@@ -113,7 +113,7 @@ const isAsset = (p) => /\.(css|js|svg|png|ico|jpg|webp|woff2?)$/.test(p);
 function middleware() {
   return (req, res, next) => {
     // Customers sign in to /portal separately (src/routes/portal.js).
-    if (OPEN_PATHS.includes(req.path) || isAsset(req.path) || req.path === '/portal' || req.path.startsWith('/portal/')) return next();
+    if (OPEN_PATHS.includes(req.path) || req.path.startsWith('/login/') || isAsset(req.path) || req.path === '/portal' || req.path.startsWith('/portal/')) return next();
     loadUser(req).then((user) => {
       if (!user) {
         if (req.method === 'GET' && req.accepts('html')) {

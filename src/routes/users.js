@@ -6,6 +6,7 @@ const {
   startSession, endSession, need, isAdmin,
 } = require('../auth');
 const { html, raw, layout, date } = require('../html');
+const mail = require('../mail');
 
 const router = require('../async-router')();
 
@@ -42,9 +43,77 @@ function loginPage({ setup, next, error, email = '', fullName = '' }) {
             <span class="muted small">The one everyone used before. It stops working once your account is made.</span></label>` : ''}` : ''}
         <button class="btn primary">${setup ? 'Create account and sign in' : 'Sign in'}</button>
       </form>
+      ${setup ? '' : html`<p class="small"><a href="/login/forgot">Forgot password?</a></p>`}
     </div>`,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Forgot password: email a one-time link, good for an hour (Tyler 2026-11-09).
+// ---------------------------------------------------------------------------
+const RESET_MINUTES = 60;
+const box = (title, body) => layout({ title, bare: true, body: html`
+    <div class="login-box"><img src="/logo.svg" alt="High Plains Custom Metal"><h1>${title}</h1>${body}</div>` });
+
+router.get('/login/forgot', (req, res) => {
+  res.send(box('Forgot password', html`
+    <p class="muted">Enter the email you sign in with. We'll email you a link to set a new password.</p>
+    <form method="post" action="/login/forgot" class="stack">
+      <label>Email<input name="email" type="email" required autocomplete="username" autocapitalize="none"></label>
+      <button class="btn primary">Email me a link</button>
+    </form>
+    <p class="small"><a href="/login">Back to sign in</a></p>`));
+});
+
+router.post('/login/forgot', async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const token = crypto.randomBytes(24).toString('base64url');
+  const { rows: [u] } = await query(`UPDATE users SET reset_token = $2, reset_expires_at = now() + make_interval(mins => $3)
+    WHERE lower(email) = $1 AND active RETURNING full_name, email`, [email, token, RESET_MINUTES]);
+  let sent = true;
+  if (u) {
+    const url = `${req.protocol}://${req.get('host')}/login/reset/${token}`;
+    sent = await mail.send({ to: u.email, subject: 'Reset your HPCM CRM password', kind: 'password_reset', text: [
+      `Hello ${u.full_name.split(' ')[0]},`, '',
+      `Here is your link to set a new password for the CRM. It works once, for ${RESET_MINUTES} minutes:`, '',
+      url, '', "If you didn't ask for this, you can ignore it."].join('\n') });
+  }
+  // The same answer whether or not the email has an account, so the page can't be used to find accounts.
+  res.send(box('Check your email', html`
+    ${sent ? html`<p>If <strong>${email}</strong> has an account, a link to set a new password is on its way.
+      It works for ${RESET_MINUTES} minutes. Check the spam folder too.</p>`
+    : html`<div class="alert">The email couldn't be sent. Ask an Admin to set a new password for you on the Users page.</div>`}
+    <p class="small"><a href="/login">Back to sign in</a></p>`));
+});
+
+const resetUser = async (token) => (token && token.length >= 20 ? (await query(
+  'SELECT * FROM users WHERE reset_token = $1 AND reset_expires_at > now() AND active', [token])).rows[0] : null);
+const resetForm = (token, error) => box('Set a new password', html`
+    ${error ? html`<div class="alert">${error}</div>` : ''}
+    <form method="post" action="/login/reset/${token}" class="stack">
+      <label>New password<input name="password" type="password" required autocomplete="new-password"></label>
+      <label>New password again<input name="password2" type="password" required autocomplete="new-password"></label>
+      <button class="btn primary">Save and sign in</button>
+    </form>`);
+const deadReset = () => box('That link has expired', html`
+    <p>Reset links work once, for ${RESET_MINUTES} minutes. <a href="/login/forgot">Get a new link</a>.</p>`);
+
+router.get('/login/reset/:token', async (req, res) => {
+  if (!(await resetUser(req.params.token))) return res.status(404).send(deadReset());
+  res.send(resetForm(req.params.token));
+});
+
+router.post('/login/reset/:token', async (req, res) => {
+  const u = await resetUser(req.params.token);
+  if (!u) return res.status(404).send(deadReset());
+  const problem = passwordProblem(req.body.password);
+  if (problem) return res.status(400).send(resetForm(req.params.token, problem));
+  if (req.body.password !== req.body.password2) return res.status(400).send(resetForm(req.params.token, 'The two passwords don\'t match.'));
+  await query(`UPDATE users SET password_hash = $2, reset_token = NULL, reset_expires_at = NULL WHERE user_id = $1`,
+    [u.user_id, await hashPassword(req.body.password)]);
+  await startSession(req, res, u);
+  res.redirect('/orders');
+});
 
 router.get('/login', async (req, res) => {
   res.send(loginPage({ setup: (await userCount()) === 0, next: safeNext(req.query.next) }));

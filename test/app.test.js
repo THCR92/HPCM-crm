@@ -556,6 +556,32 @@ test('sign-in: pages need an account, email + password signs in, wrong password 
   assert.doesNotMatch(page, /href="\/admin"/);
   assert.strictEqual((await fetch(`${base}/users`, { headers: { cookie } })).status, 403);
 
+  // Forgot password: an emailed one-time link sets a new password and signs in.
+  const mail = require('../src/mail');
+  const sent = [];
+  mail.io.forceConfigured = true;
+  mail.io.send = async (m) => { sent.push(m); };
+  try {
+    assert.match(await (await fetch(`${base}/login`, { anonymous: true })).text(), /Forgot password\?/);
+    const ask = await formPost('/login/forgot', { email }, { anonymous: true });
+    assert.match(await ask.text(), /on its way/);
+    const link = sent.find((m) => m.to === email.toLowerCase()).text.match(/https?:\/\/\S+\/login\/reset\/\S+/)[0];
+    const path = new URL(link).pathname;
+    assert.strictEqual((await fetch(base + path, { anonymous: true })).status, 200);
+    const short = await formPost(path, { password: 'x', password2: 'x' }, { anonymous: true });
+    assert.strictEqual(short.status, 400);
+    const reset = await formPost(path, { password: 'brandnew-pass-2', password2: 'brandnew-pass-2' }, { anonymous: true });
+    assert.strictEqual(reset.status, 302);
+    assert.strictEqual((await fetch(base + path, { anonymous: true })).status, 404, 'a link works once');
+    assert.strictEqual((await formPost('/login', { email, password: 'brandnew-pass-2' }, { anonymous: true })).status, 302);
+    // An unknown email gets the same answer and no email.
+    const n = sent.length;
+    assert.match(await (await formPost('/login/forgot', { email: 'nobody@example.com' }, { anonymous: true })).text(), /on its way/);
+    assert.strictEqual(sent.length, n);
+  } finally {
+    mail.io.forceConfigured = false;
+  }
+
   // Turning the account off signs them out.
   await formPost(`/users/${u.user_id}`, { full_name: 'Pat Sales', email, role: 'sales' });
   assert.strictEqual((await fetch(`${base}/orders`, { headers: { cookie }, redirect: 'manual' })).status, 302);
