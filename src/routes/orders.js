@@ -6,6 +6,8 @@ const { feetInches } = require('../length');
 const { RUNNABLE, footage, runError } = require('../production');
 const { syncOrderSupplies } = require('../supplies');
 const qbo = require('../qbo');
+const mail = require('../mail');
+const { quotePdf } = require('../quote-pdf');
 const notices = require('../notices');
 const proof = require('../proof');
 const { can, need, userName, isAdmin } = require('../auth');
@@ -347,7 +349,8 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
     } else {
       const { rows: [o] } = await db.query(`
         INSERT INTO orders (${cols.join(', ')}, quote_expires_on)
-        VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')}, current_date + 30)
+        -- Quotes are good for two weeks from the day they're written (Tyler 2026-11-09).
+        VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')}, current_date + 14)
         RETURNING order_id`, cols.map((c) => header[c]));
       orderId = o.order_id;
     }
@@ -739,7 +742,7 @@ function customerSheet(o, { linePrices = true, totals = true } = {}) {
       <div class="sheet-foot">
         <div>
           ${o.customer_memo ? html`<p><strong>Notes:</strong> ${o.customer_memo}</p>` : ''}
-          ${isQuote ? html`<p class="muted small">Prices are good for 30 days. Lengths and quantities are
+          ${isQuote ? html`<p class="muted small">Prices are good until ${date(o.valid_until)}. Lengths and quantities are
             cut exactly as listed, so please check them before approving.</p>` : ''}
         </div>
         ${totals ? html`<table class="totals">
@@ -754,22 +757,38 @@ function customerSheet(o, { linePrices = true, totals = true } = {}) {
 
 // What the customer sees: one price per piece (the line amount over the pieces),
 // no billing units, no coil supplier. Print it, or save it as a PDF to email.
+// The email that goes with a quote or order. `sender` signs it.
+function emailText(o, sender) {
+  const isQuote = o.status === 'quote';
+  const docName = isQuote ? 'Quote' : 'Order';
+  return {
+    subject: `${docName} ${o.order_number} from High Plains Custom Metal`,
+    body: [
+      'Hello,', '',
+      `Attached is ${docName.toLowerCase()} ${o.order_number}${o.job_name ? ` for ${o.job_name}` : ''}.`,
+      `Total: ${money(o.grand_total)}${o.tax_amount ? ' including sales tax' : ''}.`,
+      ...(isQuote ? [`Prices are good for two weeks, until ${date(o.valid_until)}.`] : []),
+      '', 'Thank you,', sender, 'High Plains Custom Metal', '(307) 331-6449',
+    ].join('\n'),
+  };
+}
+const sheetArea = (sec) => (sec.is_auto ? (sec.label || 'Screws') : `${AREA_LABEL[sec.area] || sec.area}${sec.label ? ` · ${sec.label}` : ''}`);
+const pdfFor = (o) => quotePdf(o, { sizeCol, areaLabel: sheetArea });
+
+// What the customer sees: one price per piece (the line amount over the pieces),
+// no billing units, no coil supplier. The CRM emails it with the PDF attached
+// (Tyler 2026-11-09), or it can be printed or downloaded.
 router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
   const o = await loadOrder(req.params.id);
   if (!o) return res.status(404).send('Order not found');
   const isQuote = o.status === 'quote';
   const docName = isQuote ? 'Quote' : 'Order';
   const email = o.contact_email || o.customer_email;
-  const subject = `${docName} ${o.order_number} from High Plains Custom Metal`;
-  const body = [
-    'Hello,', '',
-    `Attached is ${docName.toLowerCase()} ${o.order_number}${o.job_name ? ` for ${o.job_name}` : ''}.`,
-    `Total: ${money(o.grand_total)}${o.tax_amount ? ' including sales tax' : ''}.`,
-    ...(isQuote ? [`Prices are good until ${date(o.valid_until)}.`] : []),
-    '', 'Thank you,', req.user.full_name, 'High Plains Custom Metal', '(307) 331-6449',
-  ].join('\n');
-  // Gmail's compose page, filled in, in the Gmail account of whoever is signed in to the CRM
-  // (authuser picks it when the browser is signed in to several); the PDF is attached by hand.
+  const { subject, body } = emailText(o, req.user.full_name);
+  const { rows: sentLog } = await query(`SELECT sent_at, to_address, ok, error FROM email_log
+    WHERE order_id = $1 AND kind = 'quote' ORDER BY sent_at DESC LIMIT 5`, [o.order_id]);
+  const when = (t) => new Date(t).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' });
+  // Without email set up: Gmail's compose page, filled in; the PDF is attached by hand.
   const gmail = `https://mail.google.com/mail/?${new URLSearchParams({
     authuser: req.user.email, view: 'cm', fs: '1', to: email || '', su: subject, body })}`;
   res.send(layout({
@@ -779,16 +798,59 @@ router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
       <h1>Customer ${docName.toLowerCase()} ${o.order_number}</h1>
       <div class="actions">
         <a class="btn" href="/orders/${o.order_id}">Back</a>
-        <button class="btn primary" onclick="window.print()">Print or save as PDF</button>
-        <a class="btn" href="${gmail}" target="_blank" rel="noopener">Email with Gmail</a>
+        <a class="btn" href="/orders/${o.order_id}/customer.pdf">Download PDF</a>
+        <button class="btn" onclick="window.print()">Print</button>
       </div>
     </div>
-    <p class="muted small no-print">To email it: click <strong>Print or save as PDF</strong> and save the PDF, then click
-      <strong>Email with Gmail</strong>. Gmail opens with the ${email ? `customer's address (${email}),` : 'subject and'} message
-      filled in; attach the PDF and send. ${email ? '' : 'Add an email address to the customer or order to fill in the To line.'}
-      ${email ? html`Not using Gmail? <a href="mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}">Use your email app</a>.` : ''}</p>
+    ${req.query.emailed ? html`<div class="notice no-print">Sent to ${req.query.emailed} with the PDF attached.</div>` : ''}
+    ${req.query.error ? html`<div class="alert no-print">${req.query.error}</div>` : ''}
+    ${mail.configured() ? html`
+    <details class="card no-print email-quote" ${req.query.emailed ? '' : 'open'}>
+      <summary><strong>Email this ${docName.toLowerCase()}</strong> <span class="muted small">(the PDF is attached for you)</span></summary>
+      <form method="post" action="/orders/${o.order_id}/email" class="form-grid" style="margin-top:.8rem">
+        <label>To *<input name="to" required value="${email || ''}" placeholder="customer@example.com, another@example.com"></label>
+        <label>Copy to<input name="cc" value="" placeholder="optional"></label>
+        <label class="span2">Subject<input name="subject" value="${subject}"></label>
+        <label class="span2">Message<textarea name="body" rows="9">${body}</textarea></label>
+        <div class="span2 actions"><button class="btn primary">Send with PDF</button>
+          <span class="muted small">Goes from the CRM's email; replies come to you (${req.user.email}).</span></div>
+      </form>
+    </details>
+    ${sentLog.length ? html`<p class="muted small no-print">Emailed: ${sentLog.map((l) => `${when(l.sent_at)} to ${l.to_address}${l.ok ? '' : ' (failed)'}`).join(' · ')}</p>` : ''}`
+    : html`<p class="muted small no-print">To email it: click <strong>Download PDF</strong>, then
+      <a href="${gmail}" target="_blank" rel="noopener">open Gmail</a> with the message filled in and attach the PDF.</p>`}
     ${customerSheet(o)}`,
   }));
+});
+
+router.get('/:id(\\d+)/customer.pdf', need('prices'), async (req, res) => {
+  const o = await loadOrder(req.params.id);
+  if (!o) return res.status(404).send('Order not found');
+  const pdf = await pdfFor(o);
+  res.set('Content-Type', 'application/pdf');
+  res.set('Content-Disposition', `inline; filename="${o.order_number}.pdf"`);
+  res.send(pdf);
+});
+
+const emailList = (v) => String(v || '').split(/[,;\s]+/).map((e) => e.trim()).filter(Boolean);
+router.post('/:id(\\d+)/email', need('prices'), async (req, res) => {
+  const o = await loadOrder(req.params.id);
+  if (!o) return res.status(404).send('Order not found');
+  const back = (q) => res.redirect(`/orders/${o.order_id}/customer?${q}`);
+  const to = emailList(req.body.to);
+  const cc = emailList(req.body.cc);
+  const bad = [...to, ...cc].find((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
+  if (!to.length || bad) return back(`error=${encodeURIComponent(bad ? `${bad} isn't an email address.` : 'Enter who to send it to.')}`);
+  const def = emailText(o, req.user.full_name);
+  const ok = await mail.send({
+    to, cc: cc.length ? cc : undefined, replyTo: req.user.email,
+    subject: String(req.body.subject || '').trim() || def.subject,
+    text: String(req.body.body || '').trim() || def.body,
+    signature: false, kind: 'quote', orderId: o.order_id,
+    attachments: [{ filename: `${o.order_number}.pdf`, content: await pdfFor(o), contentType: 'application/pdf' }],
+  });
+  if (!ok) return back(`error=${encodeURIComponent('The email didn\'t go out. Check Admin > Email for the reason, or download the PDF and send it yourself.')}`);
+  back(`emailed=${encodeURIComponent(to.join(', '))}`);
 });
 
 router.get('/:id(\\d+)', async (req, res) => {

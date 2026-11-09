@@ -484,8 +484,35 @@ test('sales tax on taxable materials after discount; exempt customers pay none; 
   assert.match(copy, new RegExp(`${col.name} \\(Textured\\)`));
   assert.doesNotMatch(copy, new RegExp(sup.name));
   assert.doesNotMatch(copy, /Billed/);
-  assert.match(copy, /mailto:buyer@example.com/);
+  // Without email set up: download the PDF and open Gmail filled in.
   assert.match(copy, /https:\/\/mail\.google\.com\/mail\/\?authuser=[^&]+%40[^&]+&amp;view=cm&amp;fs=1&amp;to=buyer%40example\.com&amp;su=Quote\+HP-/);
+  assert.match(copy, /good\+for\+two\+weeks/);
+  const pdf = await fetch(`${base}/orders/${id}/customer.pdf`);
+  assert.strictEqual(pdf.headers.get('content-type'), 'application/pdf');
+  assert.match(Buffer.from(await pdf.arrayBuffer()).subarray(0, 5).toString(), /%PDF-/);
+  // Quotes are good for two weeks from the day they're written.
+  const { rows: [exp] } = await query("SELECT quote_expires_on - (created_at AT TIME ZONE 'America/Denver')::date AS days FROM orders WHERE order_id = $1", [id]);
+  assert.strictEqual(exp.days, 14);
+  // With email set up: the CRM sends it with the PDF attached, replies to whoever sent it.
+  const mail = require('../src/mail');
+  const sent = [];
+  mail.io.forceConfigured = true;
+  mail.io.send = async (m) => { sent.push(m); };
+  try {
+    assert.match(await (await fetch(`${base}/orders/${id}/customer`)).text(), /Send with PDF/);
+    const r = await fetch(`${base}/orders/${id}/email`, { method: 'POST', redirect: 'manual',
+      body: new URLSearchParams({ to: 'buyer@example.com', cc: 'boss@example.com', subject: 'Your quote', body: 'Here it is.' }) });
+    assert.match(r.headers.get('location'), /emailed=buyer/);
+    const m = sent.at(-1);
+    assert.deepStrictEqual([m.to, m.cc, m.subject, m.text], [['buyer@example.com'], ['boss@example.com'], 'Your quote', 'Here it is.']);
+    assert.match(m.replyTo, /@example\.com/);
+    assert.match(m.attachments[0].filename, /^HP-.*\.pdf$/);
+    assert.match(m.attachments[0].content.subarray(0, 5).toString(), /%PDF-/);
+    const bad = await fetch(`${base}/orders/${id}/email`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ to: 'not an email' }) });
+    assert.match(decodeURIComponent(bad.headers.get('location')), /isn't an email address/);
+  } finally {
+    mail.io.forceConfigured = false;
+  }
 
   await query('UPDATE customers SET tax_exempt = true WHERE customer_id = $1', [c.customer_id]);
   await query('UPDATE orders SET tax_exempt = NULL WHERE order_id = $1', [id]);

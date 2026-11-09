@@ -551,7 +551,7 @@ router.get('/reports', need('reports'), async (req, res) => {
     },
     lost: {
       title: 'Why quotes were lost',
-      note: 'Quotes written in this date range that were cancelled, or ran past their 30 days with no answer. Pick a reason when you cancel a quote to fill this in.',
+      note: 'Quotes written in this date range that were cancelled, or ran past their expiry date with no answer. Pick a reason when you cancel a quote to fill this in.',
       cols: [
         { key: 'label', label: 'Reason' }, { key: 'quotes', label: 'Quotes', type: 'num' },
         { key: 'amount', label: 'Value', type: 'money0' },

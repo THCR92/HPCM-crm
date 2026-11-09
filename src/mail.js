@@ -33,17 +33,18 @@ const from = () => process.env.MAIL_FROM || `High Plains Custom Metal <${process
 const SIGNATURE = '\n\nThank you,\nHigh Plains Custom Metal\n805 E Fox Farm Rd Unit B, Cheyenne, WY 82007\n(307) 331-6449';
 
 // Sends one plain-text email and logs it. Returns true if it went; never throws.
-async function send({ to, subject, text, kind = null, orderId = null, replyTo }) {
+async function send({ to, cc, subject, text, kind = null, orderId = null, replyTo, attachments, signature = true }) {
   if (!configured() || !to) return false;
   let error = null;
   try {
-    await io.send({ from: from(), to, subject, text: text + SIGNATURE, ...(replyTo ? { replyTo } : {}) });
+    await io.send({ from: from(), to, subject, text: signature ? text + SIGNATURE : text,
+      ...(cc ? { cc } : {}), ...(replyTo ? { replyTo } : {}), ...(attachments ? { attachments } : {}) });
   } catch (err) {
     error = String(err.message || err).slice(0, 500);
     console.error('Email failed:', subject, error);
   }
   await query(`INSERT INTO email_log (to_address, subject, kind, order_id, ok, error) VALUES ($1, $2, $3, $4, $5, $6)`,
-    [Array.isArray(to) ? to.join(', ') : to, subject, kind, orderId, !error, error]).catch(() => {});
+    [[to, cc].flat().filter(Boolean).join(', '), subject, kind, orderId, !error, error]).catch(() => {});
   return !error;
 }
 
