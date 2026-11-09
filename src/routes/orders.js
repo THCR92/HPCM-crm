@@ -906,6 +906,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       </div>
     </div>
     ${req.query.status_error ? html`<div class="alert no-print">${req.query.status_error}</div>` : ''}
+    ${req.query.note ? html`<div class="notice no-print">${req.query.note}</div>` : ''}
     ${portalNote(o)}
     ${o.from_portal ? html`<p class="no-print muted small">The customer wrote this quote in the portal, at price list prices.</p>` : ''}
 

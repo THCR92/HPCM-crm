@@ -1223,6 +1223,8 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
         return reply(200, { QueryResponse: { [m[1]]: hits } });
       }
       if (/from Customer startposition/.test(q)) return reply(200, { QueryResponse: { Customer: [...qb.customers.values()] } });
+      m = q.match(/from Estimate where DocNumber = '([^']*)'/);
+      if (m) return reply(200, { QueryResponse: { Estimate: [...qb.estimates.values()].filter((e) => e.DocNumber === m[1]) } });
     }
     if (path === 'cdc') {
       if (u.searchParams.get('entities') === 'Estimate') return reply(200, { CDCResponse: [{ QueryResponse: [{ Estimate: [...qb.estimates.values()] }] }] });
@@ -1333,6 +1335,18 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     await query("UPDATE qbo_connection SET estimates_checked_at = now() - interval '1 hour'");
     await qbo.checkEstimates();
     assert.deepStrictEqual((await query('SELECT qbo_estimate_id FROM orders WHERE qbo_estimate_id = ANY($1)', [[E(2), E(3)]])).rows, [{ qbo_estimate_id: E(2) }]);
+    // Accepted estimates come in too; bundles count as their lines.
+    qb.estimates.set(E(4), { ...estimate, Id: E(4), DocNumber: `14${run}`, TxnStatus: 'Accepted', Line: [
+      { DetailType: 'GroupLineDetail', GroupLineDetail: { Line: [estimate.Line[1]] } }] });
+    await query("UPDATE qbo_connection SET estimates_checked_at = now() - interval '1 hour'");
+    await qbo.checkEstimates();
+    const { rows: [acc] } = await query('SELECT o.order_id, t.lines_subtotal FROM orders o JOIN v_order_totals t USING (order_id) WHERE qbo_estimate_id = $1', [E(4)]);
+    assert.strictEqual(acc.lines_subtotal, 80);
+    // A closed one can be brought in by number from Admin > QuickBooks.
+    const byNumber = await fetch(`${base}/qbo/estimate`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ number: '1003' }) });
+    assert.match(decodeURIComponent(byNumber.headers.get('location')), /^\/orders\/\d+\?note=Estimate 1003 is now quote HP-/);
+    const missing = await fetch(`${base}/qbo/estimate`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ number: 'nope' }) });
+    assert.match(decodeURIComponent(missing.headers.get('location')), /no estimate number nope/);
     // Invoicing it links (and so closes) the estimate, keeping the estimate's items.
     await query("UPDATE orders SET need_by = '2030-01-01' WHERE order_id = $1", [eq.order_id]);
     await form(`/orders/${eq.order_id}/status`, { status: 'confirmed' });

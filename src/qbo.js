@@ -407,11 +407,14 @@ async function syncAllCustomers() {
 // changes to the estimate in QuickBooks come through.
 const FROM_QB = 'QuickBooks';
 
-async function pullEstimate(e) {
+// Open estimates come in: Pending, or Accepted by the customer (Tyler 2026-11-09). Closed
+// (already invoiced in QuickBooks) and Rejected ones stay out unless brought in by number.
+const OPEN_ESTIMATE = ['Pending', 'Accepted'];
+async function pullEstimate(e, { force = false } = {}) {
   const { rows: [have] } = await query('SELECT order_id, status, updated_by FROM orders WHERE qbo_estimate_id = $1', [e.Id]);
   if (e.status === 'Deleted') return have ? have.order_id : null;
   if (have && (have.status !== 'quote' || have.updated_by !== FROM_QB)) return have.order_id;
-  if (!have && e.TxnStatus && e.TxnStatus !== 'Pending') return null;
+  if (!have && !force && e.TxnStatus && !OPEN_ESTIMATE.includes(e.TxnStatus)) return null;
   const ref = e.CustomerRef && e.CustomerRef.value;
   if (!ref) return null;
   // A sub-customer (job) belongs to its parent customer; its name becomes the job name.
@@ -435,7 +438,9 @@ async function pullEstimate(e) {
   const items = [];
   let delivery = 0;
   let discount = 0;
-  for (const l of e.Line || []) {
+  // Bundles (group lines) count as the lines inside them.
+  const lines = (e.Line || []).flatMap((l) => (l.DetailType === 'GroupLineDetail' ? (l.GroupLineDetail && l.GroupLineDetail.Line) || [] : [l]));
+  for (const l of lines) {
     if (l.DetailType === 'DiscountLineDetail') { discount += Number(l.Amount) || 0; continue; }
     if (l.DetailType !== 'SalesItemLineDetail') continue;
     const d = l.SalesItemLineDetail || {};
@@ -455,7 +460,10 @@ async function pullEstimate(e) {
       description: desc && desc !== (match && match.name) ? desc.slice(0, 4000) : null, qbo_item_id: itemId ? String(itemId) : null,
     });
   }
-  if (!items.length) return have ? have.order_id : null;
+  if (!items.length) {
+    if (force) throw new QboError(`Estimate ${e.DocNumber || e.Id} has no lines with a price, so there's nothing to quote.`);
+    return have ? have.order_id : null;
+  }
   const { rows: [c] } = await query('SELECT tax_exempt FROM customers WHERE customer_id = $1', [customerId]);
   const { saveOrder } = require('./routes/orders');
   const tax = (await query("SELECT value FROM app_settings WHERE key = 'sales_tax_rate'")).rows[0];
@@ -488,6 +496,22 @@ async function pullEstimateSafely(e) {
     [e.Id, `Estimate ${e.DocNumber || e.Id}: ${err.message}`, e]);
     return null;
   }
+}
+
+// "Bring in estimate 1114" on Admin > QuickBooks: finds it by its number and brings it in
+// whatever its status. Says what happened.
+async function pullEstimateByNumber(docNumber) {
+  const n = String(docNumber || '').trim();
+  if (!n) throw new QboError('Enter the estimate number.');
+  const e = ((await select(`select * from Estimate where DocNumber = ${quote(n)}`)).Estimate || [])[0];
+  if (!e) throw new QboError(`QuickBooks has no estimate number ${n}.`);
+  const { rows: [had] } = await query('SELECT order_id, order_number, status FROM orders WHERE qbo_estimate_id = $1', [e.Id]);
+  if (had && had.status !== 'quote') return { order: had, note: `Estimate ${n} is already ${had.order_number} in the CRM, and it's past being a quote, so it was left as it is.` };
+  const orderId = await pullEstimate(e, { force: true });
+  const { rows: [o] } = await query('SELECT order_id, order_number FROM orders WHERE order_id = $1', [orderId]);
+  await query(`INSERT INTO qbo_sync_log (entity, local_table, local_id, operation, request_id, qbo_id, succeeded)
+    VALUES ('Estimate', 'orders', $1, 'pull', gen_random_uuid(), $2, true)`, [orderId, e.Id]);
+  return { order: o, note: had ? `Estimate ${n} was already ${o.order_number}; it's updated from QuickBooks.` : `Estimate ${n} is now quote ${o.order_number}.` };
 }
 
 async function pullEstimateById(qbId) {
@@ -818,6 +842,6 @@ function startChecks() {
 module.exports = {
   io, config, configured, redirectUri, connection, connected, later, idle,
   customerChanged, orderCompleted, invoiceStillOpen, pushCustomer, pushInvoice, pullCustomer, pullCustomerById,
-  checkCustomers, checkEstimates, pullEstimate, pullEstimateById, syncAllCustomers, connectUrl, finishConnect, disconnect, handleWebhook, startChecks,
+  checkCustomers, checkEstimates, pullEstimate, pullEstimateById, pullEstimateByNumber, syncAllCustomers, connectUrl, finishConnect, disconnect, handleWebhook, startChecks,
   QboError, API_BASE,
 };

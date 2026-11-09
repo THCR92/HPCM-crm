@@ -129,6 +129,7 @@ router.get('/admin/quickbooks', need('admin'), async (req, res) => {
       <dl class="details">
         <dt>Connected</dt><dd>${when(conn.connected_at)}${conn.connected_by ? ` by ${conn.connected_by}` : ''}</dd>
         <dt>Last check for QuickBooks changes</dt><dd>${when(conn.customers_checked_at) || 'Not yet'}</dd>
+        <dt>Last check for estimates</dt><dd>${when(conn.estimates_checked_at) || 'Not yet'}</dd>
         <dt>Customers</dt><dd>${counts.linked} matched with QuickBooks${counts.unlinked ? `, ${counts.unlinked} not yet` : ''}${
           counts.errors ? `, ${counts.errors} with a problem` : ''}</dd>
         <dt>Invoices sent</dt><dd>${orders.sent}${orders.errors ? ` (${orders.errors} with a problem)` : ''}</dd>
@@ -137,6 +138,9 @@ router.get('/admin/quickbooks', need('admin'), async (req, res) => {
       ${conn.last_error ? html`<div class="alert">${conn.last_error}</div>` : ''}
       <div class="actions">
         <form method="post" action="/qbo/sync" class="inline"><button class="btn primary">Sync customers now</button></form>
+        <form method="post" action="/qbo/estimate" class="inline">
+          <label class="inline-date">Bring in estimate #<input name="number" required style="width:7rem"></label>
+          <button class="btn">Bring in</button></form>
         <form method="post" action="/qbo/connect" class="inline"><button class="btn">Connect again</button></form>
         <form method="post" action="/qbo/disconnect" class="inline"
           onsubmit="return confirm('Disconnect QuickBooks? Nothing is deleted in either place.')"><button class="btn">Disconnect</button></form>
@@ -157,9 +161,10 @@ router.get('/admin/quickbooks', need('admin'), async (req, res) => {
       <ul>
         <li>Customers added or changed here are added or updated in QuickBooks right away.</li>
         <li>Customers added or changed in QuickBooks show up here within a few minutes. QuickBooks sub-customers (jobs) stay in QuickBooks.</li>
-        <li>An order becomes a QuickBooks invoice when it's completed (picked up or delivered), with the same number (HP-…).
+        <li>An order becomes a QuickBooks invoice when it's confirmed, with the same number (HP-…), due 15 days after pickup or delivery.
           Each line keeps its quantity, length and price; delivery, discount and deposit come along, and so does the CRM's sales tax.</li>
-        <li>Estimates written in QuickBooks show up here as quotes within a few minutes. Items the CRM sells by the piece come in as
+        <li>Open estimates (pending or accepted) written in QuickBooks show up here as quotes within a few minutes. To bring in
+          one that didn't (an older one, or one already closed), type its number in "Bring in estimate #" above. Items the CRM sells by the piece come in as
           that item; anything else comes in as "Item from QuickBooks" with its name and price, so the total matches. Once someone
           changes the quote here, later changes to the estimate in QuickBooks are left alone. Invoicing the order closes the estimate.</li>
         <li>Price list items are added to QuickBooks as products the first time they're invoiced.</li>
@@ -197,6 +202,16 @@ router.get('/qbo/callback', need('admin'), async (req, res) => {
 router.post('/qbo/disconnect', need('admin'), async (req, res) => {
   await qbo.disconnect();
   back(res, 'QuickBooks is disconnected. Nothing was deleted in either place.');
+});
+
+router.post('/qbo/estimate', need('admin'), async (req, res) => {
+  if (!(await qbo.connected())) return back(res, 'QuickBooks isn\'t connected.', 'error');
+  try {
+    const { order, note } = await qbo.pullEstimateByNumber(req.body.number);
+    return res.redirect(`/orders/${order.order_id}?note=${encodeURIComponent(note)}`);
+  } catch (err) {
+    return back(res, err.message, 'error');
+  }
 });
 
 router.post('/qbo/sync', need('admin'), async (req, res) => {
