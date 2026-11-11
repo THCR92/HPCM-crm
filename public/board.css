@@ -1,5 +1,7 @@
 /* Shop TV board. Sized off the screen width so it fills a 1080p or 4K TV the
-   same way; laid out for 16:9 and readable from across the shop. */
+   same way; laid out for 16:9 and readable from across the shop.
+   Built with flexbox and margins only (no CSS grid, flex gap or clamp()): the shop's
+   Samsung TV browser doesn't support those, and stacked everything (2026-11-11). */
 :root {
   --bg: #12161b; --panel: #1c232b; --ink: #f2f4f6; --muted: #9aa5b1; --line: #2d3741;
   --brand: #196fb6; --quote: #8fa3b8; --confirmed: #4ea1e0; --in_production: #f0b429;
@@ -9,11 +11,11 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); min-height: 100vh; }
-body.board { padding: 1.2vw 1.8vw; font-size: clamp(14px, 1.3vw, 60px); line-height: 1.25; }
+body.board { padding: 1.2vw 1.8vw; font-size: 1.3vw; font-size: clamp(14px, 1.3vw, 60px); line-height: 1.25; }
 b { font-weight: 700; }
 .muted { color: var(--muted); }
 
-header { display: flex; justify-content: space-between; align-items: center; gap: .5em 1.5em; flex-wrap: wrap;
+header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
   background: #fff; color: #1d315e; border-bottom: 6px solid var(--brand);
   margin: -1.2vw -1.8vw .8em; padding: .35em 1.8vw; }
 .brand { height: 4em; width: auto; display: block; }
@@ -21,10 +23,12 @@ header { display: flex; justify-content: space-between; align-items: center; gap
 .week b { color: #1d315e; }
 .clock { font-size: 1.1em; color: #4b5763; }
 
-.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1vw; margin-bottom: .9em; }
-.tile { background: var(--panel); border-radius: 12px; padding: .4em .9em .45em; border-top: 8px solid var(--line);
-  display: grid; grid-template-columns: auto 1fr; column-gap: .6em; align-items: center; }
-.tile .n { font-size: 2.8em; font-weight: 800; line-height: 1; grid-row: span 2; }
+.tiles { display: flex; margin-bottom: .9em; }
+.tile { flex: 1 1 0; min-width: 0; background: var(--panel); border-radius: 12px; padding: .4em .9em .45em; border-top: 8px solid var(--line);
+  display: flex; align-items: center; }
+.tile + .tile { margin-left: 1vw; }
+.tile .n { font-size: 2.8em; font-weight: 800; line-height: 1; margin-right: .25em; }
+.tile .txt { flex: 1; min-width: 0; }
 .tile .label { font-size: 1.1em; color: var(--muted); }
 .tile .extra { font-size: .95em; }
 .tile.quote { border-color: var(--quote); }
@@ -32,7 +36,9 @@ header { display: flex; justify-content: space-between; align-items: center; gap
 .tile.in_production { border-color: var(--in_production); } .tile.in_production .n { color: var(--in_production); }
 .tile.ready { border-color: var(--ready); } .tile.ready .n { color: var(--ready); }
 
-.cols { display: grid; grid-template-columns: 1.75fr 1fr; gap: 1vw; align-items: start; }
+.cols { display: flex; align-items: flex-start; }
+.cols > .next { flex: 1.75 1 0; min-width: 0; }
+.cols > aside { flex: 1 1 0; min-width: 0; margin-left: 1vw; }
 h2 { font-size: 1.25em; margin: 0 0 .35em; }
 h2 .sub { font-size: .75em; font-weight: 400; color: var(--muted); margin-left: .4em; }
 
@@ -42,10 +48,12 @@ h2 .sub { font-size: .75em; font-weight: 400; color: var(--muted); margin-left: 
 .next td.due { border-left: 10px solid transparent; width: 9em; }
 .next .when { font-size: 1.15em; font-weight: 700; }
 .next .date, .next .job { color: var(--muted); }
-.next .top { display: flex; align-items: center; gap: .6em; flex-wrap: wrap; }
-.next .order { font-weight: 700; }
+.next .top { display: flex; align-items: center; flex-wrap: wrap; }
+.next .order { font-weight: 700; margin-right: .6em; }
+.next .pill { margin-left: .6em; }
 .next .cust { font-size: 1.15em; font-weight: 600; flex: 1; min-width: 0; }
-.mats { display: flex; flex-wrap: wrap; align-items: center; gap: .25em .5em; margin-top: .15em; }
+.mats { display: flex; flex-wrap: wrap; align-items: center; margin-top: .15em; }
+.mats > * { margin: .1em .5em .1em 0; }
 .mat { background: #26303a; border-radius: 6px; padding: 0 .45em; font-size: .85em; }
 .ga { white-space: nowrap; color: var(--muted); }
 .mat.short { background: rgba(255, 92, 77, .18); outline: 2px solid var(--late); }
@@ -60,13 +68,13 @@ h2 .sub { font-size: .75em; font-weight: 400; color: var(--muted); margin-left: 
 .pill.in_production { background: var(--in_production); }
 .empty { background: var(--panel); border-radius: 12px; padding: 1.2em; font-size: 1.2em; color: var(--muted); }
 
-aside { display: grid; gap: 1vw; }
+aside .panel + .panel { margin-top: 1vw; }
 .panel { background: var(--panel); border-radius: 12px; padding: .7em .9em; border-left: 10px solid var(--line); }
 .panel .lead { margin: 0 0 .3em; }
 .panel ul { list-style: none; margin: 0; padding: 0; }
-.panel li { display: flex; justify-content: space-between; align-items: baseline; gap: .8em;
+.panel li { display: flex; justify-content: space-between; align-items: baseline;
   padding: .35em 0; border-top: 1px solid var(--line); }
-.panel li b { white-space: nowrap; }
+.panel li b { white-space: nowrap; margin-left: .8em; }
 .panel .job { color: var(--muted); font-size: .9em; }
 .panel .order { font-weight: 700; }
 .panel p.more { margin: .3em 0 0; }
@@ -78,10 +86,14 @@ aside { display: grid; gap: 1vw; }
 @media (max-width: 800px) {
   body.board { font-size: 15px; padding: 12px 16px; }
   header { margin: -12px -16px .8em; padding: .4em 16px; }
-  .tiles { grid-template-columns: 1fr 1fr; }
-  .cols { grid-template-columns: 1fr; }
+  .tiles { flex-wrap: wrap; justify-content: space-between; }
+  .tile { flex: 0 0 49%; margin-bottom: 2%; }
+  .tile + .tile { margin-left: 0; }
+  .cols { display: block; }
+  .cols > aside { margin: 1em 0 0; }
   .next tr, .next td { display: block; }
-  .next td.due { width: auto; display: flex; gap: .6em; align-items: baseline; padding-bottom: 0; }
+  .next td.due { width: auto; display: flex; align-items: baseline; padding-bottom: 0; }
+  .next td.due .when { margin-right: .6em; }
   .next td.what { border-left: 10px solid transparent; }
   .next .cust { flex-basis: 100%; order: 3; }
 }

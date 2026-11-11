@@ -140,8 +140,8 @@ router.get('/', async (req, res) => {
   });
   const prices = can('prices');
   const tile = (n, label, cls, extra) => html`
-    <div class="tile ${cls}"><div class="n">${n}</div><div class="label">${label}</div>
-      ${extra ? html`<div class="extra">${extra}</div>` : ''}</div>`;
+    <div class="tile ${cls}"><div class="n">${n}</div><div class="txt"><div class="label">${label}</div>
+      ${extra ? html`<div class="extra">${extra}</div>` : ''}</div></div>`;
   const material = (n) => html`<span class="mat ${n.short > 0 ? 'short' : ''}">
     ${n.color}${n.gauge ? html` <span class="ga">${n.gauge} ga</span>` : ''} <b>${num(n.lf, 0)} ft</b>${
       n.short > 0 ? html` <em>short ${num(n.short, 0)} ft</em>` : ''}</span>`;
