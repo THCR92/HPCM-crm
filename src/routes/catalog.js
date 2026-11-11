@@ -212,6 +212,7 @@ router.get('/colors', async (req, res) => {
     more than once for a supplier if it comes in more than one finish. "Stocked in" is the gauges a color comes in:
     a quote line only offers the colors stocked in its gauge (trim with no gauge counts as 26 ga).</p>
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
+    ${req.query.note ? html`<div class="notice">${req.query.note}</div>` : ''}
     ${edit ? html`<h2>Add a supplier</h2>
     <form method="post" action="/suppliers" class="card form-row">
       <label>Supplier name<input name="name" required></label>
@@ -302,6 +303,12 @@ router.get('/colors/:id(\\d+)/edit', need('catalog'), async (req, res) => {
       <label class="check"><input type="checkbox" name="active" value="1" ${c.active ? 'checked' : ''}> Show on new orders</label>
       <button class="btn primary">Save color</button>
       <a class="btn" href="/colors">Cancel</a>
+    </form>
+    <form method="post" action="/colors/${c.color_id}/delete" class="card"
+      onsubmit="return confirm('Remove ${c.name.replace(/['"\\<>]/g, '')} from the color list?')">
+      <p class="muted small">Removing takes the color off the list. If it's on any quote, order or coil, it's hidden
+        instead so those keep their color.</p>
+      <button class="btn danger">Remove color</button>
     </form>`,
   }));
 });
@@ -319,6 +326,25 @@ router.post('/colors/:id(\\d+)', need('catalog'), async (req, res) => {
   } catch (err) {
     res.redirect(`/colors/${req.params.id}/edit?error=${encodeURIComponent(colorError(err, c))}`);
   }
+});
+
+// Remove a color (Tyler 2026-11-11). One already used on a quote, order, coil or stock is
+// hidden instead, so those records keep it.
+router.post('/colors/:id(\\d+)/delete', need('catalog'), async (req, res) => {
+  const { rows: [c] } = await query(`SELECT name,
+      (SELECT count(*) FROM order_items WHERE color_id = $1) + (SELECT count(*) FROM coils WHERE color_id = $1)
+      + (SELECT count(*) FROM finished_goods WHERE color_id = $1) + (SELECT count(*) FROM supply_stock WHERE color_id = $1) AS uses
+    FROM colors WHERE color_id = $1`, [req.params.id]);
+  if (!c) return res.status(404).send('Color not found');
+  let note;
+  if (Number(c.uses)) {
+    await query('UPDATE colors SET active = false WHERE color_id = $1', [req.params.id]);
+    note = `${c.name} is on quotes, orders or coils already, so it's hidden instead of removed. It won't show on new quotes.`;
+  } else {
+    await query('DELETE FROM colors WHERE color_id = $1', [req.params.id]);
+    note = `${c.name} was removed.`;
+  }
+  res.redirect(`/colors?note=${encodeURIComponent(note)}`);
 });
 
 module.exports = router;

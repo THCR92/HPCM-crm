@@ -1802,3 +1802,21 @@ test('customer type premiums: homeowners +13% on list prices and auto closures; 
   await query("UPDATE customer_type_premiums SET premium_pct = 13 WHERE customer_type = 'homeowner'");
   await query("DELETE FROM customer_type_premiums WHERE customer_type <> 'homeowner'");
 });
+
+test('colors can be removed; one already on an order is hidden instead', async () => {
+  const add = async (name) => (await query(`INSERT INTO colors (name, finish) VALUES ($1, 'smooth') RETURNING color_id`, [name])).rows[0].color_id;
+  const unused = await add(`Unused ${Date.now()}`);
+  const used = await add(`Used ${Date.now()}`);
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const out = await (await post('/orders', { customer_id: c.customer_id, accessories_checked: true, closures: 'none',
+    sections: [{ area: 'roof', items: [{ product_id: await productId('PNL-SL-26'), color_id: used, pieces: 1, length_in: 120, width_in: 16, unit_price: 3.65 }] }] })).json();
+  assert.ok(out.ok, out.error);
+  const page = await (await fetch(`${base}/colors/${unused}/edit`)).text();
+  assert.match(page, /Remove color/);
+  for (const id of [unused, used]) {
+    const r = await fetch(`${base}/colors/${id}/delete`, { method: 'POST', redirect: 'manual' });
+    assert.strictEqual(r.status, 302);
+  }
+  const { rows } = await query('SELECT color_id, active FROM colors WHERE color_id = ANY($1)', [[unused, used]]);
+  assert.deepStrictEqual(rows.map((r) => [r.color_id, r.active]), [[used, false]]);
+});
