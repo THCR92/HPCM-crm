@@ -122,6 +122,9 @@ function middleware() {
         return res.status(401).json({ error: 'Your sign-in has expired. Sign in again.' });
       }
       req.user = user;
+      // Keep the browser's cookie in step with the sliding expiry, so a screen left on
+      // a page (the shop TV board) stays signed in.
+      if (req.method === 'GET') setCookie(req, res, parseCookies(req.headers.cookie)[COOKIE], SESSION_DAYS * 86400);
       store.run(user, next);
     }, next);
   };
