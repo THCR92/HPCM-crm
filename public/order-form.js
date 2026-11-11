@@ -99,13 +99,35 @@
     return ft * 12 + inch;
   }
 
-  // Price of one piece: list price with the color premium; trim at its flat width
-  // (26 ga $3.40 per flat inch; see public/trim-price.js).
-  function listPrice(product, colorId, width) {
+  // The customer's type premium (Price list page): a percent on list prices (Tyler 2026-11-11).
+  function premiumPct(customerId = state.header.customer_id) {
+    const c = customers.find((x) => x.id === Number(customerId));
+    return c ? Number(c.premium) || 0 : 0;
+  }
+  const withPremium = (price, pct) => (price === '' || price === null || price === undefined ? price
+    : Math.round(Number(price) * (1 + (Number(pct) || 0) / 100) * 100) / 100);
+  // Products and screw rules with the premium in their prices, for the figured screws and closures.
+  let pricedCache = { pct: null };
+  function priced() {
+    const pct = premiumPct();
+    if (pricedCache.pct !== pct) {
+      pricedCache = {
+        pct,
+        products: pct ? new Map([...productById].map(([k, p]) => [k, { ...p, price: withPremium(p.price, pct) }])) : productById,
+        rules: pct ? screwRules.map((r) => ({ ...r, price: withPremium(r.price, pct) })) : screwRules,
+      };
+    }
+    return pricedCache;
+  }
+
+  // Price of one piece: list price with the color premium and the customer's premium; trim
+  // at its flat width (26 ga $3.40 per flat inch; see public/trim-price.js).
+  function listPrice(product, colorId, width, pct = premiumPct()) {
     const up = colorId && colorById.get(colorId) ? Number(colorById.get(colorId).upcharge) : 0;
     const price = window.TrimPrice.piecePrice(product, width, up);
-    return price === null ? '' : price.toFixed(2);
+    return price === null ? '' : withPremium(price, pct).toFixed(2);
   }
+  let customerPct = premiumPct();
 
   // Mirrors order_items.billable_qty in the database.
   function compute(row) {
@@ -398,7 +420,7 @@
       product_id: row.product_id, color_id: row.color_id, pieces: row.pieces, length_in: lengthIn(row), width_in: row.width_in,
       screw_option: row.screw_option, area: s.area,
     })));
-    return window.Screws.figure(lines, productById, screwRules,
+    return window.Screws.figure(lines, priced().products, priced().rules,
       { framing: state.header.framing, length: state.header.screw_length, trimFor: state.header.trim_screws_for || '' });
   }
 
@@ -497,7 +519,7 @@
       root.querySelector(`fieldset[data-s="${si}"] .section-total`).textContent =
         [sSq ? `${fmt(round2(sSq))} sq ft` : '', sLf ? `${fmt(round2(sLf))} LF` : ''].filter(Boolean).join(' · ');
     });
-    const figured = hasClosurePanels() ? window.Screws.closures(panelLines(), productById, state.header.closures)
+    const figured = hasClosurePanels() ? window.Screws.closures(panelLines(), priced().products, state.header.closures)
       : { lines: [], missing: [] };
     state.closures = { figured: figured.lines, missing: figured.missing,
       lines: window.Screws.withClosureQty(figured.lines, portal ? null : state.header.closure_qty) };
@@ -619,6 +641,19 @@
         state.header.contact_email = state.header.contact_email || c.email || '';
         state.header.fulfillment = c.default_fulfillment;
         state.header.tax_exempt = !!c.tax_exempt;
+        // A different premium: lines still at the old list price move to the new one.
+        const pct = premiumPct();
+        if (pct !== customerPct) {
+          for (const sec of state.sections) {
+            for (const row of sec.items) {
+              const p = productById.get(Number(row.product_id));
+              if (!p || row.unit_price === '') continue;
+              const before = listPrice(p, Number(row.color_id), row.width_in, customerPct);
+              if (before !== '' && Number(before) === Number(row.unit_price)) row.unit_price = listPrice(p, Number(row.color_id), row.width_in, pct);
+            }
+          }
+          customerPct = pct;
+        }
         render();
         return;
       }

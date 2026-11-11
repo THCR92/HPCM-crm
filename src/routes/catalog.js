@@ -2,6 +2,7 @@
 const { query } = require('../db');
 const { html, layout, money, num, date, UNIT_LABEL } = require('../html');
 const { can, need } = require('../auth');
+const CustomerTypes = require('../customer-types');
 
 const router = require('../async-router')();
 
@@ -20,6 +21,7 @@ router.get('/products', need('prices'), async (req, res) => {
     FROM products p LEFT JOIN v_current_prices cp USING (product_id)
     WHERE p.active ORDER BY array_position(enum_range(NULL::product_category), p.category), p.name`);
   const { rows: [tax] } = await query("SELECT value FROM app_settings WHERE key = 'sales_tax_rate'");
+  const premiums = await CustomerTypes.premiums();
   const groups = {};
   for (const r of rows) (groups[r.category] ||= []).push(r);
   const edit = can('catalog');
@@ -35,6 +37,18 @@ router.get('/products', need('prices'), async (req, res) => {
       </form>` : html`<span>Sales tax for new quotes: ${tax ? Number(tax.value) : ''}%</span>`}
       ${can('screws') ? html`<a class="btn" href="/admin/screws">Screws and clips</a>` : ''}
       ${edit ? html`<a class="btn primary" href="/admin/products/new?back=products">+ Add product</a>` : ''}</div>
+    ${req.query.saved === 'premiums' ? html`<div class="notice">Customer premiums saved. New quote lines use them.</div>` : ''}
+    <details class="card" ${req.query.saved === 'premiums' ? 'open' : ''}>
+      <summary><strong>Customer type premiums</strong> <span class="muted small">${CustomerTypes.TYPES.filter((t) => premiums[t])
+    .map((t) => `${CustomerTypes.TYPE_LABEL[t]} ${premiums[t] > 0 ? '+' : ''}${premiums[t]}%`).join(' · ') || 'none set: everyone pays list price'}</span></summary>
+      <p class="muted small">A percent added to price list prices (with any color premium) on new quote lines, by the customer's type.
+        Use a minus number for a discount, e.g. -10 for supply houses. Quotes already written keep their prices.</p>
+      ${can('catalog') ? html`<form method="post" action="/settings/premiums" class="form-row">
+        ${CustomerTypes.TYPES.map((t) => html`<label>${CustomerTypes.TYPE_LABEL[t]} %
+          <input name="${t}" type="number" step="0.01" min="-99" max="500" value="${premiums[t] || ''}" placeholder="0" style="width:6rem"></label>`)}
+        <button class="btn">Save premiums</button></form>`
+    : html`<p>${CustomerTypes.TYPES.map((t) => `${CustomerTypes.TYPE_LABEL[t]}: ${premiums[t]}%`).join(' · ')}</p>`}
+    </details>
     <p class="muted">Prices are for standard stock colors. Change a price here and new order lines use it
     from today on; orders already written keep the price they were written at.</p>
     <p class="muted">Trim and downspouts are priced per 10' piece; other lengths are billed in proportion
@@ -139,6 +153,17 @@ router.post('/products/:id(\\d+)/girth', need('catalog'), async (req, res) => {
   if (g !== null && !(g > 0)) return res.status(400).send('Enter the flat width in inches');
   await query('UPDATE products SET girth_in = $2 WHERE product_id = $1', [req.params.id, g]);
   res.redirect('/products?saved=1');
+});
+
+// Premium per customer type (Tyler 2026-11-11).
+router.post('/settings/premiums', need('catalog'), async (req, res) => {
+  for (const t of CustomerTypes.TYPES) {
+    const v = req.body[t] === undefined || req.body[t] === '' ? 0 : Number(req.body[t]);
+    if (!(v > -100 && v <= 500)) return res.status(400).send(`${CustomerTypes.TYPE_LABEL[t]}: enter a percent from -99 to 500`);
+    await query(`INSERT INTO customer_type_premiums (customer_type, premium_pct) VALUES ($1, $2)
+      ON CONFLICT (customer_type) DO UPDATE SET premium_pct = EXCLUDED.premium_pct, updated_at = now()`, [t, v]);
+  }
+  res.redirect('/products?saved=premiums');
 });
 
 // Default sales tax percent copied onto new orders (each order can still change it).

@@ -8,7 +8,7 @@ const { can, need } = require('../auth');
 
 const TZ = 'America/Denver';
 const DAY = 86400000;
-const TYPE_LABEL = { contractor: 'Contractor', homeowner: 'Homeowner', commercial: 'Commercial', dealer: 'Dealer', other: 'Other' };
+const { TYPE_LABEL } = require('../customer-types');
 const CATEGORY_LABEL = {
   panel: 'Panels', trim: 'Trim', custom_trim: 'Custom trim', flat_sheet: 'Flat sheet', boot: 'Pipe boots',
   jack: 'Roof jacks', fastener: 'Screws and clips', accessory: 'Accessories', service: 'Services', delivery: 'Delivery',

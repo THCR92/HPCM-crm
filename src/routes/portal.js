@@ -9,6 +9,7 @@
 const crypto = require('crypto');
 const { query } = require('../db');
 const TrimPrice = require('../../public/trim-price');
+const CustomerTypes = require('../customer-types');
 const { hashPassword, checkPassword, passwordProblem } = require('../auth');
 const { html, layout, money, num, date, STATUS_LABEL } = require('../html');
 const express = require('express');
@@ -556,7 +557,8 @@ router.get('/portal/orders/:id(\\d+)/again', signedIn, async (req, res) => {
     for (const i of sec.items) {
       const p = catalog.products.find((x) => x.id === i.product_id);
       const c = catalog.colors.find((x) => x.id === i.color_id);
-      i.unit_price = TrimPrice.piecePrice(p, i.width_in, c ? c.upcharge : 0).toFixed(2);
+      const cust = catalog.customers[0];
+      i.unit_price = CustomerTypes.withPremium(TrimPrice.piecePrice(p, i.width_in, c ? c.upcharge : 0), cust ? cust.premium : 0).toFixed(2);
     }
   }
   res.send(formPage(l, { title: `New quote (from ${o.order_number})`, order, catalog, action: '/portal/quotes' }));
@@ -582,6 +584,7 @@ async function savePortalQuote(l, existing, body) {
   const priceOf = new Map(prices.map((p) => [p.product_id, p]));
   const { rows: colors } = await query('SELECT color_id, upcharge_pct FROM v_colors');
   const upOf = new Map(colors.map((c) => [c.color_id, Number(c.upcharge_pct) || 0]));
+  const pct = await CustomerTypes.premiumFor(l.customer_id);
   const kept = new Map((existing ? existing.sections.flatMap((sec) => sec.items) : []).map((i) => [i.order_item_id, i]));
   const sections = (Array.isArray(body.sections) ? body.sections : []).map((sec) => ({
     ...sec,
@@ -594,7 +597,7 @@ async function savePortalQuote(l, existing, body) {
       const same = before && before.product_id === Number(it.product_id) && (before.color_id || null) === (Number(it.color_id) || null)
         // Trim priced by its width keeps our price only at the same width.
         && (!p || p.unit !== 'each' || Number(before.width_in || 0) === Number(it.width_in || 0));
-      const list = p ? TrimPrice.piecePrice({ ...p, price: p.unit_price }, it.width_in, upOf.get(Number(it.color_id))) : null;
+      const list = p ? CustomerTypes.withPremium(TrimPrice.piecePrice({ ...p, price: p.unit_price }, it.width_in, upOf.get(Number(it.color_id))), pct) : null;
       return { ...it, order_item_id: before ? before.order_item_id : null, unit_price: same ? before.unit_price : list };
     }),
   }));

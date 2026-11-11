@@ -1768,3 +1768,37 @@ test('typos too big for the database get a plain message, not a server error', a
   assert.match((await save({ product_id: ridge, pieces: 4, width_in: 1400, unit_price: 5 })).error, /width of 1400" looks wrong/);
   assert.match((await save({ product_id: pbr, pieces: 4, length_in: 120, unit_price: 50000000 })).error, /price of \$50000000 looks wrong/);
 });
+
+test('customer type premiums: homeowners +13% on list prices and auto closures; supply house type; set on the price list', async () => {
+  const { loadCatalog } = require('../src/routes/orders');
+  const { rows: [prem] } = await query("SELECT premium_pct FROM customer_type_premiums WHERE customer_type = 'homeowner'");
+  assert.strictEqual(Number(prem.premium_pct), 13);
+  const { rows: [h] } = await query(
+    "INSERT INTO customers (display_name, customer_type) VALUES ('Test ' || gen_random_uuid(), 'homeowner') RETURNING customer_id");
+  const { rows: [s] } = await query(
+    "INSERT INTO customers (display_name, customer_type) VALUES ('Test ' || gen_random_uuid(), 'supply_house') RETURNING customer_id");
+  const cat = await loadCatalog();
+  assert.strictEqual(Number(cat.customers.find((c) => c.id === h.customer_id).premium), 13);
+  assert.strictEqual(Number(cat.customers.find((c) => c.id === s.customer_id).premium), 0);
+
+  const [pbr, pbrIn] = await Promise.all(['PNL-PBR-26', 'ACC-PBR-CLOS-INNER'].map((sku) => productId(sku)));
+  const { rows: [lp] } = await query('SELECT unit_price FROM v_current_prices WHERE product_id = $1', [pbrIn]);
+  const out = await (await post('/orders', { customer_id: h.customer_id, closures: 'standard', accessories_checked: true,
+    sections: [{ area: 'roof', items: [{ product_id: pbr, pieces: 5, length_in: 120, unit_price: 6.38 }] }] })).json();
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const { rows: [cl] } = await query('SELECT unit_price FROM order_items WHERE order_id = $1 AND product_id = $2', [id, pbrIn]);
+  assert.strictEqual(Number(cl.unit_price), Math.round(Number(lp.unit_price) * 1.13 * 100) / 100);
+
+  // Supply house is a type on the customer form; premiums are set on the price list.
+  const form = await (await fetch(`${base}/customers/new`)).text();
+  assert.match(form, /value="supply_house"[^>]*>Supply house/);
+  const r = await fetch(`${base}/settings/premiums`, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'homeowner=15&supply_house=-10' });
+  assert.strictEqual(r.status, 302);
+  const list = await (await fetch(`${base}/products?saved=premiums`)).text();
+  assert.match(list, /Homeowner \+15%/);
+  assert.match(list, /Supply house -10%/);
+  await query("UPDATE customer_type_premiums SET premium_pct = 13 WHERE customer_type = 'homeowner'");
+  await query("DELETE FROM customer_type_premiums WHERE customer_type <> 'homeowner'");
+});

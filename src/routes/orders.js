@@ -8,6 +8,7 @@ const { syncOrderSupplies } = require('../supplies');
 const qbo = require('../qbo');
 const mail = require('../mail');
 const { quotePdf } = require('../quote-pdf');
+const CustomerTypes = require('../customer-types');
 const notices = require('../notices');
 const proof = require('../proof');
 const { can, need, userName, isAdmin } = require('../auth');
@@ -107,8 +108,10 @@ async function loadCatalog() {
            (SELECT array_agg(g.gauge ORDER BY g.gauge) FROM color_gauges cg JOIN gauges g USING (gauge_id) WHERE cg.color_id = v_colors.color_id) AS gauges
     FROM v_colors WHERE active AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.supplier_id = v_colors.supplier_id AND NOT s.active) ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
   const { rows: customers } = await query(`
-    SELECT customer_id AS id, display_name AS name, phone, email, default_fulfillment, tax_exempt
-    FROM customers WHERE active ORDER BY lower(display_name)`);
+    SELECT c.customer_id AS id, c.display_name AS name, c.phone, c.email, c.default_fulfillment, c.tax_exempt,
+           COALESCE(tp.premium_pct, 0) AS premium
+    FROM customers c LEFT JOIN customer_type_premiums tp USING (customer_type)
+    WHERE c.active ORDER BY lower(c.display_name)`);
   const { rows: [sp] } = await query("SELECT value FROM app_settings WHERE key = 'sized_trim_pricing'");
   return {
     products, colors, customers, default_tax_rate: await defaultTaxRate(), sized_pricing: sp ? sp.value : 'per_inch',
@@ -327,6 +330,9 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
            pp.fastening::text AS fastening, p.standard_length_in,
            pp.closure_product_id AS closure_id, pp.outer_closure_product_id AS outer_closure_id, pp.vented_closure_product_id AS vented_closure_id, cp.unit_price AS price
     FROM products p LEFT JOIN panel_profiles pp USING (profile_id) LEFT JOIN v_current_prices cp USING (product_id)`);
+  // Figured screws and closures carry the customer's type premium, like the other lines.
+  const pct = await CustomerTypes.premiumFor(header.customer_id);
+  if (pct) for (const p of prodRows) p.price = CustomerTypes.withPremium(p.price, pct);
   const productsById = new Map(prodRows.map((p) => [p.id, p]));
   const sections = await withScrews(parseSections(body, productsById), header, productsById);
 

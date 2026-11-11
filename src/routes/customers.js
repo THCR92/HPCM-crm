@@ -6,7 +6,7 @@ const qbo = require('../qbo');
 
 const router = require('../async-router')();
 
-const TYPES = ['contractor', 'homeowner', 'commercial', 'dealer', 'other'];
+const { TYPES, TYPE_LABEL } = require('../customer-types');
 const FIELDS = ['display_name', 'customer_type', 'company_name', 'first_name', 'last_name',
   'email', 'phone', 'mobile', 'payment_terms', 'default_fulfillment', 'resale_cert_number', 'notes'];
 
@@ -22,8 +22,8 @@ function customerForm(c, { action, error }) {
     <label class="span2">Customer name (as it should appear on invoices) *
       <input name="display_name" required maxlength="500" value="${v('display_name')}" autofocus></label>
     <label>Type
-      <select name="customer_type">${TYPES.map((t) => opt(t, c.customer_type || 'contractor',
-        t[0].toUpperCase() + t.slice(1)))}</select></label>
+      <select name="customer_type">${TYPES.map((t) => opt(t, c.customer_type || 'contractor', TYPE_LABEL[t]))}</select>
+      <span class="muted small">Sets the price premium on their quotes (Price list page).</span></label>
     <label>Company<input name="company_name" value="${v('company_name')}"></label>
     <label>First name<input name="first_name" value="${v('first_name')}"></label>
     <label>Last name<input name="last_name" value="${v('last_name')}"></label>
@@ -225,7 +225,7 @@ router.get('/', async (req, res) => {
       <thead><tr><th>Name</th><th>Type</th><th>Phone</th><th>Email</th><th class="num">Open orders</th><th>Last order</th></tr></thead>
       <tbody>${rows.length ? rows.map((c) => html`
         <tr><td><a href="/customers/${c.customer_id}">${c.display_name}</a></td>
-        <td>${c.customer_type}</td><td>${c.phone}</td><td>${c.email}</td>
+        <td>${TYPE_LABEL[c.customer_type] || c.customer_type}</td><td>${c.phone}</td><td>${c.email}</td>
         <td class="num">${c.open_orders || ''}</td><td>${date(c.last_order)}</td></tr>`)
       : html`<tr><td colspan="6" class="empty">No customers yet.</td></tr>`}</tbody>
     </table>`,
@@ -278,7 +278,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       </div>
     </div>
     <div class="card"><dl class="details">
-      ${row('Type', c.customer_type)}${row('Company', c.company_name)}
+      ${row('Type', TYPE_LABEL[c.customer_type] || c.customer_type)}${row('Company', c.company_name)}
       ${row('Contact', [c.first_name, c.last_name].filter(Boolean).join(' '))}
       ${row('Phone', c.phone)}${row('Mobile', c.mobile)}${row('Email', c.email)}
       ${row('Terms', c.payment_terms)}${row('Usually', c.default_fulfillment === 'delivery' ? 'Gets delivery' : 'Picks up')}
