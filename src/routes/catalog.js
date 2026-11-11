@@ -122,7 +122,8 @@ function colorFields(c, suppliers, finishes, gauges, picked = []) {
       <label>Supplier's color code<input name="manufacturer_code" value="${c.manufacturer_code || ''}"></label>
       <label>Finish
         <select name="finish">${finishes.map((f) => opt(f.finish, c.finish || 'smooth', f.label))}</select></label>
-      <label>Price premium %<input name="upcharge_pct" type="number" step="0.01" min="0" value="${c.upcharge_pct ?? 0}"></label>
+      <label>Price premium %<input name="upcharge_pct" type="number" step="0.01" min="0" value="${c.upcharge_pct ?? ''}"
+        placeholder="finish's base"></label>
       <label class="check"><input type="checkbox" name="special" value="1" ${c.is_stock_color === false ? 'checked' : ''}> Special order (not stocked)</label>
       <fieldset class="gauge-picks"><legend>Stocked in (leave all empty for any gauge)</legend>
         ${gauges.map((g) => html`<label class="check"><input type="checkbox" name="gauge" value="${g.gauge_id}"
@@ -136,7 +137,8 @@ function colorFromBody(b) {
     name: (b.name || '').trim(),
     manufacturer_code: (b.manufacturer_code || '').trim() || null,
     finish: typeof b.finish === 'string' && b.finish ? b.finish : 'smooth',
-    upcharge_pct: Math.max(0, Number(b.upcharge_pct) || 0),
+    // Blank: the finish's base premium.
+    upcharge_pct: b.upcharge_pct === undefined || String(b.upcharge_pct).trim() === '' ? null : Math.max(0, Number(b.upcharge_pct) || 0),
     is_stock_color: b.special !== '1',
     gauge_ids: [].concat(b.gauge || []).map(Number).filter((n) => n > 0),
   };
@@ -183,6 +185,15 @@ router.get('/colors', async (req, res) => {
   const suppliers = await loadSuppliers();
   const finishes = await loadFinishes();
   const gauges = await loadGauges();
+  // What the colors in each finish carry now, e.g. "5% (20), 7% (2)".
+  const nowIn = {};
+  for (const c of colors) {
+    const k = Number(c.upcharge_pct) || 0;
+    ((nowIn[c.finish] ||= {})[k] ||= 0);
+    nowIn[c.finish][k] += 1;
+  }
+  const nowText = (f) => Object.entries(nowIn[f] || {}).sort((a, b) => b[1] - a[1])
+    .map(([pct, n]) => `${pct}% (${n})`).join(', ') || 'no colors';
   const groups = new Map();
   for (const c of colors) {
     const key = c.supplier_name || 'No supplier yet';
@@ -226,8 +237,22 @@ router.get('/colors', async (req, res) => {
       ${colorFields({}, suppliers, finishes, gauges)}
       <button class="btn primary">Add color</button>
     </form>` : html`<p class="card muted">Add a supplier first, then its colors.</p>`}
-    <details class="card">
-      <summary>Finishes: ${finishes.map((f) => f.label).join(', ')}</summary>
+    <details class="card" ${req.query.finish ? 'open' : ''}>
+      <summary>Finishes and their premiums: ${finishes.map((f) => (f.premium_pct === null ? f.label
+    : `${f.label} ${Number(f.premium_pct)}%`)).join(', ')}</summary>
+      <p class="muted small">The base premium for a finish sets every color in that finish to it (on any supplier).
+        You can still change one color on its own after. New colors start at their finish's base premium.
+        Quotes already written keep their prices.</p>
+      <table class="list">
+        <thead><tr><th>Finish</th><th>Colors now</th><th>Base premium</th></tr></thead>
+        <tbody>${finishes.map((f) => html`<tr><td>${f.label}</td><td class="muted small">${nowText(f.finish)}</td>
+          <td><form method="post" action="/finishes/${f.finish}/premium" class="inline"
+            onsubmit="return confirm('Set every ${f.label.replace(/['"\\<>]/g, '')} color to this premium?')">
+            <input name="premium_pct" type="number" step="0.01" min="0" max="500" required style="width:6rem"
+              value="${f.premium_pct === null ? '' : Number(f.premium_pct)}"> %
+            <button class="btn">Set for all ${f.label}</button></form></td></tr>`)}
+        </tbody>
+      </table>
       <form method="post" action="/finishes" class="form-row" style="margin-top:.8rem">
         <label>New finish name<input name="label" required></label>
         <button class="btn">Add finish</button>
@@ -273,11 +298,25 @@ router.post('/finishes', need('catalog'), async (req, res) => {
   }
 });
 
+// Base premium for a finish (Tyler 2026-11-11): sets every color in it.
+router.post('/finishes/:finish/premium', need('catalog'), async (req, res) => {
+  const v = Number(req.body.premium_pct);
+  if (String(req.body.premium_pct ?? '').trim() === '' || !(v >= 0 && v <= 500)) {
+    return res.redirect(`/colors?finish=1&error=${encodeURIComponent('Enter a premium from 0 to 500 percent.')}`);
+  }
+  const { rows: [f] } = await query('UPDATE color_finishes SET premium_pct = $2 WHERE finish = $1 RETURNING label', [req.params.finish, v]);
+  if (!f) return res.status(404).send('Finish not found');
+  const { rowCount } = await query('UPDATE colors SET upcharge_pct = $2 WHERE finish = $1', [req.params.finish, v]);
+  res.redirect(`/colors?finish=1&note=${encodeURIComponent(`${f.label}: ${rowCount} colors set to ${v}%. New ${f.label} colors start at ${v}%.`)}`);
+});
+
+const PREMIUM_OR_BASE = '(SELECT COALESCE($5::numeric, premium_pct, 0) FROM color_finishes WHERE finish = $4)';
+
 router.post('/colors', need('catalog'), async (req, res) => {
   const c = colorFromBody(req.body);
   try {
     const { rows: [added] } = await query(`INSERT INTO colors (supplier_id, name, manufacturer_code, finish, upcharge_pct, is_stock_color)
-                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING color_id`,
+                 VALUES ($1, $2, $3, $4, COALESCE(${PREMIUM_OR_BASE}, $5, 0), $6) RETURNING color_id`,
     [c.supplier_id, c.name, c.manufacturer_code, c.finish, c.upcharge_pct, c.is_stock_color]);
     await saveGauges(added.color_id, c.gauge_ids);
     res.redirect('/colors');
@@ -317,7 +356,7 @@ router.post('/colors/:id(\\d+)', need('catalog'), async (req, res) => {
   const c = colorFromBody(req.body);
   try {
     await query(`UPDATE colors SET supplier_id = $1, name = $2, manufacturer_code = $3, finish = $4,
-                        upcharge_pct = $5, is_stock_color = $6, active = $7
+                        upcharge_pct = COALESCE(${PREMIUM_OR_BASE}, $5, 0), is_stock_color = $6, active = $7
                  WHERE color_id = $8`,
     [c.supplier_id, c.name, c.manufacturer_code, c.finish, c.upcharge_pct, c.is_stock_color,
       req.body.active === '1', req.params.id]);

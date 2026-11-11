@@ -1820,3 +1820,23 @@ test('colors can be removed; one already on an order is hidden instead', async (
   const { rows } = await query('SELECT color_id, active FROM colors WHERE color_id = ANY($1)', [[unused, used]]);
   assert.deepStrictEqual(rows.map((r) => [r.color_id, r.active]), [[used, false]]);
 });
+
+test('finish base premium sets every color in the finish; new colors start at it', async () => {
+  const { rows: [s] } = await query("INSERT INTO suppliers (name) VALUES ('Sup ' || gen_random_uuid()) RETURNING supplier_id");
+  const { rows: [a] } = await query(`INSERT INTO colors (supplier_id, name, finish, upcharge_pct) VALUES ($1, 'Tex A', 'textured', 3) RETURNING color_id`, [s.supplier_id]);
+  const form = (body) => fetch(`${base}${body.path}`, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body.data).toString() });
+  let r = await form({ path: '/finishes/textured/premium', data: { premium_pct: '6' } });
+  assert.strictEqual(r.status, 302);
+  assert.match(decodeURIComponent(r.headers.get('location')), /Textured: \d+ colors set to 6%/);
+  const pct = async (id) => Number((await query('SELECT upcharge_pct FROM colors WHERE color_id = $1', [id])).rows[0].upcharge_pct);
+  assert.strictEqual(await pct(a.color_id), 6);
+  // A new textured color with the premium left blank gets 6%; one typed in keeps its own.
+  await form({ path: '/colors', data: { supplier_id: s.supplier_id, name: 'Tex B', finish: 'textured', upcharge_pct: '' } });
+  await form({ path: '/colors', data: { supplier_id: s.supplier_id, name: 'Tex C', finish: 'textured', upcharge_pct: '8' } });
+  const { rows } = await query('SELECT name, upcharge_pct FROM colors WHERE supplier_id = $1 ORDER BY name', [s.supplier_id]);
+  assert.deepStrictEqual(rows.map((x) => [x.name, Number(x.upcharge_pct)]), [['Tex A', 6], ['Tex B', 6], ['Tex C', 8]]);
+  const page = await (await fetch(`${base}/colors?finish=1`)).text();
+  assert.match(page, /Set for all Textured/);
+  await query("UPDATE color_finishes SET premium_pct = NULL WHERE finish = 'textured'");
+});
