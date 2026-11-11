@@ -7,7 +7,6 @@ const { RUNNABLE, footage } = require('../production');
 const { can } = require('../auth');
 
 const TZ = 'America/Denver';
-const NEXT_COUNT = 5;
 const READY_COUNT = 5;
 const TRIM_COIL_WIDTH = 48; // trim is slit from 48" coil unless a wider one is on hand
 const LIVE_COIL = "status IN ('received', 'in_stock', 'on_machine')";
@@ -132,7 +131,9 @@ router.get('/', async (req, res) => {
                  AND status IN ('ready', 'completed', 'invoiced')) AS finished`),
   ]);
   const plan = await coilPlan(upcoming.map((o) => o.order_id));
-  const next = upcoming.slice(0, NEXT_COUNT);
+  // Every approved job, by due date (Tyler 2026-11-11). When they don't all fit on the
+  // screen, the page script below shows them a screenful at a time.
+  const next = upcoming;
   const shortOrders = upcoming.filter((o) => plan.byOrder.get(o.order_id)?.some((n) => n.short > 0)).length;
 
   const now = new Date().toLocaleString('en-US', {
@@ -158,7 +159,7 @@ router.get('/', async (req, res) => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="60">
+<meta http-equiv="refresh" content="300">
 <title>Shop board · HPCM</title>
 <link rel="stylesheet" href="/board.css">
 <link rel="icon" href="/favicon.svg">
@@ -178,7 +179,7 @@ router.get('/', async (req, res) => {
 </section>
 <div class="cols">
   <section class="next">
-    <h2>Next up${upcoming.length > next.length ? html` <span class="sub">${next.length} of ${upcoming.length}</span>` : ''}</h2>
+    <h2>Next up <span class="sub" id="next-page"></span></h2>
     ${next.length ? html`<table>
       <tbody>${next.map((o) => html`
         <tr class="due-${dueClass(o.days_left)}">
@@ -217,6 +218,43 @@ router.get('/', async (req, res) => {
     </section>
   </aside>
 </div>
+<script>
+// Next up: when the jobs don't all fit, show a screenful at a time, turning every 15
+// seconds, and reload for fresh numbers about once a minute after a full turn. Plain ES5
+// for the shop TV's browser. The meta refresh above is only a fallback.
+(function () {
+  var PAGE_MS = 15000, RELOAD_MS = 60000, started = new Date().getTime();
+  var reload = function () { window.location.reload(); };
+  var table = document.querySelector('.next table');
+  var rows = table ? table.querySelectorAll('tbody tr') : [];
+  var label = document.getElementById('next-page');
+  var room = table ? window.innerHeight - table.getBoundingClientRect().top - 12 : 0;
+  var pages = [], cur = [], used = 0, i;
+  for (i = 0; i < rows.length; i++) {
+    var h = rows[i].offsetHeight;
+    if (cur.length && used + h > room) { pages.push(cur); cur = []; used = 0; }
+    cur.push(i); used += h;
+  }
+  if (cur.length) pages.push(cur);
+  if (pages.length < 2) { setTimeout(reload, RELOAD_MS); return; }
+  var page = 0;
+  function show() {
+    var p = pages[page];
+    for (var j = 0; j < rows.length; j++) rows[j].style.display = j >= p[0] && j <= p[p.length - 1] ? '' : 'none';
+    label.textContent = (p[0] + 1) + '\u2013' + (p[p.length - 1] + 1) + ' of ' + rows.length
+      + ' \u00b7 page ' + (page + 1) + ' of ' + pages.length;
+  }
+  show();
+  setInterval(function () {
+    page += 1;
+    if (page >= pages.length) {
+      if (new Date().getTime() - started >= RELOAD_MS) { reload(); return; }
+      page = 0;
+    }
+    show();
+  }, PAGE_MS);
+}());
+</script>
 </body>
 </html>`));
 });
