@@ -724,8 +724,9 @@ test('screws: per-profile rules for through-fastener, nail flange and snap lock 
     WHERE oi.order_id = $1 AND oi.product_id IN (SELECT product_id FROM products WHERE category IN ('fastener', 'accessory'))
     ORDER BY oi.line_no`, [id])).rows;
   let rows = await screws();
+  // Woodtite is $50 a bag since the 35% margin price update (migration 048).
   assert.deepStrictEqual(rows.map((r) => [r.product_id, r.color_id, r.pieces, r.unit_price, r.is_auto]), [
-    [woodtite, red, 4, 30, true], [clip, null, 50, 0.55, true], [panhead, red, 1, 38, true], [woodtite, tan, 1, 30, true]]);
+    [woodtite, red, 4, 50, true], [clip, null, 50, 0.55, true], [panhead, red, 1, 38, true], [woodtite, tan, 1, 50, true]]);
   assert.match(rows[0].description, /^900 screws: 10 squares x 90 per square, 250 per bag$/);
   assert.match(rows[2].description, /^136 screws: 2 every 2' on 100' of panel \+ 1 every 2' on 65' of panel, 250 per bag$/);
 
