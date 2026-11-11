@@ -390,7 +390,7 @@ test('shop board shows counts and the next orders by due date', async () => {
   assert.match(page, /This week:/);
   assert.match(page, /http-equiv="refresh"/);
   const { rows: [c] } = await query(`SELECT count(*) AS n FROM orders WHERE status = 'in_production'`);
-  assert.match(page, new RegExp(`<div class="n">${c.n}</div><div class="label">In production`));
+  assert.match(page, new RegExp(`<div class="n">${c.n}</div><div class="txt"><div class="label">In production`));
 });
 
 test('shop board flags an approved job that needs more coil than is on hand', async () => {
