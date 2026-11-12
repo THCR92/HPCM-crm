@@ -983,7 +983,7 @@ router.get('/:id(\\d+)', async (req, res) => {
         <dt>Email</dt><dd>${o.contact_email || o.customer_email}</dd>
       </dl>
 
-      ${o.sections.map((s) => html`
+      ${o.sections.filter((s) => s.items.length).map((s) => html`
       <h3 class="area">${s.is_auto ? (s.label || 'Screws') : html`${AREA_LABEL[s.area]}${s.label ? `: ${s.label}` : ''}`}
         <span class="area-total">${sectionTotals(s.items)}</span></h3>
       <table class="lines">
