@@ -396,8 +396,7 @@
       ${portal ? '' : loginSelect(h)}
       ${field('job_name', 'Job name')}
       ${field('po_number', 'Project / PO #')}
-      ${field('need_by', 'Need by', 'date')}
-      ${portal ? `<p class="span2 small need-by-note ${rushDays(h.need_by) < RUSH_DAYS ? 'rush' : ''}" id="need-by-note">${needByNote(h.need_by)}</p>` : ''}
+      ${portal ? '' : field('need_by', 'Need by', 'date')}
       <label>Pickup, delivery or run on site
         <select data-h="fulfillment">
           <option value="pickup" ${h.fulfillment === 'pickup' || !h.fulfillment ? 'selected' : ''}>Pickup</option>

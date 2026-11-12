@@ -35,13 +35,15 @@ const AREAS = ['roof', 'wall', 'trim', 'other'];
 const Waiting = require('../waiting');
 // A date (or timestamp) as YYYY-MM-DD in Cheyenne, and today's.
 const dateStr = (d) => (typeof d === 'string' ? d.slice(0, 10) : new Date(d).toLocaleDateString('en-CA', { timeZone: 'America/Denver' }));
+// When the customer sent it: the day they placed the order, or wrote the quote.
+const sentOn = (o) => (o.placed_in_portal && o.ordered_on ? o.ordered_on : o.created_at);
 const todayStr = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
 // Expired quotes leave Open and Quotes for their own tab (Tyler 2026-11-12).
 const TABS = {
   open: { label: 'Open', where: `o.status IN ('quote','confirmed','in_production','ready') AND NOT ${Waiting.EXPIRED}` },
   waiting: { label: 'Waiting on you', where: Waiting.WAITING },
   quote: { label: 'Quotes', where: `o.status = 'quote' AND NOT ${Waiting.EXPIRED}` },
-  approved: { label: 'Customer approved', where: `o.status = 'quote' AND o.customer_decision = 'approved' AND NOT ${Waiting.EXPIRED}` },
+  approved: { label: 'Customer accepted', where: `o.status = 'quote' AND o.customer_decision = 'approved' AND NOT ${Waiting.EXPIRED}` },
   expired: { label: 'Expired quotes', where: Waiting.EXPIRED },
   shop: { label: 'In the shop', where: "o.status IN ('confirmed','in_production','ready')" },
   completed: { label: 'Completed', where: "o.status IN ('completed','invoiced')" },
@@ -620,7 +622,10 @@ router.get('/delivery-charge', async (req, res) => res.json(await Delivery.quote
 const saveHandler = (getId) => async (req, res) => {
   try {
     const keys = {};
+    const { rows: [was] } = getId(req) ? await query('SELECT from_portal, hpcm_confirmed_at FROM orders WHERE order_id = $1', [getId(req)]) : { rows: [] };
     const id = await saveOrder(getId(req), req.body, { keys });
+    // The office saving a customer's portal quote confirms it for HPCM (Tyler 2026-11-12).
+    if (was && was.from_portal && !was.hpcm_confirmed_at) await hpcmConfirm(id);
     // Reopened with today's prices: good for two more weeks.
     if (req.body.renew === true) {
       await query(`UPDATE orders SET quote_expires_on = (now() AT TIME ZONE 'America/Denver')::date + 14
@@ -670,6 +675,19 @@ router.post('/:id(\\d+)/delete', need('admin'), async (req, res) => {
     throw err;
   }
   res.redirect('/orders');
+});
+
+// HPCM confirms a quote a customer sent from the portal (Tyler 2026-11-12). Once the customer
+// has also accepted it, a manager or admin of theirs can place the order in the portal.
+async function hpcmConfirm(id) {
+  const { rowCount } = await query(`UPDATE orders SET hpcm_confirmed_at = now(), hpcm_confirmed_by = $2
+    WHERE order_id = $1 AND status = 'quote' AND from_portal AND hpcm_confirmed_at IS NULL`, [id, userName()]);
+  if (rowCount) notices.quoteConfirmed(id);
+  return rowCount > 0;
+}
+router.post('/:id(\\d+)/hpcm-confirm', need('quotes', 'approve'), async (req, res) => {
+  const ok = await hpcmConfirm(Number(req.params.id));
+  res.redirect(`/orders/${req.params.id}${ok ? `?note=${encodeURIComponent('Confirmed. The customer can place the order from the portal now.')}` : ''}`);
 });
 
 router.post('/:id(\\d+)/status', async (req, res) => {
@@ -733,21 +751,31 @@ router.post('/:id(\\d+)/status', async (req, res) => {
 // What the customer said in the portal, and whether they can see this quote there.
 const { DECLINE_REASONS } = require('./portal-shared');
 function portalNote(o) {
-  if (!o.customer_portal && !o.customer_decision) return '';
+  if (!o.customer_portal && !o.customer_decision && !o.from_portal) return '';
   const when = o.customer_decided_at && new Date(o.customer_decided_at).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' });
   const toggle = o.customer_portal && can('quotes') && o.status !== 'invoiced' ? html`
     <form method="post" action="/orders/${o.order_id}/portal" class="inline">
       <input type="hidden" name="hidden" value="${o.portal_hidden ? '0' : '1'}">
       <button class="btn small">${o.portal_hidden ? 'Show in customer portal' : 'Hide from customer portal'}</button></form>` : '';
-  const said = o.customer_decision === 'approved'
-    ? html`<div class="notice no-print"><strong>Customer approved this quote</strong> in the portal: ${o.customer_decided_by}, ${when}.
+  const quote = o.status === 'quote';
+  const confirmBox = quote && o.from_portal && !o.hpcm_confirmed_at && o.valid_until && dateStr(o.valid_until) >= todayStr()
+    ? html`<div class="alert no-print"><strong>Waiting on you:</strong> ${o.customer_decided_by || 'the customer'} sent this quote from the portal.
+        Check it (edit and Save if anything needs changing), then confirm it. After that, a manager or admin at the customer can place the order.
+        ${can('quotes') || can('approve') ? html`<form method="post" action="/orders/${o.order_id}/hpcm-confirm" class="inline">
+          <button class="btn small primary">Confirm quote</button></form>` : ''}</div>` : '';
+  const placed = o.placed_in_portal && o.status !== 'quote'
+    ? html`<div class="notice no-print"><strong>Ordered by the customer in the portal:</strong> ${o.approved_by}${o.ordered_on ? `, ${date(o.ordered_on)}` : ''}.
+        ${o.customer_decision_note ? html`<br>“${o.customer_decision_note}”` : ''}</div>` : '';
+  const said = placed || (o.customer_decision === 'approved'
+    ? html`<div class="notice no-print"><strong>${o.from_portal ? 'Sent by the customer' : 'Customer accepted this quote'}</strong> in the portal: ${o.customer_decided_by}, ${when}.
         ${o.customer_decision_note ? html`<br>“${o.customer_decision_note}”` : ''}
-        ${o.status === 'quote' ? html`<br>Check it, then change the status to Confirmed to approve it for the shop.` : ''}</div>`
+        ${quote && (!o.from_portal || o.hpcm_confirmed_at) ? html`<br>Confirmed by both${o.hpcm_confirmed_by ? ` (HPCM: ${o.hpcm_confirmed_by})` : ''}.
+          Waiting on a manager or admin at the customer to place the order in the portal (or change the status to Confirmed yourself).` : ''}</div>`
     : o.customer_decision === 'declined'
       ? html`<div class="alert no-print"><strong>Customer declined this quote</strong> in the portal: ${o.customer_decided_by}, ${when}
         (${DECLINE_REASONS[o.customer_decline_reason] || 'no reason'}).${o.customer_decision_note ? html`<br>“${o.customer_decision_note}”` : ''}
-        <br>Edit it and they can answer again, or cancel it.</div>` : '';
-  return html`${said}${toggle ? html`<p class="no-print muted small">${o.portal_hidden ? 'Hidden from the customer portal.' : 'The customer can see this in the portal.'} ${toggle}</p>` : ''}`;
+        <br>Edit it and they can answer again, or cancel it.</div>` : '');
+  return html`${confirmBox}${said}${toggle ? html`<p class="no-print muted small">${o.portal_hidden ? 'Hidden from the customer portal.' : 'The customer can see this in the portal.'} ${toggle}</p>` : ''}`;
 }
 
 router.post('/:id(\\d+)/portal', need('quotes'), async (req, res) => {
@@ -956,7 +984,7 @@ router.get('/:id(\\d+)', async (req, res) => {
   if (!o) return res.status(404).send('Order not found');
   const editable = EDITABLE.includes(o.status);
   // A customer's portal quote stops waiting once someone in the office opens it.
-  if (o.from_portal && !o.staff_seen_at && (can('quotes') || can('approve'))) {
+  if ((o.from_portal || o.placed_in_portal) && !o.staff_seen_at && (can('quotes') || can('approve'))) {
     await query('UPDATE orders SET staff_seen_at = now() WHERE order_id = $1', [o.order_id]);
   }
 
@@ -1014,8 +1042,8 @@ router.get('/:id(\\d+)', async (req, res) => {
     ${o.status === 'quote' && o.valid_until && dateStr(o.valid_until) < todayStr() ? html`<div class="notice no-print">This quote expired on ${date(o.valid_until)}.
       ${can('quotes') ? html`<a class="btn small primary" href="/orders/${o.order_id}/edit?renew=1">Reopen with today's prices</a>
       <span class="muted small">Prices on the lines update to today's price list; check them, then Save. It's good for two more weeks.</span>` : ''}</div>` : ''}
-    ${o.from_portal && o.need_by && Waiting.businessDays(dateStr(o.created_at), dateStr(o.need_by)) < Waiting.RUSH_DAYS
-    ? html`<div class="alert no-print"><strong>Rush:</strong> sent ${Waiting.businessDays(dateStr(o.created_at), dateStr(o.need_by))} business days before its Need by date
+    ${(o.from_portal || o.placed_in_portal) && o.need_by && Waiting.businessDays(dateStr(sentOn(o)), dateStr(o.need_by)) < Waiting.RUSH_DAYS
+    ? html`<div class="alert no-print"><strong>Rush:</strong> ${o.placed_in_portal ? 'ordered' : 'sent'} ${Waiting.businessDays(dateStr(sentOn(o)), dateStr(o.need_by))} business days before its Need by date
       (${date(o.need_by)}). Under ${Waiting.RUSH_DAYS} business days isn't guaranteed; let the customer know if it can't be met.</div>` : ''}
 
     <section class="sheet">

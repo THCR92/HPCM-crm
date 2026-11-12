@@ -22,6 +22,9 @@ const { INVITE_DAYS, DECLINE_REASONS, SHOP_HOURS, SHOP_ADDRESS, SHOP_MAP } = req
 const mail = require('../mail');
 const proof = require('../proof');
 const notices = require('../notices');
+const qbo = require('../qbo');
+const Waiting = require('../waiting');
+const { hpcmOk } = Waiting;
 
 const router = require('../async-router')();
 
@@ -48,7 +51,7 @@ async function startSession(req, res, login) {
 }
 
 // The signed-in customer login, only while it's active and the customer's portal is on.
-const LOGIN_COLS = `l.login_id, l.customer_id, l.full_name, l.email, l.phone, l.can_approve, l.sees_all,
+const LOGIN_COLS = `l.login_id, l.customer_id, l.full_name, l.email, l.phone, l.can_approve, l.sees_all, l.role,
   c.display_name AS customer_name, c.portal_line_prices, c.portal_totals`;
 async function loadLogin(req) {
   const id = cookieValue(req);
@@ -90,6 +93,17 @@ const safeNext = (n) => (typeof n === 'string' && /^\/portal(\/|$)/.test(n) ? n 
 const isEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
 
+// Roles inside a customer (Tyler 2026-11-12). Admin: everything, and their team's logins.
+// Manager: all quotes and orders, accepts quotes and places orders. Sales: writes quotes
+// (sent to HPCM to confirm) and sees only their own.
+const ROLE_LABEL = { admin: 'Admin', manager: 'Manager', sales: 'Sales' };
+const ROLE_HELP = {
+  admin: 'Sees all quotes and orders, places orders, and manages your team\'s logins',
+  manager: 'Sees all quotes and orders, accepts quotes and places orders',
+  sales: 'Writes quotes (we confirm them) and sees only their own',
+};
+const expiredQuote = (o) => o.status === 'quote' && String(o.valid_until) < today();
+
 // ---- page shell ------------------------------------------------------------------
 function page(login, { title, body, scripts }) {
   return layout({
@@ -99,8 +113,9 @@ function page(login, { title, body, scripts }) {
     body: html`
     <header class="topbar portal-bar">
       <a class="brand" href="/portal"><img src="/logo.svg" alt="High Plains Custom Metal"></a>
-      ${login ? html`<nav><a href="/portal">My quotes &amp; orders</a><a href="/portal/account">My account</a></nav>
-      <div class="who"><span>${login.full_name} · ${login.customer_name}</span>
+      ${login ? html`<nav><a href="/portal">${login.sees_all ? 'Quotes & orders' : 'My quotes & orders'}</a>${
+        login.role === 'admin' ? html`<a href="/portal/team">Team</a>` : ''}<a href="/portal/account">My account</a></nav>
+      <div class="who"><span>${login.full_name} (${ROLE_LABEL[login.role] || 'Sales'}) · ${login.customer_name}</span>
         <form method="post" action="/portal/logout" class="inline"><button class="linkish">Sign out</button></form></div>` : ''}
     </header>
     <div class="portal">${body}</div>
@@ -269,10 +284,14 @@ function steps(o) {
   const s = o.status;
   const after = (list) => list.includes(s);
   const pickup = atJob(o.fulfillment) ? 'Delivered' : 'Picked up';
+  const ordered = after(['confirmed', 'in_production', 'ready', 'completed', 'invoiced']);
+  const ours = ordered || hpcmOk(o);
+  const yours = ordered || o.customer_decision === 'approved';
   const list = [
-    ['Quoted', true],
-    [o.customer_decision === 'approved' || s !== 'quote' ? 'You approved' : 'Your approval', o.customer_decision === 'approved' || s !== 'quote'],
-    [after(['confirmed', 'in_production', 'ready', 'completed', 'invoiced']) ? 'We approved' : 'Our approval', after(['confirmed', 'in_production', 'ready', 'completed', 'invoiced'])],
+    [o.from_portal ? 'Sent to us' : 'Quoted', true],
+    [ours ? 'We confirmed' : 'Our confirmation', ours],
+    [yours ? 'You accepted' : 'Your answer', yours],
+    [ordered ? 'Ordered' : 'Place order', ordered],
     ['In production', after(['in_production', 'ready', 'completed', 'invoiced'])],
     [atJob(o.fulfillment) ? 'Ready to deliver' : 'Ready for pickup', after(['ready', 'completed', 'invoiced'])],
     [pickup, after(['completed', 'invoiced'])],
@@ -284,13 +303,14 @@ function steps(o) {
 
 const customerStatus = (o) => {
   if (o.status === 'quote') {
-    if (o.customer_decision === 'approved') return 'Approved by you, waiting on us';
     if (o.customer_decision === 'declined') return 'Declined';
     if (o.valid_until < today()) return 'Expired';
+    if (!hpcmOk(o)) return 'Sent to us to confirm';
+    if (o.customer_decision === 'approved') return 'Confirmed, ready to order';
     return 'Waiting on your answer';
   }
   if (o.status === 'invoiced') return 'Completed';
-  if (o.status === 'confirmed') return 'Approved';
+  if (o.status === 'confirmed') return 'Ordered';
   if (o.status === 'ready') return atJob(o.fulfillment) ? 'Ready to deliver' : 'Ready for pickup';
   return STATUS_LABEL[o.status];
 };
@@ -299,19 +319,20 @@ router.get('/portal', signedIn, async (req, res) => {
   const l = req.login;
   const { rows } = await query(`
     SELECT o.order_id, o.order_number, o.job_name, o.po_number, o.status, o.need_by, o.ordered_on, o.fulfillment,
-           o.customer_decision, t.grand_total,
+           o.customer_decision, o.from_portal, o.hpcm_confirmed_at, t.grand_total,
            COALESCE(o.quote_expires_on, (o.created_at AT TIME ZONE 'America/Denver')::date + 30) AS valid_until,
            (o.created_at AT TIME ZONE 'America/Denver')::date AS quoted_on
     FROM orders o JOIN v_order_totals t USING (order_id)
     WHERE ${visible(l)}
     ORDER BY o.order_id DESC`, [l.customer_id]);
+  const open = (o) => o.status === 'quote' && o.valid_until >= today() && o.customer_decision !== 'declined';
   const groups = [
-    ['Quotes waiting on your answer', rows.filter((o) => o.status === 'quote' && !o.customer_decision && o.valid_until >= today())],
-    ['Approved by you, waiting on us', rows.filter((o) => o.status === 'quote' && o.customer_decision === 'approved')],
+    ['Confirmed, ready to order', rows.filter((o) => open(o) && hpcmOk(o) && o.customer_decision === 'approved')],
+    ['Quotes waiting on your answer', rows.filter((o) => open(o) && hpcmOk(o) && !o.customer_decision)],
+    ['Sent to us to confirm', rows.filter((o) => open(o) && !hpcmOk(o))],
     ['In the works', rows.filter((o) => ['confirmed', 'in_production', 'ready'].includes(o.status))],
     ['Past orders', rows.filter((o) => ['completed', 'invoiced'].includes(o.status))],
-    ['Closed quotes', rows.filter((o) => (o.status === 'quote' && (o.customer_decision === 'declined'
-      || (!o.customer_decision && o.valid_until < today()))) || o.status === 'cancelled')],
+    ['Closed quotes', rows.filter((o) => (o.status === 'quote' && !open(o)) || o.status === 'cancelled')],
   ];
   const table = (list) => html`<table class="list">
     <thead><tr><th>Number</th><th>Job</th><th>PO</th><th>Status</th><th>Date</th><th>Need by</th>
@@ -324,9 +345,11 @@ router.get('/portal', signedIn, async (req, res) => {
   res.send(page(l, {
     title: 'My quotes & orders',
     body: html`
-    <div class="page-head"><h1>${l.customer_name}</h1>
+    <div class="page-head"><h1>${l.customer_name}${l.sees_all ? '' : html` <span class="muted small">· your quotes and orders</span>`}</h1>
       <div class="actions"><a class="btn primary" href="/portal/quotes/new">+ Start a quote</a></div></div>
     ${req.query.deleted ? html`<div class="notice">The quote is cancelled and deleted from your list.</div>` : ''}
+    ${l.role === 'sales' ? html`<p class="muted small">Quotes you write are good for 14 days and go to us to confirm.
+      Once we confirm one, a manager or admin on your team places the order.</p>` : ''}
     ${rows.length ? '' : html`<p class="muted">Nothing here yet. Start a quote, or quotes we write for you will show up here.</p>`}
     ${groups.filter(([, list]) => list.length).map(([title, list]) => html`<h2>${title}</h2>${table(list)}`)}`,
   }));
@@ -361,29 +384,37 @@ router.get('/portal/orders/:id(\\d+)', signedIn, async (req, res) => {
   if (!o) return res.status(404).send(page(l, { title: 'Not found', body: html`<h1>Not found</h1><p><a href="/portal">Back</a></p>` }));
   const isQuote = o.status === 'quote';
   const expired = isQuote && o.valid_until < today();
-  const decided = o.customer_decision && html`<div class="${o.customer_decision === 'approved' ? 'notice' : 'alert'}">
-    ${o.customer_decision === 'approved' ? 'Approved' : 'Declined'} by ${o.customer_decided_by}
+  const decided = o.customer_decision && isQuote && html`<div class="${o.customer_decision === 'approved' ? 'notice' : 'alert'}">
+    ${o.customer_decision === 'approved' ? (o.from_portal ? 'Sent' : 'Accepted') : 'Declined'} by ${o.customer_decided_by}
     ${new Date(o.customer_decided_at).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' })}${
     o.customer_decline_reason ? ` (${DECLINE_REASONS[o.customer_decline_reason]})` : ''}${
     o.customer_decision_note ? html`<br><span class="muted">${o.customer_decision_note}</span>` : ''}
-    ${o.customer_decision === 'approved' && isQuote ? html`<br>We'll confirm it and set it up in the shop.` : ''}</div>`;
+    </div>`;
+  const placedBox = o.placed_in_portal && !isQuote && o.status !== 'cancelled'
+    ? html`<div class="notice no-print">Ordered by ${o.approved_by}${o.ordered_on ? ` on ${date(o.ordered_on)}` : ''}.</div>` : '';
   let answer = '';
-  if (isQuote && !o.customer_decision) {
-    if (expired) {
-      answer = html`<div class="alert">This quote expired on ${date(o.valid_until)}. Call us at ${SHOP_PHONE} and we'll update it.</div>`;
-    } else if (!l.can_approve) {
-      answer = html`<p class="muted">Someone at ${l.customer_name} who can approve quotes needs to answer this one.</p>`;
+  if (isQuote && o.customer_decision !== 'declined' && expired) {
+    answer = html`<div class="alert">This quote expired on ${date(o.valid_until)}. Call us at ${SHOP_PHONE} and we'll update it.</div>`;
+  } else if (isQuote && !hpcmOk(o)) {
+    answer = html`<div class="notice no-print">We have this quote and will check and confirm it. You'll get an email when we do;
+      then a manager or admin on your team can place the order.</div>`;
+  } else if (isQuote && o.customer_decision === 'approved') {
+    answer = l.can_approve ? placeForm(o, req.query.need_by)
+      : html`<div class="notice no-print">Confirmed by you and by us. A manager or admin at ${l.customer_name} places the order.</div>`;
+  } else if (isQuote && !o.customer_decision) {
+    if (!l.can_approve) {
+      answer = html`<p class="muted">A manager or admin at ${l.customer_name} needs to answer this quote.</p>`;
     } else {
       answer = html`
       <div class="portal-answer no-print">
         <form method="post" action="/portal/orders/${o.order_id}/decision" class="card form-grid">
-          <h2 class="span2">Approve this quote</h2>
+          <h2 class="span2">Accept this quote</h2>
+          <p class="span2 muted small">Accepting doesn't order it yet. You'll place the order (and set the Need by date) next.</p>
           <label class="check span2 confirm-check"><input type="checkbox" name="checked" value="1" required>
             I checked the lengths, quantities and colors. Everything is cut exactly as listed.</label>
-          <label>Need it by<input type="date" name="need_by" min="${today()}" value="${o.need_by || ''}"></label>
           <label>PO # (optional)<input name="po_number" value="${o.po_number || ''}"></label>
           <label class="span2">Note to us (optional)<textarea name="note" rows="2"></textarea></label>
-          <div class="span2 actions"><button class="btn primary" name="decision" value="approved">Approve quote</button></div>
+          <div class="span2 actions"><button class="btn primary" name="decision" value="approved">Accept quote</button></div>
         </form>
         <details class="card"><summary>Decline or ask for changes</summary>
           <form method="post" action="/portal/orders/${o.order_id}/decision" class="form-grid">
@@ -402,13 +433,15 @@ router.get('/portal/orders/:id(\\d+)', signedIn, async (req, res) => {
     <div class="page-head no-print">
       <h1>${isQuote ? 'Quote' : 'Order'} ${o.order_number}</h1>
       <div class="actions"><a class="btn" href="/portal">Back</a>
-        ${canEdit(o) ? html`<a class="btn primary" href="/portal/orders/${o.order_id}/edit">Edit quote</a>` : ''}
+        ${canEdit(l, o) ? html`<a class="btn ${hpcmOk(o) ? '' : 'primary'}" href="/portal/orders/${o.order_id}/edit">Edit quote</a>` : ''}
         ${o.status !== 'quote' ? html`<a class="btn" href="/portal/orders/${o.order_id}/again">Order again</a>` : ''}
         <button class="btn" onclick="window.print()">Print or save as PDF</button></div>
     </div>
     ${req.query.error ? html`<div class="alert no-print">${req.query.error}</div>` : ''}
+    ${req.query.placed ? html`<div class="notice no-print">Your order is placed. We'll start on it and let you know when it's ready.</div>` : ''}
     <div class="no-print">${steps(o)}</div>
     ${handoffBox(o)}
+    ${placedBox}
     ${decided || ''}
     ${req.query.cancelled ? html`<div class="notice no-print">The quote is cancelled. We've let the office know.</div>` : ''}
     ${canCancel(l, o) ? html`<details class="card no-print cancel-quote"><summary>Cancel or delete this quote</summary>
@@ -435,26 +468,89 @@ router.post('/portal/orders/:id(\\d+)/decision', signedIn, async (req, res) => {
   const l = req.login;
   const id = Number(req.params.id);
   const back = (error) => res.redirect(`/portal/orders/${id}${error ? `?error=${encodeURIComponent(error)}` : ''}`);
-  if (!l.can_approve) return back('Your login can\'t approve or decline quotes.');
+  if (!l.can_approve) return back('Only a manager or admin on your team can accept or decline quotes.');
   const b = req.body;
   const decision = b.decision === 'approved' ? 'approved' : b.decision === 'declined' ? 'declined' : null;
   if (!decision) return back('Pick approve or decline.');
   if (decision === 'approved' && b.checked !== '1') return back('Tick the box to say you checked the lengths, quantities and colors.');
   const reason = decision === 'declined' ? (DECLINE_REASONS[b.reason] ? b.reason : null) : null;
   if (decision === 'declined' && !reason) return back('Pick why you\'re declining.');
-  const needBy = /^\d{4}-\d{2}-\d{2}$/.test(b.need_by || '') && b.need_by >= today() ? b.need_by : null;
   const note = String(b.note || '').trim().slice(0, 2000) || null;
   const po = String(b.po_number || '').trim().slice(0, 100) || null;
   const { rowCount } = await query(`
     UPDATE orders o SET customer_decision = $3, customer_decided_at = now(), customer_decided_by = $4,
            customer_decision_note = $5, customer_decline_reason = $6,
-           need_by = CASE WHEN $3 = 'approved' THEN COALESCE($7::date, need_by) ELSE need_by END,
-           po_number = CASE WHEN $3 = 'approved' THEN COALESCE($8, po_number) ELSE po_number END
+           po_number = CASE WHEN $3 = 'approved' THEN COALESCE($7, po_number) ELSE po_number END
     WHERE o.order_id = $2 AND ${visible(l)} AND o.status = 'quote' AND o.customer_decision IS NULL
+      AND (NOT o.from_portal OR o.hpcm_confirmed_at IS NOT NULL)
       AND COALESCE(o.quote_expires_on, (o.created_at AT TIME ZONE 'America/Denver')::date + 30) >= (now() AT TIME ZONE 'America/Denver')::date`,
-  [l.customer_id, id, decision, `${l.full_name} (${l.email})`, note, reason, needBy, po]);
+  [l.customer_id, id, decision, `${l.full_name} (${l.email})`, note, reason, po]);
   if (!rowCount) return back('This quote can\'t be answered anymore. Call us if something needs to change.');
   notices.quoteAnswered(id);
+  back();
+});
+
+// ---- placing the order (Tyler 2026-11-12) ---------------------------------------------
+// A quote confirmed by both the customer and HPCM is complete but not ordered. A manager
+// or admin places the order, and sets the Need by date then.
+function placeForm(o, needBy) {
+  const base = `Please allow at least ${Waiting.RUSH_DAYS} business days. Orders placed less than ${Waiting.RUSH_DAYS} business days before the Need by date can't be guaranteed without our approval; call ${SHOP_PHONE} for a rush.`;
+  return html`
+  <form method="post" action="/portal/orders/${o.order_id}/place" class="card form-grid portal-answer no-print" id="place-order">
+    <h2 class="span2">Place the order</h2>
+    <p class="span2">Confirmed by you and by us. Placing it sends it to our shop to be made${o.customer_decided_by ? html` <span class="muted small">(accepted by ${o.customer_decided_by})</span>` : ''}.</p>
+    <label>Need it by *<input type="date" name="need_by" min="${today()}" value="${needBy || o.need_by || ''}" required></label>
+    <label>PO # (optional)<input name="po_number" value="${o.po_number || ''}"></label>
+    <p class="span2 small need-by-note" data-base="${base}" data-days="${Waiting.RUSH_DAYS}">${base}</p>
+    <label class="check span2 confirm-check"><input type="checkbox" name="checked" value="1" required>
+      I checked the lengths, quantities and colors. Everything is cut exactly as listed.</label>
+    <label class="span2">Note to us (optional)<textarea name="note" rows="2"></textarea></label>
+    <div class="span2 actions"><button class="btn primary">Place order</button></div>
+    <script>(() => {
+      const f = document.getElementById('place-order'), note = f.querySelector('.need-by-note');
+      const sync = () => {
+        const v = f.need_by.value; let n = Infinity;
+        if (v) { const d = new Date(); d.setHours(12, 0, 0, 0); const end = new Date(v + 'T12:00:00'); n = 0;
+          while (d < end) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) n += 1; } }
+        const rush = n < Number(note.dataset.days);
+        note.classList.toggle('rush', rush);
+        note.textContent = (rush ? "\u26a0 That's " + n + " business day" + (n === 1 ? "" : "s") + " away. " : "") + note.dataset.base;
+      };
+      f.need_by.addEventListener('change', sync); sync();
+    })();</script>
+  </form>`;
+}
+
+router.post('/portal/orders/:id(\\d+)/place', signedIn, async (req, res) => {
+  const l = req.login;
+  const id = Number(req.params.id);
+  const b = req.body;
+  const needBy = /^\d{4}-\d{2}-\d{2}$/.test(b.need_by || '') ? b.need_by : null;
+  const back = (error) => res.redirect(`/portal/orders/${id}?${error ? `error=${encodeURIComponent(error)}${needBy ? `&need_by=${needBy}` : ''}` : 'placed=1'}#place-order`);
+  if (!l.can_approve) return back('Only a manager or admin on your team can place orders.');
+  if (!needBy || needBy < today()) return back('Pick the date you need it by.');
+  if (b.checked !== '1') return back('Tick the box to say you checked the lengths, quantities and colors.');
+  const o = await customerOrder(l, id);
+  if (!o) return res.status(404).send('Not found');
+  if (o.status !== 'quote' || expiredQuote(o) || !hpcmOk(o) || o.customer_decision !== 'approved') {
+    return back('This quote isn\'t ready to order. Check where it is above, or call us.');
+  }
+  const noPitch = [...new Set(o.sections.flatMap((sec) => sec.items).filter((i) => i.needs_pitch > 0 && !i.pitch).map((i) => i.product_name))];
+  if (noPitch.length) {
+    return back(`The roof pitch is missing on ${noPitch.join(', ')}. ${canEdit(l, o) ? 'Edit the quote to add it (it comes back to us to confirm), or call' : 'Call'} us at ${SHOP_PHONE}.`);
+  }
+  const who = `${l.full_name} (${l.email})`;
+  const note = String(b.note || '').trim().slice(0, 2000) || null;
+  const po = String(b.po_number || '').trim().slice(0, 100) || null;
+  const { rowCount } = await query(`
+    UPDATE orders o SET status = 'confirmed', need_by = $3, ordered_on = (now() AT TIME ZONE 'America/Denver')::date,
+           approved_by = $4, updated_by = $4, placed_in_portal = true, staff_seen_at = NULL,
+           po_number = COALESCE($5, po_number), customer_decision_note = COALESCE($6, customer_decision_note)
+    WHERE o.order_id = $2 AND ${visible(l)} AND o.status = 'quote' AND o.customer_decision = 'approved'`,
+  [l.customer_id, id, needBy, who, po, note]);
+  if (!rowCount) return back('This quote changed while you were looking at it. Check it and try again.');
+  qbo.orderCompleted(id);
+  notices.orderPlaced(id);
   back();
 });
 
@@ -486,6 +582,114 @@ router.post('/portal/orders/:id(\\d+)/cancel', signedIn, async (req, res) => {
   if (!rowCount) return back(`error=${encodeURIComponent('This quote changed while you were looking at it. Check it and try again.')}`);
   notices.quoteCancelled(o.order_id, `${l.full_name} (${l.email})`, reason);
   return del ? res.redirect('/portal?deleted=1') : back('cancelled=1');
+});
+
+// ---- team: a customer's Admin manages its own logins (Tyler 2026-11-12) ---------------
+const adminOnly = (req, res, next) => (req.login.role === 'admin' ? next() : res.redirect('/portal'));
+const teamBack = (res, q) => res.redirect(`/portal/team${q ? `?${q}` : ''}`);
+const roleSelect = (name, value, extra = '') => html`<select name="${name}" ${extra}>${Object.entries(ROLE_LABEL).map(([v, label]) =>
+  html`<option value="${v}" ${v === value ? 'selected' : ''}>${label}</option>`)}</select>`;
+
+// A fresh set-password link for one of this customer's logins, emailed when email is set up.
+// Returns the link when it couldn't be emailed, so the admin can send it themselves.
+async function sendLink(req, l, loginId) {
+  const token = crypto.randomBytes(24).toString('base64url');
+  const { rows: [t] } = await query(`UPDATE customer_logins SET invite_token = $3, invite_expires_at = now() + make_interval(days => $4)
+    WHERE login_id = $2 AND customer_id = $1 AND active RETURNING full_name, email, password_hash`, [l.customer_id, loginId, token, INVITE_DAYS]);
+  if (!t) return { error: 'That login is turned off. Turn it on first.' };
+  const url = `${req.protocol}://${req.get('host')}/portal/set-password/${token}`;
+  const sent = mail.configured() && await notices.passwordLink(t, url, { reset: Boolean(t.password_hash) }).catch(() => false);
+  return sent ? { emailed: t.email } : { url, email: t.email };
+}
+
+router.get('/portal/team', signedIn, adminOnly, async (req, res) => {
+  const l = req.login;
+  const { rows: team } = await query(`SELECT login_id, full_name, email, role, active, last_login_at, password_hash IS NOT NULL AS has_password
+    FROM customer_logins WHERE customer_id = $1 ORDER BY active DESC, CASE role WHEN 'admin' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, full_name`, [l.customer_id]);
+  res.send(page(l, {
+    title: 'Team',
+    body: html`
+    <h1>Team</h1>
+    <p class="muted">Who at ${l.customer_name} can sign in, and what each can do.</p>
+    <ul class="muted small">${Object.entries(ROLE_LABEL).map(([v, label]) => html`<li><strong>${label}:</strong> ${ROLE_HELP[v]}.</li>`)}</ul>
+    ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
+    ${req.query.saved ? html`<div class="notice">Saved.</div>` : ''}
+    ${req.query.emailed ? html`<div class="notice">Emailed a sign-in link to ${req.query.emailed}.</div>` : ''}
+    ${req.query.link ? html`<div class="notice">We couldn't email it, so send this link to ${req.query.to || 'them'} yourself (it works for ${INVITE_DAYS} days):
+      <input readonly value="${req.query.link}" onclick="this.select()" style="width:100%"></div>` : ''}
+    <table class="list team">
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last signed in</th><th></th></tr></thead>
+      <tbody>${team.map((t) => {
+    const me = t.login_id === l.login_id;
+    return html`<tr class="${t.active ? '' : 'muted'}">
+        <td>${t.full_name}${me ? ' (you)' : ''}${t.active ? '' : ' (turned off)'}${t.has_password ? '' : html` <span class="muted small">· hasn't set a password yet</span>`}</td>
+        <td>${t.email}</td>
+        <td>${me ? ROLE_LABEL[t.role] : html`<form method="post" action="/portal/team/${t.login_id}/role" class="inline" onchange="this.submit()">
+          ${roleSelect('role', t.role, `aria-label="${t.full_name}'s role"`)}<noscript><button class="btn small">Save</button></noscript></form>`}</td>
+        <td>${t.last_login_at ? date(t.last_login_at) : ''}</td>
+        <td class="num">${me ? '' : html`
+          ${t.active ? html`<form method="post" action="/portal/team/${t.login_id}/link" class="inline">
+            <button class="btn small">${t.has_password ? 'Send password reset' : 'Send invite again'}</button></form>` : ''}
+          <form method="post" action="/portal/team/${t.login_id}/active" class="inline"
+            ${t.active ? html`onsubmit="return confirm('Turn off this login? They won\'t be able to sign in.')"` : ''}>
+            <input type="hidden" name="active" value="${t.active ? '0' : '1'}">
+            <button class="btn small">${t.active ? 'Turn off' : 'Turn on'}</button></form>`}</td></tr>`;
+  })}</tbody></table>
+    <h2>Add someone</h2>
+    <form method="post" action="/portal/team" class="card form-grid" style="max-width:640px">
+      <label>Name<input name="full_name" required autocomplete="off"></label>
+      <label>Email<input name="email" type="email" required autocomplete="off"></label>
+      <label class="span2">Role${roleSelect('role', 'sales')}</label>
+      <div class="span2 actions"><button class="btn primary">Add and send invite</button>
+        <span class="muted small">They get an email with a link to set their own password.</span></div>
+    </form>`,
+  }));
+});
+
+router.post('/portal/team', signedIn, adminOnly, async (req, res) => {
+  const l = req.login;
+  const name = String(req.body.full_name || '').trim().slice(0, 200);
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const role = ROLE_LABEL[req.body.role] ? req.body.role : 'sales';
+  if (!name || !isEmail(email)) return teamBack(res, `error=${encodeURIComponent('Enter a name and an email address.')}`);
+  let added;
+  try {
+    ({ rows: [added] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, role, created_by)
+      VALUES ($1, $2, $3, $4, $5) RETURNING login_id`, [l.customer_id, name, email, role, `${l.full_name} (customer)`]));
+  } catch (err) {
+    if (err.code === '23505') return teamBack(res, `error=${encodeURIComponent('That email already has a login. Call us if it should move to your team.')}`);
+    throw err;
+  }
+  const r = await sendLink(req, l, added.login_id);
+  teamBack(res, r.emailed ? `emailed=${encodeURIComponent(r.emailed)}` : `link=${encodeURIComponent(r.url)}&to=${encodeURIComponent(email)}`);
+});
+
+router.post('/portal/team/:lid(\\d+)/role', signedIn, adminOnly, async (req, res) => {
+  const l = req.login;
+  const role = ROLE_LABEL[req.body.role] ? req.body.role : null;
+  if (!role) return teamBack(res, `error=${encodeURIComponent('Pick a role.')}`);
+  // Your own role is left alone, so there's always an Admin.
+  if (Number(req.params.lid) === l.login_id) return teamBack(res, `error=${encodeURIComponent('You can\'t change your own role. Ask another Admin, or call us.')}`);
+  await query('UPDATE customer_logins SET role = $3 WHERE login_id = $2 AND customer_id = $1', [l.customer_id, req.params.lid, role]);
+  teamBack(res, 'saved=1');
+});
+
+router.post('/portal/team/:lid(\\d+)/active', signedIn, adminOnly, async (req, res) => {
+  const l = req.login;
+  if (Number(req.params.lid) === l.login_id) return teamBack(res, `error=${encodeURIComponent('You can\'t turn off your own login.')}`);
+  const active = req.body.active === '1';
+  await query('UPDATE customer_logins SET active = $3 WHERE login_id = $2 AND customer_id = $1', [l.customer_id, req.params.lid, active]);
+  if (!active) {
+    await query(`DELETE FROM customer_sessions s USING customer_logins x
+      WHERE s.login_id = x.login_id AND x.login_id = $2 AND x.customer_id = $1`, [l.customer_id, req.params.lid]);
+  }
+  teamBack(res, 'saved=1');
+});
+
+router.post('/portal/team/:lid(\\d+)/link', signedIn, adminOnly, async (req, res) => {
+  const r = await sendLink(req, req.login, Number(req.params.lid));
+  if (r.error) return teamBack(res, `error=${encodeURIComponent(r.error)}`);
+  teamBack(res, r.emailed ? `emailed=${encodeURIComponent(r.emailed)}` : `link=${encodeURIComponent(r.url)}&to=${encodeURIComponent(r.email)}`);
 });
 
 // ---- my account ---------------------------------------------------------------------
@@ -539,8 +743,10 @@ router.post('/portal/account', signedIn, async (req, res) => {
 });
 
 // ---- quotes the customer writes ------------------------------------------------------
-// They can change their own quote until they approve or decline it (or we take it over).
-const canEdit = (o) => o.from_portal && o.status === 'quote' && !o.customer_decision;
+// A quote written in the portal can be changed until it's ordered (by whoever wrote it, or a
+// manager or admin). A change sends it back to us to confirm again (Tyler 2026-11-12).
+const canEdit = (l, o) => o.from_portal && o.status === 'quote' && !expiredQuote(o)
+  && (l.sees_all || o.customer_login_id === l.login_id);
 
 // Products a customer can pick: anything with a list price (not services or "pricing varies").
 async function portalCatalog(l) {
@@ -560,6 +766,7 @@ function formPage(l, { title, order, catalog, action }) {
     title,
     body: html`
     <h1>${title}</h1>
+    ${order.order_id && hpcmOk(order) ? html`<div class="notice">We already confirmed this quote. If you change it and Save, it comes back to us to confirm again before it can be ordered.</div>` : ''}
     <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
     <script>window.ORDER_FORM = ${jsonForScript({
     order, ...catalog, portal: { prices: l.portal_line_prices, totals: l.portal_totals, action } })};</script>`,
@@ -616,7 +823,7 @@ router.get('/portal/orders/:id(\\d+)/again', signedIn, async (req, res) => {
 router.get('/portal/orders/:id(\\d+)/edit', signedIn, async (req, res) => {
   const l = req.login;
   const o = await customerOrder(l, req.params.id);
-  if (!o || !canEdit(o)) return res.redirect(`/portal/orders/${req.params.id}`);
+  if (!o || !canEdit(l, o)) return res.redirect(`/portal/orders/${req.params.id}`);
   o.tax_exempt = o.tax_exempt_effective;
   o.customer_note = o.internal_notes ? o.internal_notes.replace(/^Customer note: /, '') : '';
   res.send(formPage(l, { title: `Edit quote ${o.order_number}`, order: o, catalog: await portalCatalog(l), action: `/portal/orders/${o.order_id}/save` }));
@@ -657,7 +864,8 @@ async function savePortalQuote(l, existing, body, keys = null) {
     customer_login_id: existing ? existing.customer_login_id : l.login_id,
     job_name: body.job_name, po_number: body.po_number, job_address_text: body.job_address_text,
     contact_phone: body.contact_phone, contact_email: body.contact_email, fulfillment: body.fulfillment,
-    need_by: typeof body.need_by === 'string' && body.need_by >= today() ? body.need_by : null,
+    // The Need by date is set when the order is placed (Tyler 2026-11-12).
+    need_by: existing ? existing.need_by : null,
     auto_screws: body.auto_screws, framing: body.framing, screw_length: body.screw_length, trim_screws_for: body.trim_screws_for,
     closures: body.closures, accessories_checked: body.accessories_checked,
     // Changed closure counts are ours to set.
@@ -672,7 +880,15 @@ async function savePortalQuote(l, existing, body, keys = null) {
     internal_notes: note ? `Customer note: ${note}` : null,
     sections,
   };
-  return saveOrder(existing ? existing.order_id : null, header, { who: `${l.full_name} (customer)`, extra: { from_portal: true, staff_seen_at: null }, keys, autoDelivery: true });
+  const id = await saveOrder(existing ? existing.order_id : null, header, {
+    who: `${l.full_name} (customer)`, keys, autoDelivery: true,
+    // Sent (again) to HPCM to confirm.
+    extra: { from_portal: true, staff_seen_at: null, hpcm_confirmed_at: null, hpcm_confirmed_by: null },
+  });
+  // Sending it is the customer's yes; we confirm it next.
+  await query(`UPDATE orders SET customer_decision = 'approved', customer_decided_at = now(), customer_decided_by = $2,
+      customer_decline_reason = NULL WHERE order_id = $1`, [id, `${l.full_name} (${l.email})`]);
+  return id;
 }
 
 const saveRoute = (getExisting) => [signedIn, express.json({ limit: '1mb' }), async (req, res) => {
@@ -682,7 +898,7 @@ const saveRoute = (getExisting) => [signedIn, express.json({ limit: '1mb' }), as
     if (existing === false) return res.status(400).json({ ok: false, error: 'This quote can\'t be changed anymore. Call us if something needs to change.' });
     const keys = {};
     const id = await savePortalQuote(l, existing, req.body || {}, keys);
-    if (!existing) notices.quoteCreated(id);
+    notices.quoteCreated(id, { changed: Boolean(existing) });
     res.json({ ok: true, redirect: `/portal/orders/${id}`, order_id: id, keys });
   } catch (err) {
     const msg = dbMessage(err);
@@ -693,7 +909,7 @@ const saveRoute = (getExisting) => [signedIn, express.json({ limit: '1mb' }), as
 router.post('/portal/quotes', ...saveRoute(async () => null));
 router.post('/portal/orders/:id(\\d+)/save', ...saveRoute(async (req) => {
   const o = await customerOrder(req.login, req.params.id);
-  return o && canEdit(o) ? o : false;
+  return o && canEdit(req.login, o) ? o : false;
 }));
 
 // ---- length check photos: a tape measure on each line, taken before it's ready ----------

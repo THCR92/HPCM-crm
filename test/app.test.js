@@ -1546,24 +1546,25 @@ test('customer portal: invite, set password, see only their quotes, approve; sta
   // Prices: line prices and totals each switch off per customer.
   let page = await (await fetch(`${base}/portal/orders/${id}`, { headers: { cookie } })).text();
   assert.match(page, /Price each/);
-  assert.match(page, /Approve quote/);
+  assert.match(page, /Accept quote/);
   await query('UPDATE customers SET portal_line_prices = false, portal_totals = false WHERE customer_id = $1', [cid]);
   page = await (await fetch(`${base}/portal/orders/${id}`, { headers: { cookie } })).text();
   assert.doesNotMatch(page, /Price each|Subtotal/);
 
-  // Approving needs the "I checked it" box; it fills in the need-by date.
+  // Accepting needs the "I checked it" box; the need-by date waits for placing the order.
   res = await form(`/portal/orders/${id}/decision`, { decision: 'approved' }, cookie);
   assert.match(res.headers.get('location'), /error=/);
   await form(`/portal/orders/${id}/decision`, { decision: 'approved', checked: '1', need_by: '2099-01-15', note: 'Thanks' }, cookie);
   let { rows: [o] } = await query('SELECT status, customer_decision, need_by, customer_decided_by FROM orders WHERE order_id = $1', [id]);
-  assert.deepStrictEqual([o.status, o.customer_decision, o.need_by], ['quote', 'approved', '2099-01-15']);
+  assert.deepStrictEqual([o.status, o.customer_decision, o.need_by], ['quote', 'approved', null]);
+  assert.match(await (await fetch(`${base}/portal/orders/${id}`, { headers: { cookie } })).text(), /Place the order/);
   assert.match(o.customer_decided_by, /Pat Buyer/);
   // Admins and Managers hear about it.
   await new Promise((r) => setTimeout(r, 200));
   const told = sent.find((m) => /approved by/.test(m.subject));
   assert.ok(told && told.to.length, 'managers emailed');
   assert.match(await (await fetch(`${base}/orders?tab=approved`)).text(), new RegExp(`/orders/${id}"`));
-  assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /Customer approved this quote/);
+  assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /Customer accepted this quote/);
 
   // Changing the quote's lines means the customer answers again.
   const { rows: [line] } = await query('SELECT order_item_id FROM order_items WHERE order_id = $1', [id]);
@@ -1650,8 +1651,10 @@ test('customer portal: customers write their own quotes at list prices and add d
   assert.deepStrictEqual([after.pieces, after.unit_price], [6, 4.25]);
   assert.match(await (await fetch(`${base}/portal/orders/${id}`, { headers: { cookie } })).text(), /Edit quote/);
   assert.strictEqual((await send(`/portal/orders/${id}/save`, { sections: [] }, otherCookie)).status, 400);
-  await query("UPDATE orders SET customer_decision = 'approved' WHERE order_id = $1", [id]);
+  // Once it's ordered, it can't be changed here.
+  await query("UPDATE orders SET status = 'confirmed' WHERE order_id = $1", [id]);
   assert.strictEqual((await send(`/portal/orders/${id}/save`, { sections: [] })).status, 400);
+  await query("UPDATE orders SET status = 'quote' WHERE order_id = $1", [id]);
 
   // Drawings: theirs only, and not ours.
   res = await fetch(`${base}/portal/orders/${id}/files?line=${line.order_item_id}`, { method: 'POST',
@@ -1865,13 +1868,15 @@ test('customer portal: several logins; one sees all the customer\'s quotes, anot
   const { rows: [c] } = await query("INSERT INTO customers (display_name, portal_enabled) VALUES ('Roofing ' || gen_random_uuid(), true) RETURNING customer_id");
   const cid = c.customer_id;
   const stamp = Date.now();
-  await form(`/customers/${cid}/logins`, { full_name: 'Taylor Office', email: `taylor-${stamp}@example.com`, sees_all: '1' });
-  await form(`/customers/${cid}/logins`, { full_name: 'Kameron Sales', email: `kameron-${stamp}@example.com`, sees_all: '0' });
-  const { rows: logins } = await query('SELECT login_id, full_name, sees_all FROM customer_logins WHERE customer_id = $1 ORDER BY full_name', [cid]);
-  assert.deepStrictEqual(logins.map((l) => [l.full_name, l.sees_all]), [['Kameron Sales', false], ['Taylor Office', true]]);
+  await form(`/customers/${cid}/logins`, { full_name: 'Taylor Office', email: `taylor-${stamp}@example.com` });
+  await form(`/customers/${cid}/logins`, { full_name: 'Kameron Sales', email: `kameron-${stamp}@example.com`, role: 'sales' });
+  const { rows: logins } = await query('SELECT login_id, full_name, role, sees_all, can_approve FROM customer_logins WHERE customer_id = $1 ORDER BY full_name', [cid]);
+  // The first login is the customer's Admin; a Sales login sees only its own and can't accept quotes.
+  assert.deepStrictEqual(logins.map((l) => [l.full_name, l.role, l.sees_all, l.can_approve]),
+    [['Kameron Sales', 'sales', false, false], ['Taylor Office', 'admin', true, true]]);
   const [kameron, taylor] = logins.map((l) => l.login_id);
   const page = await (await fetch(`${base}/customers/${cid}`)).text();
-  assert.match(page, /Only their own/);
+  assert.match(page, /<option value="sales" selected>Sales/);
   assert.match(page, /Add another login/);
 
   // A quote "for" Kameron, and one for nobody in particular; a stranger's login id is dropped.
@@ -1897,9 +1902,10 @@ test('customer portal: several logins; one sees all the customer\'s quotes, anot
   const r = await fetch(`${base}/portal/orders/${forAll}`, { headers: { cookie: await session(kameron) }, anonymous: true, redirect: 'manual' });
   assert.notStrictEqual(r.status, 200);
 
-  // Turning Kameron to "sees all" shows him everything.
-  await form(`/customers/${cid}/logins/${kameron}/access`, { sees_all: '1' });
+  // Making Kameron a Manager shows him everything.
+  await form(`/customers/${cid}/logins/${kameron}/access`, { role: 'manager' });
   assert.match(await home(kameron), new RegExp(`/portal/orders/${forAll}`));
+  assert.strictEqual((await query('SELECT can_approve FROM customer_logins WHERE login_id = $1', [kameron])).rows[0].can_approve, true);
 });
 
 test('roof pitch: D Style Eave takes one pitch, a pitch break two; shown on the cut sheet; needed to approve', async () => {
@@ -2008,8 +2014,12 @@ test('quotes waiting on the office show as a count; expired quotes move to their
   assert.ok(list.includes(w.order_number));
   const page = await (await fetch(`${base}/orders/${w.order_id}`)).text();
   assert.match(page, /<strong>Rush:<\/strong>/);
+  // Opening it isn't enough: it waits until HPCM confirms it.
+  assert.match(page, /Confirm quote/);
+  assert.ok((await (await fetch(`${base}/orders?tab=waiting`)).text()).includes(w.order_number), 'still waiting after opening');
+  await fetch(`${base}/orders/${w.order_id}/hpcm-confirm`, { method: 'POST', redirect: 'manual' });
   list = await (await fetch(`${base}/orders?tab=waiting`)).text();
-  assert.ok(!list.includes(w.order_number), 'opened, so no longer waiting');
+  assert.ok(!list.includes(w.order_number), 'confirmed, so no longer waiting');
 
   // Past its good-until date: out of Open and Quotes, into Expired.
   const eave = await productId('TRM-D-STYLE-EAVE');
@@ -2093,4 +2103,95 @@ test('delivery: needs the job address; charge is $50 within 8 miles, else $50 + 
   assert.match(await (await fetch(`${base}/orders/${out.order_id}`)).text(), /Run on site/);
   assert.deepStrictEqual(await (await fetch(`${base}/orders/delivery-charge?address=${encodeURIComponent('9 Far Rd')}`)).json(),
     { miles: 12, charge: 63.2, matched: 'TEST' });
+});
+
+test('portal roles: Sales sends a quote, HPCM confirms it, a Manager places the order with its Need by date; the Admin runs the team', async () => {
+  const mail = require('../src/mail');
+  const sent = [];
+  mail.io.forceConfigured = true;
+  mail.io.send = async (m) => { sent.push(m); return true; };
+  const waitFor = async (re) => { for (let i = 0; i < 100 && !sent.some((m) => re.test(m.subject)); i += 1) await new Promise((r) => setTimeout(r, 20)); };
+  try {
+    const { rows: [c] } = await query("INSERT INTO customers (display_name, portal_enabled) VALUES ('Roles ' || gen_random_uuid(), true) RETURNING customer_id");
+    const cid = c.customer_id;
+    const stamp = `${Date.now()}-${Math.random()}`;
+    const mkLogin = async (name, role) => (await query(`INSERT INTO customer_logins (customer_id, full_name, email, role, password_hash)
+      VALUES ($1, $2, $3, $4, 'x') RETURNING login_id`, [cid, name, `${name.split(' ')[0].toLowerCase()}-${stamp}@example.com`, role])).rows[0].login_id;
+    const ids = { admin: await mkLogin('Ann Admin', 'admin'), manager: await mkLogin('Max Manager', 'manager'), sales: await mkLogin('Sal Sales', 'sales') };
+    const cookies = {};
+    for (const [k, id] of Object.entries(ids)) {
+      const sid = `roles-${id}-${stamp}`;
+      await query("INSERT INTO customer_sessions (session_id, login_id, expires_at) VALUES ($1, $2, now() + interval '1 day')", [sid, id]);
+      cookies[k] = `hpcm_portal=${sid}`;
+    }
+    const get = async (path, who) => (await fetch(base + path, { headers: { cookie: cookies[who] }, anonymous: true })).text();
+    const form = (path, body, who) => fetch(base + path, { method: 'POST', redirect: 'manual', anonymous: true,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', cookie: cookies[who] }, body: new URLSearchParams(body).toString() });
+    const send = (path, body, who) => fetch(base + path, { method: 'POST', anonymous: true,
+      headers: { 'Content-Type': 'application/json', cookie: cookies[who] }, body: JSON.stringify(body) });
+
+    // Sales writes a quote: no Need by on the form; it goes to HPCM to confirm.
+    const pbr = await productId('PNL-PBR-26');
+    let out = await (await send('/portal/quotes', { job_name: 'Shop', need_by: '2099-01-01',
+      sections: [{ area: 'roof', items: [{ product_id: pbr, pieces: 4, length_in: 120 }] }] }, 'sales')).json();
+    assert.ok(out.ok, out.error);
+    const id = out.order_id;
+    let { rows: [o] } = await query('SELECT need_by, customer_decision, hpcm_confirmed_at, valid_until FROM orders o, LATERAL (SELECT o.quote_expires_on AS valid_until) v WHERE order_id = $1', [id]);
+    assert.deepStrictEqual([o.need_by, o.customer_decision, o.hpcm_confirmed_at], [null, 'approved', null]);
+    assert.match(await get(`/portal/orders/${id}`, 'sales'), /We have this quote and will check and confirm it/);
+    assert.ok((await (await fetch(`${base}/orders?tab=waiting`)).text()).includes(`/orders/${id}"`), 'waits on the office');
+    // Nobody can place it before HPCM confirms.
+    assert.match((await form(`/portal/orders/${id}/place`, { need_by: '2099-01-15', checked: '1' }, 'manager')).headers.get('location'), /isn.t%20ready|error=/);
+
+    // HPCM confirms: the one who wrote it hears about it.
+    await fetch(`${base}/orders/${id}/hpcm-confirm`, { method: 'POST', redirect: 'manual' });
+    await waitFor(/confirmed by High Plains/);
+    const confirmed = sent.find((m) => /confirmed by High Plains/.test(m.subject));
+    assert.ok(confirmed && /sal-/.test([].concat(confirmed.to).join()), 'author emailed');
+    assert.match(await get(`/portal/orders/${id}`, 'sales'), /A manager or admin at .* places the order/);
+    assert.match(await get(`/portal/orders/${id}`, 'manager'), /Place the order/);
+
+    // Sales can't place orders; a Manager must give the Need by date.
+    assert.match((await form(`/portal/orders/${id}/place`, { need_by: '2099-01-15', checked: '1' }, 'sales')).headers.get('location'), /Only%20a%20manager/);
+    assert.match((await form(`/portal/orders/${id}/place`, { checked: '1' }, 'manager')).headers.get('location'), /error=/);
+    const res = await form(`/portal/orders/${id}/place`, { need_by: '2099-01-15', checked: '1', po_number: 'PO-77' }, 'manager');
+    assert.match(res.headers.get('location'), /placed=1/);
+    ({ rows: [o] } = await query('SELECT status, need_by, po_number, placed_in_portal, approved_by, ordered_on FROM orders WHERE order_id = $1', [id]));
+    assert.deepStrictEqual([o.status, o.need_by, o.po_number, o.placed_in_portal], ['confirmed', '2099-01-15', 'PO-77', true]);
+    assert.match(o.approved_by, /Max Manager/);
+    await waitFor(/Order placed/);
+    assert.ok(sent.some((m) => /Order placed: .*PO-77/.test(m.subject) && [].concat(m.to).includes('info@highplainscustommetal.com')));
+    // The placed order waits on the office until someone opens it.
+    assert.ok((await (await fetch(`${base}/orders?tab=waiting`)).text()).includes(`/orders/${id}"`), 'placed order waits');
+    assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /Ordered by the customer in the portal/);
+    assert.ok(!(await (await fetch(`${base}/orders?tab=waiting`)).text()).includes(`/orders/${id}"`), 'opened');
+    assert.match(await get('/portal', 'sales'), /Ordered/);
+
+    // A change after HPCM confirmed it sends it back to be confirmed again.
+    out = await (await send('/portal/quotes', { job_name: 'Barn', sections: [{ area: 'roof', items: [{ product_id: pbr, pieces: 2, length_in: 120 }] }] }, 'sales')).json();
+    await fetch(`${base}/orders/${out.order_id}/hpcm-confirm`, { method: 'POST', redirect: 'manual' });
+    assert.match(await get(`/portal/orders/${out.order_id}/edit`, 'sales'), /comes back to us to confirm again/);
+    assert.ok((await (await send(`/portal/orders/${out.order_id}/save`, { job_name: 'Barn',
+      sections: [{ area: 'roof', items: [{ product_id: pbr, pieces: 3, length_in: 120 }] }] }, 'sales')).json()).ok);
+    assert.strictEqual((await query('SELECT hpcm_confirmed_at FROM orders WHERE order_id = $1', [out.order_id])).rows[0].hpcm_confirmed_at, null);
+
+    // Team: only the Admin, who adds people and sets roles, but not their own.
+    assert.match(await get('/portal', 'admin'), /href="\/portal\/team"/);
+    assert.doesNotMatch(await get('/portal', 'manager'), /href="\/portal\/team"/);
+    assert.match((await fetch(`${base}/portal/team`, { headers: { cookie: cookies.manager }, anonymous: true, redirect: 'manual' })).headers.get('location'), /^\/portal$/);
+    assert.match(await get('/portal/team', 'admin'), /Sal Sales/);
+    const newEmail = `new-${stamp}@example.com`;
+    let r = await form('/portal/team', { full_name: 'Nia New', email: newEmail, role: 'manager' }, 'admin');
+    assert.match(r.headers.get('location'), /emailed=/);
+    assert.ok(sent.some((m) => m.to === newEmail && /set-password/.test(m.text)));
+    assert.strictEqual((await query('SELECT role FROM customer_logins WHERE lower(email) = $1', [newEmail])).rows[0].role, 'manager');
+    await form(`/portal/team/${ids.sales}/role`, { role: 'manager' }, 'admin');
+    assert.strictEqual((await query('SELECT sees_all FROM customer_logins WHERE login_id = $1', [ids.sales])).rows[0].sees_all, true);
+    r = await form(`/portal/team/${ids.admin}/role`, { role: 'sales' }, 'admin');
+    assert.match(r.headers.get('location'), /error=/);
+    await form(`/portal/team/${ids.manager}/active`, { active: '0' }, 'admin');
+    assert.match((await fetch(`${base}/portal`, { headers: { cookie: cookies.manager }, anonymous: true, redirect: 'manual' })).headers.get('location'), /\/portal\/login/);
+  } finally {
+    mail.io.forceConfigured = false;
+  }
 });

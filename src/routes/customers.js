@@ -82,6 +82,8 @@ async function qboRow(c) {
 // ---------------------------------------------------------------------------
 const linkFor = (req, token) => `${req.protocol}://${req.get('host')}/portal/set-password/${token}`;
 const newToken = () => crypto.randomBytes(24).toString('base64url');
+// Roles in the customer portal (Tyler 2026-11-12); see src/routes/portal.js.
+const PORTAL_ROLES = { admin: 'Admin', manager: 'Manager', sales: 'Sales' };
 const { INVITE_DAYS } = require('./portal-shared');
 const mail = require('../mail');
 const notices = require('../notices');
@@ -126,23 +128,22 @@ async function portalCard(c, req) {
     ${req.query.emailed ? html`<div class="notice">Emailed the link to ${req.query.emailed}.</div>` : ''}
     ${!c.portal_enabled && logins.some((l) => l.active) ? html`<div class="alert">The portal is off for this customer, so their login and links won't work. Tick "Portal on" and Save.</div>` : ''}
     <p class="muted small">Customers sign in at <strong>${req.get('host')}/portal</strong> to see their quotes and orders and approve quotes.
-      Quotes they approve still need your approval here. ${c.portal_enabled ? `They see ${shown.length ? shown.join(' and ') : 'no prices'}.` : ''}</p>
+      Quotes they write come to you to confirm; their Admins and Managers place the orders. ${c.portal_enabled ? `They see ${shown.length ? shown.join(' and ') : 'no prices'}.` : ''}</p>
     ${edit ? html`<form method="post" action="/customers/${c.customer_id}/portal" class="portal-settings" onchange="this.submit()">
       <label class="check"><input type="checkbox" name="enabled" value="1" ${c.portal_enabled ? 'checked' : ''}> Portal on for this customer</label>
       <label class="check"><input type="checkbox" name="line_prices" value="1" ${c.portal_line_prices ? 'checked' : ''}> Show line prices</label>
       <label class="check"><input type="checkbox" name="totals" value="1" ${c.portal_totals ? 'checked' : ''}> Show order totals</label>
       <noscript><button class="btn small">Save</button></noscript><span class="muted small">Saves when you tick a box.</span></form>` : ''}
     ${logins.length ? html`<table class="list">
-      <thead><tr><th>Login</th><th>Email</th><th>Sees</th><th>Last signed in</th><th></th></tr></thead>
+      <thead><tr><th>Login</th><th>Email</th><th>Role</th><th>Last signed in</th><th></th></tr></thead>
       <tbody>${logins.map((l) => html`<tr class="${l.active ? '' : 'muted'}">
         <td>${l.full_name}${l.active ? '' : ' (turned off)'}${l.password_hash ? '' : html` <span class="muted small">· hasn't set a password yet</span>`}</td>
         <td>${l.email}</td>
         <td>${edit ? html`<form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}/access" class="inline" onchange="this.submit()">
-            <select name="sees_all" aria-label="What ${l.full_name} sees">
-              <option value="1" ${l.sees_all ? 'selected' : ''}>All of ${c.display_name}'s quotes and orders</option>
-              <option value="0" ${l.sees_all ? '' : 'selected'}>Only their own</option></select>
+            <select name="role" aria-label="${l.full_name}'s role">${Object.entries(PORTAL_ROLES).map(([v, label]) =>
+              html`<option value="${v}" ${l.role === v ? 'selected' : ''}>${label}</option>`)}</select>
             <noscript><button class="btn small">Save</button></noscript></form>`
-    : l.sees_all ? 'All quotes and orders' : 'Only their own'}</td>
+    : PORTAL_ROLES[l.role]}</td>
         <td>${l.last_login_at ? date(l.last_login_at) : ''}</td>
         <td class="num">${edit ? html`
           <form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}/link" class="inline"><button class="btn small">${l.password_hash ? 'Password reset link' : 'New invite link'}</button></form>
@@ -157,16 +158,16 @@ async function portalCard(c, req) {
             <div class="span2 actions"><button class="btn">Save login</button>
               <span class="muted small">They can also change these themselves under My account.</span></div>
           </form></details></td></tr>` : ''}`)}</tbody></table>
-    <p class="muted small">A login that sees only their own gets the quotes they write in the portal, and the ones you set
-      "Who it's for" to them on the quote form.</p>` : ''}
+    <p class="muted small"><strong>Admin</strong> sees all their quotes and orders, places orders and manages their own team's logins (Team page in the portal).
+      <strong>Manager</strong> sees all, accepts quotes and places orders. <strong>Sales</strong> writes quotes (you confirm them) and sees only their own,
+      plus ones you set "Who it's for" to them on the quote form.</p>` : ''}
     ${edit ? html`<details ${logins.length ? '' : 'open'}><summary>${logins.length ? 'Add another login' : 'Add their login'}</summary>
       <form method="post" action="/customers/${c.customer_id}/logins" class="form-grid">
         <label>Name<input name="full_name" required value="${logins.length ? '' : [c.first_name, c.last_name].filter(Boolean).join(' ')}"></label>
         <label>Email<input name="email" type="email" required value="${logins.length ? '' : c.email || ''}"></label>
-        <label class="span2">Sees
-          <select name="sees_all">
-            <option value="1" ${logins.length ? '' : 'selected'}>All of ${c.display_name}'s quotes and orders (e.g. office or production)</option>
-            <option value="0" ${logins.length ? 'selected' : ''}>Only their own quotes and orders (e.g. a salesman)</option></select></label>
+        <label class="span2">Role
+          <select name="role">${Object.entries(PORTAL_ROLES).map(([v, label]) =>
+            html`<option value="${v}" ${(logins.some((x) => x.role === 'admin') ? 'sales' : 'admin') === v ? 'selected' : ''}>${label}</option>`)}</select></label>
         <div class="span2 actions"><button class="btn primary">Add login</button>
           <span class="muted small">You'll get a link to send them so they can set their own password.</span></div>
       </form></details>` : ''}
@@ -187,10 +188,12 @@ router.post('/:id(\\d+)/logins', need('portal'), async (req, res) => {
   if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return back('Enter a name and an email address.');
   try {
     // Several logins per customer (Tyler 2026-11-12), each seeing all or only their own.
-    const { rows: [l] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, invite_token, invite_expires_at, created_by, sees_all)
+    const { rows: [l] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, invite_token, invite_expires_at, created_by, role)
       VALUES ($1, $2, $3, $4, now() + make_interval(days => $5), $6, $7)
       RETURNING login_id, true AS added`,
-    [req.params.id, name, email, newToken(), INVITE_DAYS, userName(), req.body.sees_all !== '0']);
+    [req.params.id, name, email, newToken(), INVITE_DAYS, userName(), PORTAL_ROLES[req.body.role] ? req.body.role
+      // Not given: the customer's first Admin, then Sales.
+      : (await query("SELECT 1 FROM customer_logins WHERE customer_id = $1 AND role = 'admin' AND active", [req.params.id])).rows.length ? 'sales' : 'admin']);
     // Adding a login means they should be able to use it: turn the portal on.
     await query('UPDATE customers SET portal_enabled = true WHERE customer_id = $1', [req.params.id]);
     // A new login gets its invite by email right away (once email is set up).
@@ -220,8 +223,10 @@ router.post('/:id(\\d+)/logins/:lid(\\d+)/edit', need('portal'), async (req, res
 });
 
 router.post('/:id(\\d+)/logins/:lid(\\d+)/access', need('portal'), async (req, res) => {
-  await query('UPDATE customer_logins SET sees_all = $3 WHERE login_id = $2 AND customer_id = $1',
-    [req.params.id, req.params.lid, req.body.sees_all !== '0']);
+  if (PORTAL_ROLES[req.body.role]) {
+    await query('UPDATE customer_logins SET role = $3 WHERE login_id = $2 AND customer_id = $1',
+      [req.params.id, req.params.lid, req.body.role]);
+  }
   res.redirect(`/customers/${req.params.id}#portal`);
 });
 

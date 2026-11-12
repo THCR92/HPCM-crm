@@ -17,8 +17,8 @@ async function quoteAnswered(orderId) {
     `${o.display_name} ${verb} quote ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''} in the customer portal.`,
     `By: ${o.customer_decided_by}`,
     ...(o.customer_decision_note ? [`Their note: ${o.customer_decision_note}`] : []),
-    ...(o.customer_decision === 'approved' ? [`Need by: ${o.need_by || 'not given'}`, '',
-      'It still needs your approval: check it, then change its status to Confirmed.'] : []),
+    ...(o.customer_decision === 'approved' ? ['',
+      'A manager or admin at the customer places the order from the portal when they are ready (or you can confirm it yourself).'] : []),
     '', `${site()}/orders/${orderId}`,
   ].join('\n');
   await mail.send({ to: await mail.managers(), subject: `Quote ${o.order_number} ${verb} by ${o.display_name}`, text, kind: `quote_${verb}`, orderId });
@@ -28,19 +28,56 @@ async function quoteAnswered(orderId) {
 // Quotes customers send from the portal also go to the shop's inbox (Tyler 2026-11-12).
 const QUOTE_INBOX = process.env.QUOTE_INBOX || 'info@highplainscustommetal.com';
 
-async function quoteCreated(orderId) {
+async function quoteCreated(orderId, { changed = false } = {}) {
   const { rows: [o] } = await query(`
-    SELECT o.order_number, o.job_name, o.created_by, o.internal_notes, c.display_name
+    SELECT o.order_number, o.job_name, o.created_by, o.updated_by, o.internal_notes, c.display_name
     FROM orders o JOIN customers c USING (customer_id) WHERE o.order_id = $1`, [orderId]);
   if (!o) return;
   const text = [
-    `${o.display_name} started quote ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''} in the customer portal (${o.created_by}).`,
+    changed
+      ? `${o.display_name} changed quote ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''} in the customer portal (${o.updated_by}).`
+      : `${o.display_name} sent quote ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''} from the customer portal (${o.created_by}).`,
     ...(o.internal_notes ? [o.internal_notes] : []),
-    '', 'It is priced from the price list. They can approve it from the portal; check it when they do.',
+    '', 'It is priced from the price list. Check it, then press Confirm quote on its page (or edit it and Save).',
     '', `${site()}/orders/${orderId}`,
   ].join('\n');
   const to = [...new Set([QUOTE_INBOX, ...[].concat(await mail.managers() || [])].filter(Boolean))];
-  await mail.send({ to, subject: `New quote ${o.order_number} from ${o.display_name}`, text, kind: 'quote_created', orderId });
+  await mail.send({ to, subject: `${changed ? 'Changed' : 'New'} quote ${o.order_number} from ${o.display_name}`, text, kind: 'quote_created', orderId });
+}
+
+// HPCM confirmed a quote the customer sent from the portal: tell whoever wrote it.
+async function quoteConfirmed(orderId) {
+  const { rows: [o] } = await query(`
+    SELECT o.order_number, o.job_name, o.po_number, o.customer_decision, l.email, l.full_name, l.role
+    FROM orders o JOIN customers c USING (customer_id)
+    JOIN customer_logins l ON l.login_id = o.customer_login_id AND l.active
+    WHERE o.order_id = $1 AND c.portal_enabled`, [orderId]);
+  if (!o) return;
+  const what = `quote ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''}${o.po_number ? `, PO ${o.po_number}` : ''}`;
+  const text = [
+    `Hello ${o.full_name.split(' ')[0]},`, '',
+    o.customer_decision === 'approved'
+      ? `We checked and confirmed your ${what}. ${o.role === 'sales' ? 'A manager or admin on your team' : 'You or a manager on your team'} can now place the order in the portal.`
+      : `We checked your ${what} and made some changes. Look it over and accept it in the portal.`,
+    '', `${site()}/portal/orders/${orderId}`,
+  ].join('\n');
+  await mail.send({ to: o.email, subject: `Quote ${o.order_number} confirmed by High Plains Custom Metal`, text, kind: 'quote_confirmed', orderId });
+}
+
+// A manager or admin at a customer placed an order from the portal.
+async function orderPlaced(orderId) {
+  const { rows: [o] } = await query(`
+    SELECT o.order_number, o.job_name, o.po_number, o.need_by, o.approved_by, o.customer_decision_note, c.display_name
+    FROM orders o JOIN customers c USING (customer_id) WHERE o.order_id = $1`, [orderId]);
+  if (!o) return;
+  const text = [
+    `${o.approved_by} placed order ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''}${o.po_number ? `, PO ${o.po_number}` : ''} for ${o.display_name} in the customer portal.`,
+    `Need by: ${o.need_by ? new Date(o.need_by).toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : 'not given'}`,
+    ...(o.customer_decision_note ? [`Their note: ${o.customer_decision_note}`] : []),
+    '', 'It is now Confirmed (approved for the shop).', '', `${site()}/orders/${orderId}`,
+  ].join('\n');
+  const to = [...new Set([QUOTE_INBOX, ...[].concat(await mail.managers() || [])].filter(Boolean))];
+  await mail.send({ to, subject: `Order placed: ${o.order_number}${o.po_number ? `, PO ${o.po_number}` : ''} from ${o.display_name}`, text, kind: 'order_placed', orderId });
 }
 
 // A customer cancelled a quote in the portal (Tyler 2026-11-12).
@@ -103,6 +140,7 @@ async function passwordLink(login, url, { reset = false } = {}) {
 const later = (fn) => (...args) => { fn(...args).catch((err) => console.error('Notice failed:', err.message)); };
 
 module.exports = {
-  quoteAnswered: later(quoteAnswered), quoteCreated: later(quoteCreated), quoteCancelled: later(quoteCancelled), orderReady: later(orderReady), passwordLink,
-  now: { quoteAnswered, quoteCreated, quoteCancelled, orderReady },
+  quoteAnswered: later(quoteAnswered), quoteCreated: later(quoteCreated), quoteCancelled: later(quoteCancelled), orderReady: later(orderReady),
+  quoteConfirmed: later(quoteConfirmed), orderPlaced: later(orderPlaced), passwordLink,
+  now: { quoteAnswered, quoteCreated, quoteCancelled, orderReady, quoteConfirmed, orderPlaced },
 };
