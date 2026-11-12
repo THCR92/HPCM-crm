@@ -7,6 +7,7 @@
 // A Manager or Admin turns the portal on per customer and invites logins from the
 // customer's page (src/routes/customers.js).
 const crypto = require('crypto');
+const { fulfillLabel, atJob } = require('../fulfillment');
 const { query } = require('../db');
 const TrimPrice = require('../../public/trim-price');
 const CustomerTypes = require('../customer-types');
@@ -267,13 +268,13 @@ function steps(o) {
   if (o.status === 'cancelled') return html`<p class="muted">This ${o.ordered_on ? 'order' : 'quote'} was cancelled.</p>`;
   const s = o.status;
   const after = (list) => list.includes(s);
-  const pickup = o.fulfillment === 'delivery' ? 'Delivered' : 'Picked up';
+  const pickup = atJob(o.fulfillment) ? 'Delivered' : 'Picked up';
   const list = [
     ['Quoted', true],
     [o.customer_decision === 'approved' || s !== 'quote' ? 'You approved' : 'Your approval', o.customer_decision === 'approved' || s !== 'quote'],
     [after(['confirmed', 'in_production', 'ready', 'completed', 'invoiced']) ? 'We approved' : 'Our approval', after(['confirmed', 'in_production', 'ready', 'completed', 'invoiced'])],
     ['In production', after(['in_production', 'ready', 'completed', 'invoiced'])],
-    [o.fulfillment === 'delivery' ? 'Ready to deliver' : 'Ready for pickup', after(['ready', 'completed', 'invoiced'])],
+    [atJob(o.fulfillment) ? 'Ready to deliver' : 'Ready for pickup', after(['ready', 'completed', 'invoiced'])],
     [pickup, after(['completed', 'invoiced'])],
   ];
   const current = list.findIndex(([, done]) => !done);
@@ -290,7 +291,7 @@ const customerStatus = (o) => {
   }
   if (o.status === 'invoiced') return 'Completed';
   if (o.status === 'confirmed') return 'Approved';
-  if (o.status === 'ready') return o.fulfillment === 'delivery' ? 'Ready to deliver' : 'Ready for pickup';
+  if (o.status === 'ready') return atJob(o.fulfillment) ? 'Ready to deliver' : 'Ready for pickup';
   return STATUS_LABEL[o.status];
 };
 
@@ -340,7 +341,7 @@ function handoffBox(o) {
       ${when(o.handed_off_at)}${o.received_by ? `, received by ${o.received_by}` : ''}.</div>`;
   }
   const ready = o.status === 'ready';
-  return html`<div class="card handoff-info no-print">${o.fulfillment === 'delivery'
+  return html`<div class="card handoff-info no-print">${atJob(o.fulfillment)
     ? html`<strong>${ready ? 'Ready to deliver.' : 'Delivery'}</strong> To ${o.job_address_text || 'the job address on file'}${
       o.need_by ? html`, needed by ${date(o.need_by)}` : ''}. ${ready ? 'We\'ll call to set up a time.' : ''}`
     : html`<strong>${ready ? 'Ready for pickup.' : 'Pickup'}</strong> At our shop, <a href="${SHOP_MAP}" target="_blank" rel="noopener">${SHOP_ADDRESS}</a>,
@@ -456,6 +457,8 @@ router.post('/portal/orders/:id(\\d+)/decision', signedIn, async (req, res) => {
   notices.quoteAnswered(id);
   back();
 });
+
+router.get('/portal/delivery-charge', signedIn, async (req, res) => res.json(await require('../delivery').quote(String(req.query.address || ''))));
 
 // ---- cancelling a quote (Tyler 2026-11-12) --------------------------------------------
 // Whoever wrote the quote, or a login that can approve quotes, can cancel it while it's still
@@ -669,7 +672,7 @@ async function savePortalQuote(l, existing, body, keys = null) {
     internal_notes: note ? `Customer note: ${note}` : null,
     sections,
   };
-  return saveOrder(existing ? existing.order_id : null, header, { who: `${l.full_name} (customer)`, extra: { from_portal: true, staff_seen_at: null }, keys });
+  return saveOrder(existing ? existing.order_id : null, header, { who: `${l.full_name} (customer)`, extra: { from_portal: true, staff_seen_at: null }, keys, autoDelivery: true });
 }
 
 const saveRoute = (getExisting) => [signedIn, express.json({ limit: '1mb' }), async (req, res) => {

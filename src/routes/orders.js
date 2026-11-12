@@ -1,6 +1,8 @@
 // Orders: one order = one cut sheet. Sections (Roof / Wall / Trim / Other)
 // hold the cut-sheet rows; billable sq ft / LF are computed by the database.
 const express = require('express');
+const { fulfillLabel, atJob, FULFILLMENTS } = require('../fulfillment');
+const Delivery = require('../delivery');
 const { query, tx } = require('../db');
 const { feetInches } = require('../length');
 const { RUNNABLE, footage, runError } = require('../production');
@@ -199,7 +201,7 @@ function parseHeader(b) {
     job_address_text: text(b.job_address_text),
     contact_phone: text(b.contact_phone),
     contact_email: text(b.contact_email),
-    fulfillment: b.fulfillment === 'delivery' ? 'delivery' : 'pickup',
+    fulfillment: FULFILLMENTS.includes(b.fulfillment) ? b.fulfillment : 'pickup',
     need_by: isoDate(b.need_by),
     auto_screws: b.auto_screws === true || b.auto_screws === 'true',
     framing: b.framing === 'steel' ? 'steel' : 'wood',
@@ -357,7 +359,8 @@ function withClosures(rest, auto, header, productsById) {
 
 // `who` names the person saving when it isn't a staff sign-in (the customer portal).
 // keys: filled with { the form's line key: saved line id }, for uploading files to new lines.
-async function saveOrder(orderId, body, { who = userName(), extra = {}, keys = null } = {}) {
+// autoDelivery: always figure the delivery charge from the miles (customer quotes).
+async function saveOrder(orderId, body, { who = userName(), extra = {}, keys = null, autoDelivery = false } = {}) {
   const header = { ...parseHeader(body), ...extra };
   header.updated_by = who;
   if (!orderId) header.created_by = who;
@@ -378,6 +381,24 @@ async function saveOrder(orderId, body, { who = userName(), extra = {}, keys = n
     if (!ok) header.customer_login_id = null;
   }
   const sections = await withScrews(parseSections(body, productsById), header, productsById);
+  // Delivery and Run on site happen at the job, so they need its address (Tyler 2026-11-12).
+  if (atJob(header.fulfillment) && !header.job_address_text) {
+    throw new UserError(`Enter the job address for ${header.fulfillment === 'delivery' ? 'delivery' : 'Run on site'}.`);
+  }
+  // Run on site is for standing seam and Board & Batten (the concealed-fastener panels).
+  if (header.fulfillment === 'run_on_site' && !sections.some((s) => s.items.some((i) => i.product && i.product.fastening === 'concealed'))) {
+    throw new UserError('Run on site is for standing seam or Board & Batten panels. Add those panels, or pick Pickup or Delivery.');
+  }
+  // Delivery charge from the miles, when it isn't set (or it's a customer's quote: always ours).
+  if (header.fulfillment === 'delivery' && (autoDelivery || !header.delivery_charge)) {
+    const d = await Delivery.quote(header.job_address_text);
+    if (d.charge !== undefined) {
+      header.delivery_charge = d.charge;
+      header.delivery_miles = d.miles;
+    }
+  } else if (header.fulfillment !== 'delivery' && autoDelivery) {
+    header.delivery_charge = 0;
+  }
 
   return tx(async (db) => {
     const cols = Object.keys(header);
@@ -539,7 +560,7 @@ router.get('/', async (req, res) => {
         <tr><td><a href="/orders/${o.order_id}">${o.order_number}</a>${o.from_portal && !o.staff_seen_at && o.status === 'quote' ? html` <span class="nav-badge">new</span>` : ''}</td><td>${o.customer_name}</td>
         <td>${o.job_name}</td><td>${o.po_number}</td><td>${statusBadge(o.status)}${o.status === 'quote' && o.customer_decision
           ? html` <span class="muted small">${o.customer_decision === 'approved' ? 'customer approved' : 'customer declined'}</span>` : ''}</td>
-        <td>${date(o.need_by)}</td><td>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</td>
+        <td>${date(o.need_by)}</td><td>${fulfillLabel(o.fulfillment)}</td>
         ${prices ? html`<td class="num">${money(o.grand_total)}</td>` : ''}</tr>`)
       : html`<tr><td colspan="8" class="empty">No orders here.</td></tr>`}</tbody>
     </table>`,
@@ -592,6 +613,9 @@ router.get('/:id(\\d+)/edit', need('quotes'), async (req, res) => {
   order.tax_exempt = order.tax_exempt_effective;
   formPage(res, { title: `Edit ${order.status === 'quote' ? 'quote' : 'order'} ${order.order_number}`, order, catalog: await loadCatalog() });
 });
+
+// The delivery charge for an address, for the quote form (Tyler 2026-11-12).
+router.get('/delivery-charge', async (req, res) => res.json(await Delivery.quote(String(req.query.address || ''))));
 
 const saveHandler = (getId) => async (req, res) => {
   try {
@@ -792,7 +816,7 @@ function customerSheet(o, { linePrices = true, totals = true,
         <dt>Project / PO #</dt><dd>${o.po_number}</dd>
         <dt>${isQuote ? 'Valid until' : 'Need by'}</dt><dd>${date(isQuote ? o.valid_until : o.need_by)}</dd>
         <dt>Job address</dt><dd>${o.job_address_text}</dd>
-        <dt>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</dt><dd>${o.fulfillment === 'delivery' ? 'Delivered' : 'Customer pickup'}</dd>
+        <dt>${fulfillLabel(o.fulfillment)}</dt><dd>${({ delivery: 'Delivered', run_on_site: 'Panels run on site' }[o.fulfillment] || 'Customer pickup')}</dd>
       </dl>
       ${sections.map((sec) => html`
       <h3 class="area">${sec.is_auto ? (sec.label || 'Screws') : html`${AREA_LABEL[sec.area] || sec.area}${sec.label ? ` · ${sec.label}` : ''}`}</h3>
@@ -967,7 +991,7 @@ router.get('/:id(\\d+)', async (req, res) => {
         <button class="btn" onclick="window.print()">Print cut sheet</button>
         ${o.status !== 'quote' && o.status !== 'cancelled' ? html`<a class="btn" href="/labels/order/${o.order_id}">Labels</a>` : ''}
         ${['confirmed', 'in_production', 'ready'].includes(o.status) && can('production') ? html`<a class="btn" href="/orders/${o.order_id}/pack">Pack &amp; check</a>` : ''}
-        ${o.status === 'ready' && (can('production') || can('quotes')) ? html`<a class="btn primary" href="/orders/${o.order_id}/handoff">${o.fulfillment === 'delivery' ? 'Delivered…' : 'Picked up…'}</a>` : ''}
+        ${o.status === 'ready' && (can('production') || can('quotes')) ? html`<a class="btn primary" href="/orders/${o.order_id}/handoff">${atJob(o.fulfillment) ? 'Delivered…' : 'Picked up…'}</a>` : ''}
         ${(DELETABLE.includes(o.status) || o.status === 'invoiced') && isAdmin() ? deleteButton(`/orders/${o.order_id}/delete`, `${docName.toLowerCase()} ${o.order_number}`) : ''}
         ${o.status !== 'invoiced' && nextStatuses.length ? html`
         <form method="post" action="/orders/${o.order_id}/status" class="inline">
@@ -1009,7 +1033,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       <dl class="sheet-fields">
         <dt>Job name</dt><dd>${o.job_name}</dd>
         <dt>Job address</dt><dd>${o.job_address_text}</dd>
-        <dt>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</dt><dd>${o.status === 'quote'
+        <dt>${fulfillLabel(o.fulfillment)}</dt><dd>${o.status === 'quote'
           ? `Quoted ${date(o.quoted_on)}` : `Ordered ${date(o.ordered_on)}`}</dd>
         <dt>Phone</dt><dd>${o.contact_phone || o.customer_phone}</dd>
         <dt>Email</dt><dd>${o.contact_email || o.customer_email}</dd>

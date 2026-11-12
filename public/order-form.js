@@ -347,6 +347,41 @@
     return days < RUSH_DAYS ? `⚠ That's ${days} business day${days === 1 ? '' : 's'} away. ${base}` : base;
   }
 
+  // Delivery and Run on site happen at the job (Tyler 2026-11-12); delivery is charged by the
+  // miles from the shop, figured by the server from the address.
+  const atJob = (f) => f === 'delivery' || f === 'run_on_site';
+  let deliveryNote = '';
+  let deliveryAuto = null;
+  async function figureDelivery() {
+    const h = state.header;
+    const note = () => { const el = root.querySelector('#delivery-note'); if (el) el.textContent = deliveryNote; };
+    if (h.fulfillment !== 'delivery') {
+      // Back to pickup or run on site: drop a delivery charge we filled in.
+      if (deliveryAuto !== null && Number(h.delivery_charge) === deliveryAuto) setDelivery('');
+      deliveryNote = h.fulfillment === 'run_on_site' ? 'We\'ll bring the roll former to the job address.' : '';
+      return note();
+    }
+    if (!String(h.job_address_text || '').trim()) { deliveryNote = 'Enter the job address to figure the delivery charge.'; return note(); }
+    deliveryNote = 'Figuring the delivery charge…';
+    note();
+    try {
+      const d = await (await fetch(`${portal ? '/portal' : '/orders'}/delivery-charge?address=${encodeURIComponent(h.job_address_text)}`)).json();
+      if (d.charge !== undefined) {
+        deliveryNote = `About ${d.miles} miles from our shop: delivery $${d.charge.toFixed(2)} ($50 within 8 miles; farther, $50 plus $0.55 a mile round trip).`;
+        // Staff can change it; a customer's quote always gets the figured charge.
+        if (portal || !Number(h.delivery_charge) || Number(h.delivery_charge) === deliveryAuto) setDelivery(d.charge);
+        deliveryAuto = d.charge;
+      } else deliveryNote = d.error;
+    } catch (err) { deliveryNote = 'Couldn\'t figure the delivery charge right now; the office will set it.'; }
+    note();
+  }
+  function setDelivery(v) {
+    state.header.delivery_charge = v;
+    const input = root.querySelector('[data-h="delivery_charge"]');
+    if (input) input.value = v;
+    recompute();
+  }
+
   function headerHtml() {
     const h = state.header;
     const field = (name, label, type = 'text', extra = '') =>
@@ -363,12 +398,15 @@
       ${field('po_number', 'Project / PO #')}
       ${field('need_by', 'Need by', 'date')}
       ${portal ? `<p class="span2 small need-by-note ${rushDays(h.need_by) < RUSH_DAYS ? 'rush' : ''}" id="need-by-note">${needByNote(h.need_by)}</p>` : ''}
-      <label>Pickup or delivery
+      <label>Pickup, delivery or run on site
         <select data-h="fulfillment">
-          <option value="pickup" ${h.fulfillment !== 'delivery' ? 'selected' : ''}>Pickup</option>
+          <option value="pickup" ${h.fulfillment === 'pickup' || !h.fulfillment ? 'selected' : ''}>Pickup</option>
           <option value="delivery" ${h.fulfillment === 'delivery' ? 'selected' : ''}>Delivery</option>
+          <option value="run_on_site" ${h.fulfillment === 'run_on_site' ? 'selected' : ''}>Run on site (standing seam or Board &amp; Batten)</option>
         </select></label>
-      <label class="span2">Job address<input data-h="job_address_text" value="${esc(h.job_address_text ?? '')}"></label>
+      <label class="span2">Job address${atJob(h.fulfillment) ? ' *' : ''}<input data-h="job_address_text" value="${esc(h.job_address_text ?? '')}"
+        class="${atJob(h.fulfillment) && !String(h.job_address_text || '').trim() ? 'missing' : ''}" placeholder="${atJob(h.fulfillment) ? 'Street, city, state, ZIP' : 'Not needed for pickup'}"></label>
+      <p class="span2 small muted" id="delivery-note">${esc(deliveryNote)}</p>
       ${field('contact_phone', 'Phone', 'tel')}
       ${field('contact_email', 'Email', 'email')}
     </div>`;
@@ -689,6 +727,15 @@
 
   root.addEventListener('change', (e) => {
     if (e.target.dataset.cq) setTimeout(recompute);
+    if (e.target.dataset.h === 'fulfillment' || e.target.dataset.h === 'job_address_text') {
+      const addr = root.querySelector('[data-h="job_address_text"]');
+      if (addr) {
+        addr.classList.toggle('missing', atJob(state.header.fulfillment) && !addr.value.trim());
+        addr.placeholder = atJob(state.header.fulfillment) ? 'Street, city, state, ZIP' : 'Not needed for pickup';
+        addr.previousSibling.textContent = `Job address${atJob(state.header.fulfillment) ? ' *' : ''}`;
+      }
+      figureDelivery();
+    }
     // Files picked for a line wait until the quote is saved.
     if (e.target.matches('[data-upload]')) {
       const r = rowOf(e.target);
@@ -906,6 +953,9 @@
     if (state.header.auto_screws) {
       sections.push({ section_id: state.screwSectionId, area: 'other', label: 'Screws', auto: true, items: addedScrews });
     } else if (addedScrews.length) sections.push({ section_id: null, area: 'other', label: 'Screws', items: addedScrews });
+    if (atJob(state.header.fulfillment) && !String(state.header.job_address_text || '').trim()) {
+      return showError(`Enter the job address for ${state.header.fulfillment === 'delivery' ? 'delivery' : 'Run on site'}.`);
+    }
     button.disabled = true;
     try {
       const url = portal ? portal.action : state.header.order_id ? `/orders/${state.header.order_id}` : '/orders';

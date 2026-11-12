@@ -2,6 +2,7 @@
 // (Tyler 2026-11-09). Same content as the customer copy page: one price per piece,
 // no billing units, no coil supplier.
 const path = require('path');
+const { fulfillLabel, atJob } = require('./fulfillment');
 const PDFDocument = require('pdfkit');
 const { PDFDocument: PdfLib } = require('pdf-lib');
 
@@ -68,7 +69,7 @@ function layoutPdf(o, { sizeCol, areaLabel, files = new Map() }, spots) {
     const fields = [
       ['Customer', o.customer_name], ['Job name', o.job_name],
       ['Project / PO #', o.po_number], [isQuote ? 'Valid until' : 'Need by', usDate(isQuote ? o.valid_until : o.need_by)],
-      ['Job address', o.job_address_text], [o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup', o.fulfillment === 'delivery' ? 'Delivered' : 'Customer pickup'],
+      ['Job address', o.job_address_text], [fulfillLabel(o.fulfillment), ({ delivery: 'Delivered', run_on_site: 'Panels run on site' }[o.fulfillment] || 'Customer pickup')],
     ];
     let y = 134;
     const half = width / 2;

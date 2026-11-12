@@ -1,6 +1,7 @@
 // Shop TV board: a full-screen summary of where every job stands, what coil
 // the next jobs need, and what's finished and waiting to leave.
 const router = require('../async-router')();
+const { fulfillLabel, atJob } = require('../fulfillment');
 const { query } = require('../db');
 const { html, money, num, date } = require('../html');
 const { RUNNABLE, footage } = require('../production');
@@ -189,7 +190,7 @@ router.get('/', async (req, res) => {
               <span class="cust">${o.customer_name}</span>
               <span class="pill ${o.status}">${STATUS_TEXT[o.status]}</span></div>
             <div class="mats"><span class="job">${o.job_name ? `${o.job_name} · ` : ''}${
-              o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</span>${materials(o.order_id)}</div>
+              fulfillLabel(o.fulfillment)}</span>${materials(o.order_id)}</div>
           </td>
         </tr>`)}</tbody>
     </table>` : html`<p class="empty">No approved orders waiting. Nice work.</p>`}
@@ -211,7 +212,7 @@ router.get('/', async (req, res) => {
       ${ready.length ? html`<ul>${ready.slice(0, READY_COUNT).map((r) => html`
         <li class="${r.days_waiting >= 7 ? 'stale' : ''}">
           <div><span class="order">${r.order_number}</span> ${r.customer_name}
-            <div class="job">${r.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}${r.job_name ? ` · ${r.job_name}` : ''}</div></div>
+            <div class="job">${fulfillLabel(r.fulfillment)}${r.job_name ? ` · ${r.job_name}` : ''}</div></div>
           <b>${r.days_waiting === 0 ? 'Today' : plural(r.days_waiting, 'day')}</b></li>`)}</ul>
         ${ready.length > READY_COUNT ? html`<p class="more">+${ready.length - READY_COUNT} more</p>` : ''}`
       : html`<p class="lead muted">Nothing waiting.</p>`}

@@ -2,6 +2,16 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const app = require('../src/server');
+// No map lookups in tests: a fake one, 12 miles for any address with "Far" in it, else 5.
+const Delivery = require('../src/delivery');
+Delivery.io.getJson = async (url) => {
+  if (url.includes('geocoding.geo.census.gov')) {
+    return { result: { addressMatches: /Nowhere/i.test(decodeURIComponent(url)) ? [] : [{ coordinates: { x: /Far/i.test(decodeURIComponent(url)) ? -104 : -104.8, y: 41.1 }, matchedAddress: 'TEST' }] } };
+  }
+  if (url.includes('nominatim')) return [];
+  if (url.includes('router.project-osrm.org')) return { code: 'Ok', routes: [{ distance: (/-104,/.test(url) ? 12 : 5) * 1609.344 }] };
+  throw new Error('unexpected ' + url);
+};
 const { query, pool } = require('../src/db');
 
 let base;
@@ -1161,7 +1171,7 @@ test('handoff: unchecked bundles block pickup unless skipped; delivery is record
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() })
     .then((r) => decodeURIComponent(r.headers.get('location') || ''));
   const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Truck ' || gen_random_uuid()) RETURNING customer_id");
-  const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', fulfillment: 'delivery', sections: [{ area: 'trim', items: [
+  const res = await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', fulfillment: 'delivery', job_address_text: '123 Main St, Cheyenne WY', sections: [{ area: 'trim', items: [
     { product_id: await productId('TRM-D-STYLE-90'), pieces: 12, length_in: 120, unit_price: 10 }] }] });
   const id = Number((await res.json()).redirect.split('/').pop());
   assert.match(await form(`/orders/${id}/handoff`, { method: 'delivery' }), /This order is quote/);
@@ -2053,4 +2063,34 @@ test('customer portal: the one who sent a quote can cancel it, or cancel and del
   assert.match(decodeURIComponent(r.headers.get('location')), /Call us/);
   ({ rows: [o] } = await query('SELECT status FROM orders WHERE order_id = $1', [d]));
   assert.strictEqual(o.status, 'confirmed');
+});
+
+test('delivery: needs the job address; charge is $50 within 8 miles, else $50 + $0.55 a mile round trip; run on site is for standing seam', async () => {
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const eave = await productId('TRM-D-STYLE-EAVE');
+  const trim = [{ area: 'trim', items: [{ product_id: eave, pieces: 2, length_in: 120, width_in: 6, unit_price: 20 }] }];
+  const order = (extra, sections = trim) => ({ customer_id: c.customer_id, accessories_checked: true, closures: 'none', sections, ...extra });
+  let out = await (await post('/orders', order({ fulfillment: 'delivery' }))).json();
+  assert.match(out.error, /job address for delivery/);
+  out = await (await post('/orders', order({ fulfillment: 'delivery', job_address_text: '1 Near St, Cheyenne WY' }))).json();
+  assert.ok(out.ok, out.error);
+  let { rows: [o] } = await query('SELECT delivery_charge, delivery_miles FROM orders WHERE order_id = $1', [out.order_id]);
+  assert.deepStrictEqual([Number(o.delivery_charge), Number(o.delivery_miles)], [50, 5]);
+  out = await (await post('/orders', order({ fulfillment: 'delivery', job_address_text: '9 Far Rd, Burns WY' }))).json();
+  ({ rows: [o] } = await query('SELECT delivery_charge FROM orders WHERE order_id = $1', [out.order_id]));
+  assert.strictEqual(Number(o.delivery_charge), 63.2); // 50 + 0.55 x 24
+  // A charge typed in on the staff form stays.
+  out = await (await post('/orders', order({ fulfillment: 'delivery', job_address_text: '9 Far Rd, Burns WY', delivery_charge: 40 }))).json();
+  ({ rows: [o] } = await query('SELECT delivery_charge FROM orders WHERE order_id = $1', [out.order_id]));
+  assert.strictEqual(Number(o.delivery_charge), 40);
+  // Run on site: the address, and standing seam or Board & Batten on the quote.
+  out = await (await post('/orders', order({ fulfillment: 'run_on_site', job_address_text: '1 Near St' }))).json();
+  assert.match(out.error, /Run on site is for standing seam/);
+  const { rows: [ss] } = await query("SELECT p.product_id FROM products p JOIN panel_profiles pp USING (profile_id) WHERE pp.fastening = 'concealed' AND p.active LIMIT 1");
+  out = await (await post('/orders', order({ fulfillment: 'run_on_site', job_address_text: '1 Near St' },
+    [{ area: 'roof', items: [{ product_id: ss.product_id, pieces: 2, length_in: 120, unit_price: 5 }] }]))).json();
+  assert.ok(out.ok, out.error);
+  assert.match(await (await fetch(`${base}/orders/${out.order_id}`)).text(), /Run on site/);
+  assert.deepStrictEqual(await (await fetch(`${base}/orders/delivery-charge?address=${encodeURIComponent('9 Far Rd')}`)).json(),
+    { miles: 12, charge: 63.2, matched: 'TEST' });
 });

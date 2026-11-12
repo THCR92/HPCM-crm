@@ -1,5 +1,6 @@
 // Emails the CRM sends on its own (see src/mail.js for how sending is set up).
 const { query } = require('./db');
+const { fulfillLabel, atJob } = require('./fulfillment');
 const mail = require('./mail');
 const { SHOP_HOURS } = require('./routes/portal-shared');
 
@@ -78,12 +79,12 @@ async function orderReady(orderId) {
   const what = `order ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''}${o.po_number ? `, PO ${o.po_number}` : ''}`;
   const text = [
     `Hello${portal ? ` ${o.login_name.split(' ')[0]}` : ''},`, '',
-    o.fulfillment === 'delivery'
+    atJob(o.fulfillment)
       ? `Your ${what} is ready, and we'll be in touch to set up delivery.`
       : `Your ${what} is ready for pickup at our shop, 805 E Fox Farm Rd Unit B, Cheyenne. We're open ${SHOP_HOURS}.`,
     ...(portal ? ['', `See the order and the photos of each line here: ${site()}/portal/orders/${orderId}`] : []),
   ].join('\n');
-  await mail.send({ to, subject: `${o.po_number ? `PO ${o.po_number}: ` : ''}${o.order_number} is ready${o.fulfillment === 'delivery' ? '' : ' for pickup'}`, text, kind: 'order_ready', orderId });
+  await mail.send({ to, subject: `${o.po_number ? `PO ${o.po_number}: ` : ''}${o.order_number} is ready${atJob(o.fulfillment) ? '' : ' for pickup'}`, text, kind: 'order_ready', orderId });
 }
 
 // A link for a customer login to set its password (first invite or a reset).

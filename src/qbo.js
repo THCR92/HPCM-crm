@@ -16,6 +16,7 @@
 // All QuickBooks work runs one job at a time (later()) so token refreshes and
 // SyncTokens never race, and a slow or failing QuickBooks never holds up a page.
 const crypto = require('crypto');
+const { fulfillLabel, atJob } = require('./fulfillment');
 const { query } = require('./db');
 
 const OAUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
@@ -660,7 +661,7 @@ function dueDate(o) {
 // the job's saved address for deliveries.
 const SHOP_ADDR = { Line1: '805 E Fox Farm Rd Unit B', City: 'Cheyenne', CountrySubDivisionCode: 'WY', PostalCode: '82007', Country: 'US' };
 async function shipTo(o) {
-  if (o.fulfillment !== 'delivery') return SHOP_ADDR;
+  if (!atJob(o.fulfillment)) return SHOP_ADDR;
   if (!o.job_address_id) return null;
   const { rows: [a] } = await query('SELECT * FROM customer_addresses WHERE address_id = $1', [o.job_address_id]);
   return a ? toQbAddr(a) : null;

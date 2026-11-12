@@ -7,6 +7,7 @@
 //   C<id>     a coil           S<id>  a supply shelf (item and color)
 //   T<id>     a tool           B<id>  one bundle of an order line
 const QRCode = require('qrcode');
+const { fulfillLabel, atJob } = require('../fulfillment');
 const { query, tx } = require('../db');
 const { html, raw, layout, num, date } = require('../html');
 const { can, need, userName } = require('../auth');
@@ -200,7 +201,7 @@ router.get('/labels/order/:id(\\d+)', async (req, res) => {
   if (!o) return res.status(404).send('Order not found');
   const lines = await orderLines(o.order_id);
   const total = lines.reduce((a, l) => a + l.bundles.length, 0);
-  const head = [o.customer, o.job_name, o.need_by ? `Need by ${date(o.need_by)}` : '', o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'];
+  const head = [o.customer, o.job_name, o.need_by ? `Need by ${date(o.need_by)}` : '', fulfillLabel(o.fulfillment)];
   const labels = [];
   const onlyLine = Number(req.query.line) || null;
   const onlyBundle = Number(req.query.bundle) || null;
@@ -300,7 +301,7 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
       <div class="actions"><a class="btn primary" href="/labels/order/${o.order_id}">Print all labels</a>
         <a class="btn" href="/orders/${o.order_id}">Back to the order</a></div></div>
     <p><strong>${o.customer}</strong>${o.job_name ? ` · ${o.job_name}` : ''}${o.need_by ? ` · need by ${date(o.need_by)}` : ''}
-      · ${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</p>
+      · ${fulfillLabel(o.fulfillment)}</p>
     <p class="muted small">1. Count each line into bundles: type how many go in a bundle (10 makes 26 pieces 10 + 10 + 6), or each
       bundle's count (13, 13). The CRM remembers the bundle size for that item next time.
       2. Print the labels and stick one on each bundle. 3. Scan each bundle as you check it against the line.
@@ -346,10 +347,10 @@ router.get('/orders/:id(\\d+)/pack', need('production'), async (req, res) => {
       (${needPhotos.map((l) => `line ${l.line_no}`).join(', ')}).</div>` : ''}
     ${open && bundles.length && done === bundles.length && (!needPhotos.length || o.status === 'ready') ? (o.status === 'ready' ? html`
     <div class="card pack-done"><strong>Everything is checked and the order is ready to leave.</strong>
-      <a class="btn primary" href="/orders/${o.order_id}/handoff">${o.fulfillment === 'delivery' ? 'Delivered' : 'Picked up'}…</a></div>` : html`
+      <a class="btn primary" href="/orders/${o.order_id}/handoff">${atJob(o.fulfillment) ? 'Delivered' : 'Picked up'}…</a></div>` : html`
     <form method="post" action="/orders/${o.order_id}/pack/complete" class="card pack-done">
       <strong>Everything is checked.</strong>
-      <button class="btn primary">Mark ready for ${o.fulfillment === 'delivery' ? 'delivery' : 'pickup'}</button>
+      <button class="btn primary">Mark ready for ${atJob(o.fulfillment) ? 'delivery' : 'pickup'}</button>
     </form>`) : ''}`,
   }));
 });
@@ -466,7 +467,7 @@ router.get('/orders/:id(\\d+)/handoff', async (req, res) => {
     SELECT oi.order_item_id, p.name, EXISTS (SELECT 1 FROM tool_rentals r WHERE r.order_item_id = oi.order_item_id) AS out
     FROM order_items oi JOIN products p USING (product_id) WHERE oi.order_id = $1 AND p.is_rental`, [o.order_id]);
   const toolsNotOut = tools.filter((t) => !t.out);
-  const method = o.fulfillment === 'delivery' ? 'delivery' : 'pickup';
+  const method = atJob(o.fulfillment) ? 'delivery' : 'pickup';
   const open = HANDOFF_FROM.includes(o.status);
   res.send(layout({
     title: `${method === 'delivery' ? 'Deliver' : 'Pick up'} ${o.order_number}`, active: '/orders',
