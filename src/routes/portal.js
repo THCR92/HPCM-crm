@@ -325,6 +325,7 @@ router.get('/portal', signedIn, async (req, res) => {
     body: html`
     <div class="page-head"><h1>${l.customer_name}</h1>
       <div class="actions"><a class="btn primary" href="/portal/quotes/new">+ Start a quote</a></div></div>
+    ${req.query.deleted ? html`<div class="notice">The quote is cancelled and deleted from your list.</div>` : ''}
     ${rows.length ? '' : html`<p class="muted">Nothing here yet. Start a quote, or quotes we write for you will show up here.</p>`}
     ${groups.filter(([, list]) => list.length).map(([title, list]) => html`<h2>${title}</h2>${table(list)}`)}`,
   }));
@@ -408,6 +409,18 @@ router.get('/portal/orders/:id(\\d+)', signedIn, async (req, res) => {
     <div class="no-print">${steps(o)}</div>
     ${handoffBox(o)}
     ${decided || ''}
+    ${req.query.cancelled ? html`<div class="notice no-print">The quote is cancelled. We've let the office know.</div>` : ''}
+    ${canCancel(l, o) ? html`<details class="card no-print cancel-quote"><summary>Cancel or delete this quote</summary>
+      <form method="post" action="/portal/orders/${o.order_id}/cancel" class="form-grid"
+        onsubmit="return confirm(this.querySelector('[name=delete]:checked') ? 'Cancel this quote and delete it from your list?' : 'Cancel this quote?')">
+        <label class="span2">Why? (optional)<input name="reason" maxlength="500" placeholder="e.g. job was postponed"></label>
+        <label class="check span2"><input type="checkbox" name="delete" value="1"> Also delete it from my list</label>
+        <div class="span2 actions"><button class="btn danger">Cancel quote</button>
+          <span class="muted small">Approved orders already in the shop can't be cancelled here; call us at ${SHOP_PHONE}.</span></div>
+      </form></details>` : ''}
+    ${o.status === 'cancelled' ? html`<form method="post" action="/portal/orders/${o.order_id}/cancel" class="no-print"
+        onsubmit="return confirm('Delete this cancelled quote from your list?')">
+      <input type="hidden" name="delete" value="1"><button class="btn small">Delete from my list</button></form>` : ''}
     ${customerSheet(o, { linePrices: l.portal_line_prices, totals: l.portal_totals,
     fileUrl: (a) => `/portal/orders/${o.order_id}/files/${a.attachment_id}`, fileOk: (a) => a.from_customer })}
     ${answer}
@@ -442,6 +455,34 @@ router.post('/portal/orders/:id(\\d+)/decision', signedIn, async (req, res) => {
   if (!rowCount) return back('This quote can\'t be answered anymore. Call us if something needs to change.');
   notices.quoteAnswered(id);
   back();
+});
+
+// ---- cancelling a quote (Tyler 2026-11-12) --------------------------------------------
+// Whoever wrote the quote, or a login that can approve quotes, can cancel it while it's still
+// a quote. It stays in the CRM as Cancelled; "Delete" also takes it off their list.
+// Orders already confirmed for the shop can't be cancelled here: they call.
+const canCancel = (l, o) => o.status === 'quote' && (l.can_approve || o.customer_login_id === l.login_id);
+
+router.post('/portal/orders/:id(\\d+)/cancel', signedIn, async (req, res) => {
+  const l = req.login;
+  const o = await customerOrder(l, req.params.id);
+  if (!o) return res.status(404).send('Not found');
+  const del = req.body.delete === '1';
+  const back = (q) => res.redirect(`/portal/orders/${o.order_id}${q ? `?${q}` : ''}`);
+  if (o.status === 'cancelled' && del) {
+    // Already cancelled: just take it off their list.
+    await query('UPDATE orders SET portal_hidden = true WHERE order_id = $1', [o.order_id]);
+    return res.redirect('/portal?deleted=1');
+  }
+  if (!canCancel(l, o)) return back(`error=${encodeURIComponent(`This can't be cancelled here anymore. Call us at ${SHOP_PHONE}.`)}`);
+  const reason = String(req.body.reason || '').trim().slice(0, 500) || null;
+  const who = `${l.full_name} (customer)`;
+  const { rowCount } = await query(`UPDATE orders SET status = 'cancelled', updated_by = $2, portal_hidden = $3,
+      customer_decision_note = COALESCE($4, customer_decision_note)
+    WHERE order_id = $1 AND status = 'quote'`, [o.order_id, who, del, reason ? `Cancelled: ${reason}` : null]);
+  if (!rowCount) return back(`error=${encodeURIComponent('This quote changed while you were looking at it. Check it and try again.')}`);
+  notices.quoteCancelled(o.order_id, `${l.full_name} (${l.email})`, reason);
+  return del ? res.redirect('/portal?deleted=1') : back('cancelled=1');
 });
 
 // ---- my account ---------------------------------------------------------------------

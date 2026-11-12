@@ -42,6 +42,21 @@ async function quoteCreated(orderId) {
   await mail.send({ to, subject: `New quote ${o.order_number} from ${o.display_name}`, text, kind: 'quote_created', orderId });
 }
 
+// A customer cancelled a quote in the portal (Tyler 2026-11-12).
+async function quoteCancelled(orderId, who, reason) {
+  const { rows: [o] } = await query(`
+    SELECT o.order_number, o.job_name, o.po_number, c.display_name
+    FROM orders o JOIN customers c USING (customer_id) WHERE o.order_id = $1`, [orderId]);
+  if (!o) return;
+  const text = [
+    `${who} cancelled quote ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''}${o.po_number ? `, PO ${o.po_number}` : ''} for ${o.display_name} in the customer portal.`,
+    ...(reason ? ['', `Why: ${reason}`] : []),
+    '', `${site()}/orders/${orderId}`,
+  ].join('\n');
+  const to = [...new Set([QUOTE_INBOX, ...[].concat(await mail.managers() || [])].filter(Boolean))];
+  await mail.send({ to, subject: `Quote ${o.order_number} cancelled by ${o.display_name}`, text, kind: 'quote_cancelled', orderId });
+}
+
 // An order is packed and ready: tell the customer (their portal login, or the order's email).
 async function orderReady(orderId) {
   const { rows: [o] } = await query(`
@@ -87,6 +102,6 @@ async function passwordLink(login, url, { reset = false } = {}) {
 const later = (fn) => (...args) => { fn(...args).catch((err) => console.error('Notice failed:', err.message)); };
 
 module.exports = {
-  quoteAnswered: later(quoteAnswered), quoteCreated: later(quoteCreated), orderReady: later(orderReady), passwordLink,
-  now: { quoteAnswered, quoteCreated, orderReady },
+  quoteAnswered: later(quoteAnswered), quoteCreated: later(quoteCreated), quoteCancelled: later(quoteCancelled), orderReady: later(orderReady), passwordLink,
+  now: { quoteAnswered, quoteCreated, quoteCancelled, orderReady },
 };

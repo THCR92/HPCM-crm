@@ -2019,3 +2019,38 @@ test('quotes waiting on the office show as a count; expired quotes move to their
   const { rows: [e] } = await query("SELECT quote_expires_on - (now() AT TIME ZONE 'America/Denver')::date AS days FROM orders WHERE order_id = $1", [out.order_id]);
   assert.strictEqual(e.days, 14);
 });
+
+test('customer portal: the one who sent a quote can cancel it, or cancel and delete it from their list', async () => {
+  const { rows: [c] } = await query("INSERT INTO customers (display_name, portal_enabled) VALUES ('Portal C ' || gen_random_uuid(), true) RETURNING customer_id");
+  const { rows: [l] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, password_hash)
+    VALUES ($1, 'Pat Cancel', 'pat-' || gen_random_uuid() || '@example.com', 'x') RETURNING login_id`, [c.customer_id]);
+  const sid = `ptest-c-${l.login_id}-${Date.now()}`;
+  await query("INSERT INTO customer_sessions (session_id, login_id, expires_at) VALUES ($1, $2, now() + interval '1 day')", [sid, l.login_id]);
+  const cookie = `hpcm_portal=${sid}`;
+  const mk = async (status = 'quote') => (await query(`INSERT INTO orders (customer_id, customer_login_id, from_portal, status, need_by)
+    VALUES ($1, $2, true, $3, current_date + 30) RETURNING order_id`, [c.customer_id, l.login_id, status])).rows[0].order_id;
+  const cancel = (id, body) => fetch(`${base}/portal/orders/${id}/cancel`, { method: 'POST', redirect: 'manual',
+    headers: { cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() });
+  const a = await mk();
+  assert.match(await (await fetch(`${base}/portal/orders/${a}`, { headers: { cookie } })).text(), /Cancel or delete this quote/);
+  let r = await cancel(a, { reason: 'Job postponed' });
+  assert.match(r.headers.get('location'), /cancelled=1/);
+  let { rows: [o] } = await query('SELECT status, portal_hidden, customer_decision_note FROM orders WHERE order_id = $1', [a]);
+  assert.deepStrictEqual(o, { status: 'cancelled', portal_hidden: false, customer_decision_note: 'Cancelled: Job postponed' });
+  // Delete it from the list afterwards: still in the CRM.
+  r = await cancel(a, { delete: '1' });
+  assert.match(r.headers.get('location'), /deleted=1/);
+  ({ rows: [o] } = await query('SELECT status, portal_hidden FROM orders WHERE order_id = $1', [a]));
+  assert.deepStrictEqual(o, { status: 'cancelled', portal_hidden: true });
+  // Cancel and delete in one go.
+  const b = await mk();
+  await cancel(b, { delete: '1' });
+  ({ rows: [o] } = await query('SELECT status, portal_hidden FROM orders WHERE order_id = $1', [b]));
+  assert.deepStrictEqual(o, { status: 'cancelled', portal_hidden: true });
+  // An order already confirmed for the shop: they call instead.
+  const d = await mk('confirmed');
+  r = await cancel(d, {});
+  assert.match(decodeURIComponent(r.headers.get('location')), /Call us/);
+  ({ rows: [o] } = await query('SELECT status FROM orders WHERE order_id = $1', [d]));
+  assert.strictEqual(o.status, 'confirmed');
+});
