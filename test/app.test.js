@@ -1500,7 +1500,7 @@ test('customer portal: invite, set password, see only their quotes, approve; sta
   assert.match(res.headers.get('location'), /emailed=/);
   assert.strictEqual(sent[0].to, email);
   assert.match(sent[0].text, /\/portal\/set-password\//);
-  // One login per customer: adding again just changes it.
+  // The same email can't be added twice.
   await form(`/customers/${cid}/logins`, { full_name: 'Pat Buyer', email }, manager);
   assert.strictEqual((await query('SELECT count(*)::int AS n FROM customer_logins WHERE customer_id = $1', [cid])).rows[0].n, 1);
   assert.match(await (await fetch(`${base}/customers/${cid}`, { headers: { cookie: manager } })).text(), /\/portal\/set-password\//);
@@ -1840,4 +1840,47 @@ test('finish base premium sets every color in the finish; new colors start at it
   const page = await (await fetch(`${base}/colors?finish=1`)).text();
   assert.match(page, /Set for all Textured/);
   await query("UPDATE color_finishes SET premium_pct = NULL WHERE finish = 'textured'");
+});
+
+test('customer portal: several logins; one sees all the customer\'s quotes, another only their own', async () => {
+  const form = (path, body) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() });
+  const { rows: [c] } = await query("INSERT INTO customers (display_name, portal_enabled) VALUES ('Roofing ' || gen_random_uuid(), true) RETURNING customer_id");
+  const cid = c.customer_id;
+  const stamp = Date.now();
+  await form(`/customers/${cid}/logins`, { full_name: 'Taylor Office', email: `taylor-${stamp}@example.com`, sees_all: '1' });
+  await form(`/customers/${cid}/logins`, { full_name: 'Kameron Sales', email: `kameron-${stamp}@example.com`, sees_all: '0' });
+  const { rows: logins } = await query('SELECT login_id, full_name, sees_all FROM customer_logins WHERE customer_id = $1 ORDER BY full_name', [cid]);
+  assert.deepStrictEqual(logins.map((l) => [l.full_name, l.sees_all]), [['Kameron Sales', false], ['Taylor Office', true]]);
+  const [kameron, taylor] = logins.map((l) => l.login_id);
+  const page = await (await fetch(`${base}/customers/${cid}`)).text();
+  assert.match(page, /Only their own/);
+  assert.match(page, /Add another login/);
+
+  // A quote "for" Kameron, and one for nobody in particular; a stranger's login id is dropped.
+  const pbr = await productId('PNL-PBR-26');
+  const quote = async (who) => Number((await (await post('/orders', { customer_id: cid, customer_login_id: who, job_name: `Job ${who}`,
+    sections: [{ area: 'roof', items: [{ product_id: pbr, pieces: 2, length_in: 120, unit_price: 5 }] }] })).json()).redirect.split('/').pop());
+  const forK = await quote(kameron);
+  const forAll = await quote('');
+  assert.strictEqual((await query('SELECT customer_login_id FROM orders WHERE order_id = $1', [forK])).rows[0].customer_login_id, kameron);
+
+  const session = async (loginId) => {
+    const sid = `portal-test-${loginId}-${stamp}-${Math.random()}`;
+    await query("INSERT INTO customer_sessions (session_id, login_id, expires_at) VALUES ($1, $2, now() + interval '1 day')", [sid, loginId]);
+    return `hpcm_portal=${sid}`;
+  };
+  const home = async (loginId) => (await fetch(`${base}/portal`, { headers: { cookie: await session(loginId) }, anonymous: true })).text();
+  const k = await home(kameron);
+  assert.match(k, new RegExp(`/portal/orders/${forK}`));
+  assert.doesNotMatch(k, new RegExp(`/portal/orders/${forAll}\\b`));
+  const t = await home(taylor);
+  assert.match(t, new RegExp(`/portal/orders/${forK}`));
+  assert.match(t, new RegExp(`/portal/orders/${forAll}`));
+  const r = await fetch(`${base}/portal/orders/${forAll}`, { headers: { cookie: await session(kameron) }, anonymous: true, redirect: 'manual' });
+  assert.notStrictEqual(r.status, 200);
+
+  // Turning Kameron to "sees all" shows him everything.
+  await form(`/customers/${cid}/logins/${kameron}/access`, { sees_all: '1' });
+  assert.match(await home(kameron), new RegExp(`/portal/orders/${forAll}`));
 });

@@ -271,6 +271,20 @@
     </fieldset>`;
   }
 
+  // Which of the customer's portal logins it's for (Tyler 2026-11-12). Logins that see
+  // everything see it either way; one that sees only its own sees it only if picked here.
+  function loginSelect(h) {
+    const c = customers.find((x) => x.id === Number(h.customer_id));
+    const logins = (c && c.logins) || [];
+    if (!logins.length) return '';
+    return `<label>Who it's for (customer portal)
+      <select data-h="customer_login_id">
+        <option value="">Only their logins that see everything</option>
+        ${logins.map((l) => `<option value="${l.id}" ${l.id === Number(h.customer_login_id) ? 'selected' : ''}>${esc(l.name)}${
+    l.sees_all ? '' : ' (sees only their own)'}</option>`).join('')}
+      </select></label>`;
+  }
+
   function headerHtml() {
     const h = state.header;
     const field = (name, label, type = 'text', extra = '') =>
@@ -282,6 +296,7 @@
           <option value="">Pick a customer…</option>
           ${customers.map((c) => `<option value="${c.id}" ${c.id === Number(h.customer_id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
         </select><a href="/customers/new" target="_blank" class="small">+ New customer</a></span></label>`}
+      ${portal ? '' : loginSelect(h)}
       ${field('job_name', 'Job name')}
       ${field('po_number', 'Project / PO #')}
       ${field('need_by', 'Need by', 'date')}
@@ -641,6 +656,7 @@
         state.header.contact_email = state.header.contact_email || c.email || '';
         state.header.fulfillment = c.default_fulfillment;
         state.header.tax_exempt = !!c.tax_exempt;
+        state.header.customer_login_id = '';
         // A different premium: lines still at the old list price move to the new one.
         const pct = premiumPct();
         if (pct !== customerPct) {

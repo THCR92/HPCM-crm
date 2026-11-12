@@ -47,7 +47,7 @@ async function startSession(req, res, login) {
 }
 
 // The signed-in customer login, only while it's active and the customer's portal is on.
-const LOGIN_COLS = `l.login_id, l.customer_id, l.full_name, l.email, l.phone, l.can_approve,
+const LOGIN_COLS = `l.login_id, l.customer_id, l.full_name, l.email, l.phone, l.can_approve, l.sees_all,
   c.display_name AS customer_name, c.portal_line_prices, c.portal_totals`;
 async function loadLogin(req) {
   const id = cookieValue(req);
@@ -257,7 +257,10 @@ router.post('/portal/set-password/:token', async (req, res) => {
 });
 
 // ---- home: their quotes and orders ---------------------------------------------------
-const VISIBLE = "o.customer_id = $1 AND NOT o.portal_hidden";
+// A login sees the customer's quotes and orders: all of them, or only its own (Tyler 2026-11-12).
+// $1 is the customer; the login's own id goes in as a number.
+const visible = (l) => `o.customer_id = $1 AND NOT o.portal_hidden${
+  l.sees_all ? '' : ` AND o.customer_login_id = ${Number(l.login_id)}`}`;
 
 // Where an order is, as steps the customer can follow.
 function steps(o) {
@@ -299,7 +302,7 @@ router.get('/portal', signedIn, async (req, res) => {
            COALESCE(o.quote_expires_on, (o.created_at AT TIME ZONE 'America/Denver')::date + 30) AS valid_until,
            (o.created_at AT TIME ZONE 'America/Denver')::date AS quoted_on
     FROM orders o JOIN v_order_totals t USING (order_id)
-    WHERE ${VISIBLE}
+    WHERE ${visible(l)}
     ORDER BY o.order_id DESC`, [l.customer_id]);
   const groups = [
     ['Quotes waiting on your answer', rows.filter((o) => o.status === 'quote' && !o.customer_decision && o.valid_until >= today())],
@@ -346,7 +349,7 @@ function handoffBox(o) {
 
 // ---- one quote or order -----------------------------------------------------------------
 async function customerOrder(l, id) {
-  const { rows: [ok] } = await query(`SELECT 1 FROM orders o WHERE o.order_id = $2 AND ${VISIBLE}`, [l.customer_id, Number(id) || 0]);
+  const { rows: [ok] } = await query(`SELECT 1 FROM orders o WHERE o.order_id = $2 AND ${visible(l)}`, [l.customer_id, Number(id) || 0]);
   return ok ? loadOrder(Number(id)) : null;
 }
 
@@ -432,7 +435,7 @@ router.post('/portal/orders/:id(\\d+)/decision', signedIn, async (req, res) => {
            customer_decision_note = $5, customer_decline_reason = $6,
            need_by = CASE WHEN $3 = 'approved' THEN COALESCE($7::date, need_by) ELSE need_by END,
            po_number = CASE WHEN $3 = 'approved' THEN COALESCE($8, po_number) ELSE po_number END
-    WHERE o.order_id = $2 AND ${VISIBLE} AND o.status = 'quote' AND o.customer_decision IS NULL
+    WHERE o.order_id = $2 AND ${visible(l)} AND o.status = 'quote' AND o.customer_decision IS NULL
       AND COALESCE(o.quote_expires_on, (o.created_at AT TIME ZONE 'America/Denver')::date + 30) >= (now() AT TIME ZONE 'America/Denver')::date`,
   [l.customer_id, id, decision, `${l.full_name} (${l.email})`, note, reason, needBy, po]);
   if (!rowCount) return back('This quote can\'t be answered anymore. Call us if something needs to change.');
@@ -502,7 +505,8 @@ async function portalCatalog(l) {
     for (const p of catalog.products) p.price = 0;
     for (const r of catalog.screw_rules) r.price = 0;
   }
-  catalog.customers = catalog.customers.filter((c) => c.id === l.customer_id);
+  // Their own customer only, without the list of its logins.
+  catalog.customers = catalog.customers.filter((c) => c.id === l.customer_id).map(({ logins, ...c }) => c);
   return catalog;
 }
 
@@ -604,6 +608,8 @@ async function savePortalQuote(l, existing, body) {
   const note = String(body.customer_note || '').trim().slice(0, 2000);
   const header = {
     customer_id: l.customer_id,
+    // A quote a login writes is theirs; one being edited keeps whose it was.
+    customer_login_id: existing ? existing.customer_login_id : l.login_id,
     job_name: body.job_name, po_number: body.po_number, job_address_text: body.job_address_text,
     contact_phone: body.contact_phone, contact_email: body.contact_email, fulfillment: body.fulfillment,
     need_by: typeof body.need_by === 'string' && body.need_by >= today() ? body.need_by : null,

@@ -44,7 +44,11 @@ async function orderReady(orderId) {
     SELECT o.order_number, o.job_name, o.po_number, o.fulfillment, o.contact_email, c.email AS customer_email,
            c.portal_enabled, l.email AS login_email, l.full_name AS login_name
     FROM orders o JOIN customers c USING (customer_id)
-    LEFT JOIN customer_logins l ON l.customer_id = c.customer_id AND l.active AND l.password_hash IS NOT NULL
+    -- The login it's for, or else one that sees all the customer's orders.
+    LEFT JOIN LATERAL (SELECT l.email, l.full_name FROM customer_logins l
+      WHERE l.customer_id = c.customer_id AND l.active AND l.password_hash IS NOT NULL
+        AND (l.login_id = o.customer_login_id OR l.sees_all)
+      ORDER BY (l.login_id = o.customer_login_id) IS TRUE DESC, l.login_id LIMIT 1) l ON true
     WHERE o.order_id = $1`, [orderId]);
   if (!o) return;
   const portal = o.portal_enabled && o.login_email;

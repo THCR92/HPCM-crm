@@ -16,6 +16,11 @@ const Screws = require('../../public/screws');
 const {
   html, raw, layout, money, num, date, statusBadge, UNIT_LABEL, STATUS_LABEL, AREA_LABEL, LOST_REASONS, deleteButton, typedDelete,
 } = require('../html');
+// Day of the week for a date, e.g. "Fri" (for the need-by date on the cut sheet).
+const weekday = (d) => {
+  const [y, m, day] = (typeof d === 'string' ? d : d.toISOString()).slice(0, 10).split('-').map(Number);
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(Date.UTC(y, m - 1, day)).getUTCDay()];
+};
 
 const router = require('../async-router')();
 
@@ -109,7 +114,10 @@ async function loadCatalog() {
     FROM v_colors WHERE active AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.supplier_id = v_colors.supplier_id AND NOT s.active) ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
   const { rows: customers } = await query(`
     SELECT c.customer_id AS id, c.display_name AS name, c.phone, c.email, c.default_fulfillment, c.tax_exempt,
-           COALESCE(tp.premium_pct, 0) AS premium
+           COALESCE(tp.premium_pct, 0) AS premium,
+           -- Portal logins, for "Who it's for" on the quote form.
+           (SELECT json_agg(json_build_object('id', l.login_id, 'name', l.full_name, 'sees_all', l.sees_all) ORDER BY l.full_name)
+              FROM customer_logins l WHERE l.customer_id = c.customer_id AND l.active) AS logins
     FROM customers c LEFT JOIN customer_type_premiums tp USING (customer_type)
     WHERE c.active ORDER BY lower(c.display_name)`);
   const { rows: [sp] } = await query("SELECT value FROM app_settings WHERE key = 'sized_trim_pricing'");
@@ -178,6 +186,7 @@ function parseHeader(b) {
   if (!Number.isInteger(customerId) || customerId <= 0) throw new UserError('Pick a customer.');
   return {
     customer_id: customerId,
+    customer_login_id: Number(b.customer_login_id) > 0 ? Number(b.customer_login_id) : null,
     job_name: text(b.job_name),
     po_number: text(b.po_number),
     job_address_text: text(b.job_address_text),
@@ -334,6 +343,12 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
   const pct = await CustomerTypes.premiumFor(header.customer_id);
   if (pct) for (const p of prodRows) p.price = CustomerTypes.withPremium(p.price, pct);
   const productsById = new Map(prodRows.map((p) => [p.id, p]));
+  // "Who it's for" must be one of this customer's logins.
+  if (header.customer_login_id) {
+    const { rows: [ok] } = await query('SELECT 1 FROM customer_logins WHERE login_id = $1 AND customer_id = $2',
+      [header.customer_login_id, header.customer_id]);
+    if (!ok) header.customer_login_id = null;
+  }
   const sections = await withScrews(parseSections(body, productsById), header, productsById);
 
   return tx(async (db) => {
@@ -922,11 +937,14 @@ router.get('/:id(\\d+)', async (req, res) => {
           805 E Fox Farm Rd Unit B · Cheyenne, WY 82007 · (307) 331-6449</div>
         <div class="sheet-no">${docName} <strong>${o.order_number}</strong><br>${STATUS_LABEL[o.status]}</div>
       </div>
+      <!-- Big enough to find the job in a stack of sheets (Tyler 2026-11-12). -->
+      <div class="sheet-key">
+        <div class="key key-need"><span>Need by</span><strong>${o.need_by ? html`${weekday(o.need_by)} ${date(o.need_by)}` : '—'}</strong></div>
+        <div class="key key-cust"><span>Customer</span><strong><a href="/customers/${o.customer_id}">${o.customer_name}</a></strong></div>
+        <div class="key key-po"><span>Project / PO #</span><strong>${o.po_number || '—'}</strong></div>
+      </div>
       <dl class="sheet-fields">
-        <dt>Contractor / Customer</dt><dd><a href="/customers/${o.customer_id}">${o.customer_name}</a></dd>
         <dt>Job name</dt><dd>${o.job_name}</dd>
-        <dt>Project / PO #</dt><dd>${o.po_number}</dd>
-        <dt>Need by</dt><dd>${date(o.need_by)}</dd>
         <dt>Job address</dt><dd>${o.job_address_text}</dd>
         <dt>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</dt><dd>${o.status === 'quote'
           ? `Quoted ${date(o.quoted_on)}` : `Ordered ${date(o.ordered_on)}`}</dd>

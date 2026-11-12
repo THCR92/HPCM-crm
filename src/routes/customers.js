@@ -123,30 +123,43 @@ async function portalCard(c, req) {
       <label class="check"><input type="checkbox" name="line_prices" value="1" ${c.portal_line_prices ? 'checked' : ''}> Show line prices</label>
       <label class="check"><input type="checkbox" name="totals" value="1" ${c.portal_totals ? 'checked' : ''}> Show order totals</label>
       <noscript><button class="btn small">Save</button></noscript><span class="muted small">Saves when you tick a box.</span></form>` : ''}
-    ${logins.map((l) => html`<table class="list">
-      <thead><tr><th>Login</th><th>Email</th><th>Last signed in</th><th></th></tr></thead>
-      <tbody><tr class="${l.active ? '' : 'muted'}">
+    ${logins.length ? html`<table class="list">
+      <thead><tr><th>Login</th><th>Email</th><th>Sees</th><th>Last signed in</th><th></th></tr></thead>
+      <tbody>${logins.map((l) => html`<tr class="${l.active ? '' : 'muted'}">
         <td>${l.full_name}${l.active ? '' : ' (turned off)'}${l.password_hash ? '' : html` <span class="muted small">· hasn't set a password yet</span>`}</td>
-        <td>${l.email}</td><td>${l.last_login_at ? date(l.last_login_at) : ''}</td>
+        <td>${l.email}</td>
+        <td>${edit ? html`<form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}/access" class="inline" onchange="this.submit()">
+            <select name="sees_all" aria-label="What ${l.full_name} sees">
+              <option value="1" ${l.sees_all ? 'selected' : ''}>All of ${c.display_name}'s quotes and orders</option>
+              <option value="0" ${l.sees_all ? '' : 'selected'}>Only their own</option></select>
+            <noscript><button class="btn small">Save</button></noscript></form>`
+    : l.sees_all ? 'All quotes and orders' : 'Only their own'}</td>
+        <td>${l.last_login_at ? date(l.last_login_at) : ''}</td>
         <td class="num">${edit ? html`
           <form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}/link" class="inline"><button class="btn small">${l.password_hash ? 'Password reset link' : 'New invite link'}</button></form>
           <form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}" class="inline">
             <input type="hidden" name="active" value="${l.active ? '0' : '1'}">
             <button class="btn small">${l.active ? 'Turn off' : 'Turn on'}</button></form>` : ''}</td></tr>
-        ${edit && l.active ? html`<tr class="invite-row"><td colspan="4">${linkBox(l)}</td></tr>` : ''}</tbody></table>
-      ${edit ? html`<details><summary>Change name or email</summary>
-        <form method="post" action="/customers/${c.customer_id}/logins" class="form-grid">
-          <label>Name<input name="full_name" required value="${l.full_name}"></label>
-          <label>Email<input name="email" type="email" required value="${l.email}"></label>
-          <div class="span2 actions"><button class="btn">Save login</button>
-            <span class="muted small">The customer can also change these themselves under My account.</span></div>
-        </form></details>` : ''}`)}
-    ${edit && !logins.length ? html`<details open><summary>Add their login</summary>
+        ${edit && l.active ? html`<tr class="invite-row"><td colspan="5">${linkBox(l)}</td></tr>` : ''}
+        ${edit ? html`<tr class="invite-row"><td colspan="5"><details><summary class="small">Change ${l.full_name}'s name or email</summary>
+          <form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}/edit" class="form-grid">
+            <label>Name<input name="full_name" required value="${l.full_name}"></label>
+            <label>Email<input name="email" type="email" required value="${l.email}"></label>
+            <div class="span2 actions"><button class="btn">Save login</button>
+              <span class="muted small">They can also change these themselves under My account.</span></div>
+          </form></details></td></tr>` : ''}`)}</tbody></table>
+    <p class="muted small">A login that sees only their own gets the quotes they write in the portal, and the ones you set
+      "Who it's for" to them on the quote form.</p>` : ''}
+    ${edit ? html`<details ${logins.length ? '' : 'open'}><summary>${logins.length ? 'Add another login' : 'Add their login'}</summary>
       <form method="post" action="/customers/${c.customer_id}/logins" class="form-grid">
-        <label>Name<input name="full_name" required value="${[c.first_name, c.last_name].filter(Boolean).join(' ')}"></label>
-        <label>Email<input name="email" type="email" required value="${c.email || ''}"></label>
+        <label>Name<input name="full_name" required value="${logins.length ? '' : [c.first_name, c.last_name].filter(Boolean).join(' ')}"></label>
+        <label>Email<input name="email" type="email" required value="${logins.length ? '' : c.email || ''}"></label>
+        <label class="span2">Sees
+          <select name="sees_all">
+            <option value="1" ${logins.length ? '' : 'selected'}>All of ${c.display_name}'s quotes and orders (e.g. office or production)</option>
+            <option value="0" ${logins.length ? 'selected' : ''}>Only their own quotes and orders (e.g. a salesman)</option></select></label>
         <div class="span2 actions"><button class="btn primary">Add login</button>
-          <span class="muted small">One login per customer. You'll get a link to send them so they can set their own password.</span></div>
+          <span class="muted small">You'll get a link to send them so they can set their own password.</span></div>
       </form></details>` : ''}
   </section>`;
 }
@@ -164,12 +177,11 @@ router.post('/:id(\\d+)/logins', need('portal'), async (req, res) => {
   const back = (err) => res.redirect(`/customers/${req.params.id}${err ? `?portal_error=${encodeURIComponent(err)}` : ''}#portal`);
   if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return back('Enter a name and an email address.');
   try {
-    // One login per customer: adding again changes its name and email.
-    const { rows: [l] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, invite_token, invite_expires_at, created_by)
-      VALUES ($1, $2, $3, $4, now() + make_interval(days => $5), $6)
-      ON CONFLICT (customer_id) DO UPDATE SET full_name = EXCLUDED.full_name, email = EXCLUDED.email
-      RETURNING login_id, (xmax = 0) AS added`,
-    [req.params.id, name, email, newToken(), INVITE_DAYS, userName()]);
+    // Several logins per customer (Tyler 2026-11-12), each seeing all or only their own.
+    const { rows: [l] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, invite_token, invite_expires_at, created_by, sees_all)
+      VALUES ($1, $2, $3, $4, now() + make_interval(days => $5), $6, $7)
+      RETURNING login_id, true AS added`,
+    [req.params.id, name, email, newToken(), INVITE_DAYS, userName(), req.body.sees_all !== '0']);
     // Adding a login means they should be able to use it: turn the portal on.
     await query('UPDATE customers SET portal_enabled = true WHERE customer_id = $1', [req.params.id]);
     // A new login gets its invite by email right away (once email is set up).
@@ -177,10 +189,31 @@ router.post('/:id(\\d+)/logins', need('portal'), async (req, res) => {
       return res.redirect(`/customers/${req.params.id}?emailed=${encodeURIComponent(email)}#portal`);
     }
   } catch (err) {
-    if (err.code === '23505') return back('That email is already the login for another customer.');
+    if (err.code === '23505') return back('That email already has a login.');
     throw err;
   }
   back();
+});
+
+router.post('/:id(\\d+)/logins/:lid(\\d+)/edit', need('portal'), async (req, res) => {
+  const name = String(req.body.full_name || '').trim();
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const back = (err) => res.redirect(`/customers/${req.params.id}${err ? `?portal_error=${encodeURIComponent(err)}` : ''}#portal`);
+  if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return back('Enter a name and an email address.');
+  try {
+    await query('UPDATE customer_logins SET full_name = $3, email = $4 WHERE login_id = $2 AND customer_id = $1',
+      [req.params.id, req.params.lid, name, email]);
+  } catch (err) {
+    if (err.code === '23505') return back('That email already has a login.');
+    throw err;
+  }
+  back();
+});
+
+router.post('/:id(\\d+)/logins/:lid(\\d+)/access', need('portal'), async (req, res) => {
+  await query('UPDATE customer_logins SET sees_all = $3 WHERE login_id = $2 AND customer_id = $1',
+    [req.params.id, req.params.lid, req.body.sees_all !== '0']);
+  res.redirect(`/customers/${req.params.id}#portal`);
 });
 
 router.post('/:id(\\d+)/logins/:lid(\\d+)/link', need('portal'), async (req, res) => {
