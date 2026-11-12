@@ -42,7 +42,8 @@ router.get('/products', need('prices'), async (req, res) => {
       <summary><strong>Customer type premiums</strong> <span class="muted small">${CustomerTypes.TYPES.filter((t) => premiums[t])
     .map((t) => `${CustomerTypes.TYPE_LABEL[t]} ${premiums[t] > 0 ? '+' : ''}${premiums[t]}%`).join(' · ') || 'none set: everyone pays list price'}</span></summary>
       <p class="muted small">A percent added to price list prices (with any color premium) on new quote lines, by the customer's type.
-        Use a minus number for a discount, e.g. -10 for supply houses. Quotes already written keep their prices.</p>
+        Use a minus number for a discount, e.g. -10 for supply houses. Quotes already written keep their prices.
+        A customer can have their own percent instead (their Edit page).</p>
       ${can('catalog') ? html`<form method="post" action="/settings/premiums" class="form-row">
         ${CustomerTypes.TYPES.map((t) => html`<label>${CustomerTypes.TYPE_LABEL[t]} %
           <input name="${t}" type="number" step="0.01" min="-99" max="500" value="${premiums[t] || ''}" placeholder="0" style="width:6rem"></label>`)}

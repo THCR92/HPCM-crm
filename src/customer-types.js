@@ -3,7 +3,7 @@
 const { query } = require('./db');
 
 const TYPE_LABEL = {
-  contractor: 'Contractor / Builder', homeowner: 'Homeowner', supply_house: 'Supply house',
+  contractor: 'Contractor / Builder', vip_contractor: 'VIP Contractor', homeowner: 'Homeowner', supply_house: 'Supply house',
   commercial: 'Commercial', dealer: 'Dealer', other: 'Other',
 };
 const TYPES = Object.keys(TYPE_LABEL);
@@ -18,7 +18,8 @@ async function premiums(db = { query }) {
 
 async function premiumFor(customerId, db = { query }) {
   if (!customerId) return 0;
-  const { rows: [r] } = await db.query(`SELECT COALESCE(p.premium_pct, 0) AS pct FROM customers c
+  // The customer's own adjustment, when set, replaces their type's (Tyler 2026-11-12).
+  const { rows: [r] } = await db.query(`SELECT COALESCE(c.premium_pct, p.premium_pct, 0) AS pct FROM customers c
     LEFT JOIN customer_type_premiums p USING (customer_type) WHERE c.customer_id = $1`, [customerId]);
   return r ? Number(r.pct) || 0 : 0;
 }

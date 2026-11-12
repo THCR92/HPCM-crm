@@ -114,7 +114,7 @@ async function loadCatalog() {
     FROM v_colors WHERE active AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.supplier_id = v_colors.supplier_id AND NOT s.active) ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
   const { rows: customers } = await query(`
     SELECT c.customer_id AS id, c.display_name AS name, c.phone, c.email, c.default_fulfillment, c.tax_exempt,
-           COALESCE(tp.premium_pct, 0) AS premium,
+           COALESCE(c.premium_pct, tp.premium_pct, 0) AS premium,
            -- Portal logins, for "Who it's for" on the quote form.
            (SELECT json_agg(json_build_object('id', l.login_id, 'name', l.full_name, 'sees_all', l.sees_all) ORDER BY l.full_name)
               FROM customer_logins l WHERE l.customer_id = c.customer_id AND l.active) AS logins

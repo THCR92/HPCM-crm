@@ -730,9 +730,9 @@ test('screws: per-profile rules for through-fastener, nail flange and snap lock 
     WHERE oi.order_id = $1 AND oi.product_id IN (SELECT product_id FROM products WHERE category IN ('fastener', 'accessory'))
     ORDER BY oi.line_no`, [id])).rows;
   let rows = await screws();
-  // Woodtite is $50 a bag since the 35% margin price update (migration 048).
+  // Woodtite is $30 a bag (Tyler 2026-11-12, migration 053).
   assert.deepStrictEqual(rows.map((r) => [r.product_id, r.color_id, r.pieces, r.unit_price, r.is_auto]), [
-    [woodtite, red, 4, 50, true], [clip, null, 50, 0.55, true], [panhead, red, 1, 38, true], [woodtite, tan, 1, 50, true]]);
+    [woodtite, red, 4, 30, true], [clip, null, 50, 0.55, true], [panhead, red, 1, 38, true], [woodtite, tan, 1, 30, true]]);
   assert.match(rows[0].description, /^900 screws: 10 squares x 90 per square, 250 per bag$/);
   assert.match(rows[2].description, /^136 screws: 2 every 2' on 100' of panel \+ 1 every 2' on 65' of panel, 250 per bag$/);
 
@@ -1807,7 +1807,8 @@ test('customer type premiums: homeowners +13% on list prices and auto closures; 
   assert.match(list, /Homeowner \+15%/);
   assert.match(list, /Supply house -10%/);
   await query("UPDATE customer_type_premiums SET premium_pct = 13 WHERE customer_type = 'homeowner'");
-  await query("DELETE FROM customer_type_premiums WHERE customer_type <> 'homeowner'");
+  await query("DELETE FROM customer_type_premiums WHERE customer_type NOT IN ('homeowner', 'vip_contractor')");
+  await query("UPDATE customer_type_premiums SET premium_pct = -15 WHERE customer_type = 'vip_contractor'");
 });
 
 test('colors can be removed; one already on an order is hidden instead', async () => {
@@ -1929,4 +1930,34 @@ test('quote form uploads: the save says which saved line each form line became, 
   assert.ok((await r.json()).ok);
   const { rows: [a] } = await query('SELECT order_item_id, filename FROM order_attachments WHERE order_id = $1', [out.order_id]);
   assert.deepStrictEqual(a, { order_item_id: line.order_item_id, filename: 'eave drawing.pdf' });
+});
+
+test('VIP Contractor pays 15% below list; a customer can have their own percent instead', async () => {
+  await query("UPDATE customer_type_premiums SET premium_pct = -15 WHERE customer_type = 'vip_contractor'");
+  const { rows: [v] } = await query(
+    "INSERT INTO customers (display_name, customer_type) VALUES ('Test ' || gen_random_uuid(), 'vip_contractor') RETURNING customer_id");
+  const CustomerTypes = require('../src/customer-types');
+  assert.strictEqual(await CustomerTypes.premiumFor(v.customer_id), -15);
+  // Their own percent, set on their Edit page, replaces the type's.
+  const form = await (await fetch(`${base}/customers/${v.customer_id}/edit`)).text();
+  assert.match(form, /name="premium_pct"/);
+  assert.match(form, /VIP Contractor -15%/);
+  const { rows: [c] } = await query('SELECT * FROM customers WHERE customer_id = $1', [v.customer_id]);
+  const body = new URLSearchParams({ display_name: c.display_name, customer_type: 'vip_contractor', premium_pct: '-20' });
+  const r = await fetch(`${base}/customers/${v.customer_id}`, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+  assert.strictEqual(r.status, 302);
+  assert.strictEqual(await CustomerTypes.premiumFor(v.customer_id), -20);
+  const page = await (await fetch(`${base}/customers/${v.customer_id}`)).text();
+  assert.match(page, /20% below list \(set for this customer\)/);
+  const eave = await productId('TRM-D-STYLE-EAVE');
+  const { rows: [lp] } = await query('SELECT unit_price FROM v_current_prices WHERE product_id = $1', [eave]);
+  const { loadCatalog } = require('../src/routes/orders');
+  assert.strictEqual(Number((await loadCatalog()).customers.find((x) => x.id === v.customer_id).premium), -20);
+  // Blank goes back to the type's.
+  body.set('premium_pct', '');
+  await fetch(`${base}/customers/${v.customer_id}`, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+  assert.strictEqual(await CustomerTypes.premiumFor(v.customer_id), -15);
+  assert.ok(lp);
 });

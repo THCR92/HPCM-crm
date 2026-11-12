@@ -6,13 +6,13 @@ const qbo = require('../qbo');
 
 const router = require('../async-router')();
 
-const { TYPES, TYPE_LABEL } = require('../customer-types');
+const { TYPES, TYPE_LABEL, premiums: typePremiums } = require('../customer-types');
 const FIELDS = ['display_name', 'customer_type', 'company_name', 'first_name', 'last_name',
   'email', 'phone', 'mobile', 'payment_terms', 'default_fulfillment', 'resale_cert_number', 'notes'];
 
 const clean = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
 
-function customerForm(c, { action, error }) {
+function customerForm(c, { action, error, premiums = {} }) {
   const v = (k) => c[k] ?? '';
   const opt = (val, cur, label = val) =>
     html`<option value="${val}" ${val === cur ? 'selected' : ''}>${label}</option>`;
@@ -24,6 +24,11 @@ function customerForm(c, { action, error }) {
     <label>Type
       <select name="customer_type">${TYPES.map((t) => opt(t, c.customer_type || 'contractor', TYPE_LABEL[t]))}</select>
       <span class="muted small">Sets the price premium on their quotes (Price list page).</span></label>
+    ${can('catalog') ? html`<label>Their own price adjustment %
+      <input name="premium_pct" type="number" step="0.01" min="-99" max="500" value="${c.premium_pct === null || c.premium_pct === undefined ? '' : Number(c.premium_pct)}"
+        placeholder="their type's" style="width:8rem">
+      <span class="muted small">Blank uses their type's percent (${TYPES.filter((t) => premiums[t]).map((t) => `${TYPE_LABEL[t]} ${premiums[t] > 0 ? '+' : ''}${premiums[t]}%`).join(', ') || 'none set'}).
+        Minus is a discount, e.g. -20 for 20% below list.</span></label>` : ''}
     <label>Company<input name="company_name" value="${v('company_name')}"></label>
     <label>First name<input name="first_name" value="${v('first_name')}"></label>
     <label>Last name<input name="last_name" value="${v('last_name')}"></label>
@@ -50,6 +55,10 @@ function fromBody(body) {
   c.default_fulfillment = c.default_fulfillment === 'delivery' ? 'delivery' : 'pickup';
   c.payment_terms = c.payment_terms || 'Due on receipt';
   c.tax_exempt = body.tax_exempt === '1';
+  // Their own percent (Tyler 2026-11-12): only those who set prices can change it.
+  const pct = String(body.premium_pct ?? '').trim();
+  c.premium_pct = pct === '' || !(Number(pct) > -100 && Number(pct) <= 500) ? null : Number(pct);
+  c.set_premium = can('catalog') && body.premium_pct !== undefined;
   return c;
 }
 
@@ -265,10 +274,10 @@ router.get('/', async (req, res) => {
   }));
 });
 
-router.get('/new', need('customers'), (req, res) => {
+router.get('/new', need('customers'), async (req, res) => {
   res.send(layout({
     title: 'New customer', active: '/customers',
-    body: html`<h1>New customer</h1>${customerForm({}, { action: '/customers' })}`,
+    body: html`<h1>New customer</h1>${customerForm({}, { action: '/customers', premiums: await typePremiums() })}`,
   }));
 });
 
@@ -276,15 +285,15 @@ router.post('/', need('customers'), async (req, res) => {
   const c = fromBody(req.body);
   try {
     const { rows } = await query(`
-      INSERT INTO customers (${FIELDS.join(', ')}, tax_exempt)
-      VALUES (${FIELDS.map((_, i) => `$${i + 1}`).join(', ')}, $${FIELDS.length + 1})
-      RETURNING customer_id`, [...FIELDS.map((f) => c[f]), c.tax_exempt]);
+      INSERT INTO customers (${FIELDS.join(', ')}, tax_exempt, premium_pct)
+      VALUES (${FIELDS.map((_, i) => `$${i + 1}`).join(', ')}, $${FIELDS.length + 1}, $${FIELDS.length + 2})
+      RETURNING customer_id`, [...FIELDS.map((f) => c[f]), c.tax_exempt, c.set_premium ? c.premium_pct : null]);
     qbo.customerChanged(rows[0].customer_id);
     res.redirect(`/customers/${rows[0].customer_id}`);
   } catch (err) {
     res.status(400).send(layout({
       title: 'New customer', active: '/customers',
-      body: html`<h1>New customer</h1>${customerForm(c, { action: '/customers', error: friendlyError(err) })}`,
+      body: html`<h1>New customer</h1>${customerForm(c, { action: '/customers', error: friendlyError(err), premiums: await typePremiums() })}`,
     }));
   }
 });
@@ -312,6 +321,12 @@ router.get('/:id(\\d+)', async (req, res) => {
     </div>
     <div class="card"><dl class="details">
       ${row('Type', TYPE_LABEL[c.customer_type] || c.customer_type)}${row('Company', c.company_name)}
+      ${await (async () => {
+    const own = c.premium_pct !== null && c.premium_pct !== undefined;
+    const pct = own ? Number(c.premium_pct) : ((await typePremiums())[c.customer_type] || 0);
+    const said = pct ? `${Math.abs(pct)}% ${pct < 0 ? 'below' : 'above'} list` : 'List price';
+    return row('Pricing', `${said}${own ? ' (set for this customer)' : ` (${TYPE_LABEL[c.customer_type] || 'type'} rate)`}`);
+  })()}
       ${row('Contact', [c.first_name, c.last_name].filter(Boolean).join(' '))}
       ${row('Phone', c.phone)}${row('Mobile', c.mobile)}${row('Email', c.email)}
       ${row('Terms', c.payment_terms)}${row('Usually', c.default_fulfillment === 'delivery' ? 'Gets delivery' : 'Picks up')}
@@ -348,7 +363,7 @@ router.get('/:id(\\d+)/edit', need('customers'), async (req, res) => {
   if (!c) return res.status(404).send('Customer not found');
   res.send(layout({
     title: `Edit ${c.display_name}`, active: '/customers',
-    body: html`<h1>Edit customer</h1>${customerForm(c, { action: `/customers/${c.customer_id}` })}`,
+    body: html`<h1>Edit customer</h1>${customerForm(c, { action: `/customers/${c.customer_id}`, premiums: await typePremiums() })}`,
   }));
 });
 
@@ -357,15 +372,16 @@ router.post('/:id(\\d+)', need('customers'), async (req, res) => {
   try {
     await query(`
       UPDATE customers SET ${FIELDS.map((f, i) => `${f} = $${i + 1}`).join(', ')},
-             tax_exempt = $${FIELDS.length + 1}
+             tax_exempt = $${FIELDS.length + 1},
+             premium_pct = CASE WHEN $${FIELDS.length + 3} THEN $${FIELDS.length + 4}::numeric ELSE premium_pct END
       WHERE customer_id = $${FIELDS.length + 2}`,
-    [...FIELDS.map((f) => c[f]), c.tax_exempt, req.params.id]);
+    [...FIELDS.map((f) => c[f]), c.tax_exempt, req.params.id, c.set_premium, c.premium_pct]);
     qbo.customerChanged(Number(req.params.id));
     res.redirect(`/customers/${req.params.id}`);
   } catch (err) {
     res.status(400).send(layout({
       title: 'Edit customer', active: '/customers',
-      body: html`<h1>Edit customer</h1>${customerForm(c, { action: `/customers/${req.params.id}`, error: friendlyError(err) })}`,
+      body: html`<h1>Edit customer</h1>${customerForm(c, { action: `/customers/${req.params.id}`, error: friendlyError(err), premiums: await typePremiums() })}`,
     }));
   }
 });
