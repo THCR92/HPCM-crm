@@ -421,3 +421,10 @@ h2.inline-h { display: inline; }
 .pitch-opt .unit { flex: none; }
 .pitch-opt input.missing { border-color: var(--danger, #c0392b); }
 .lines .pitch { white-space: nowrap; margin-left: .4rem; }
+
+/* Upload a drawing on a quote line (Tyler 2026-11-12). */
+.line-files { display: flex; flex-wrap: wrap; align-items: center; margin-top: .3rem; font-size: .85rem; }
+.line-files > * { margin-right: .5rem; margin-bottom: .2rem; }
+.order-form label.upload-btn { display: inline-block; cursor: pointer; margin: 0 .5rem .2rem 0; }
+.line-files .file-name { overflow-wrap: anywhere; }
+.drawing-reminder { margin: .5rem 0; }

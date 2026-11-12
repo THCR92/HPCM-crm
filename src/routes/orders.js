@@ -275,6 +275,8 @@ function parseSections(b, productsById) {
         screw_option: text(it.screw_option),
         qbo_item_id: text(it.qbo_item_id),
         pitch: p.pitches ? parsePitch(it.pitch, p.pitches, `${where(ii + 1)}: ${p.name}`) : null,
+        // The form's key for the line, so files picked on it can follow it once it's saved.
+        ckey: text(it.ckey, 40),
       };
     });
     return {
@@ -347,7 +349,8 @@ function withClosures(rest, auto, header, productsById) {
 }
 
 // `who` names the person saving when it isn't a staff sign-in (the customer portal).
-async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
+// keys: filled with { the form's line key: saved line id }, for uploading files to new lines.
+async function saveOrder(orderId, body, { who = userName(), extra = {}, keys = null } = {}) {
   const header = { ...parseHeader(body), ...extra };
   header.updated_by = who;
   if (!orderId) header.created_by = who;
@@ -458,6 +461,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
             VALUES ($14, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING order_item_id`, [...vals, orderId]);
           itemId = r.order_item_id;
         }
+        if (keys && it.ckey) keys[it.ckey] = itemId;
         if (it.product.category === 'custom_trim') {
           await db.query(`
             INSERT INTO order_item_trim_specs (order_item_id, girth_in) VALUES ($1, $2)
@@ -583,10 +587,11 @@ router.get('/:id(\\d+)/edit', need('quotes'), async (req, res) => {
 
 const saveHandler = (getId) => async (req, res) => {
   try {
-    const id = await saveOrder(getId(req), req.body);
+    const keys = {};
+    const id = await saveOrder(getId(req), req.body, { keys });
     // A confirmed order's QuickBooks invoice gets the changes (quotes aren't sent).
     qbo.orderCompleted(id);
-    res.json({ ok: true, redirect: `/orders/${id}` });
+    res.json({ ok: true, redirect: `/orders/${id}`, order_id: id, keys });
   } catch (err) {
     const msg = dbMessage(err);
     if (msg) return res.status(400).json({ ok: false, error: msg });

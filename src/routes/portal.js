@@ -580,7 +580,7 @@ router.get('/portal/orders/:id(\\d+)/edit', signedIn, async (req, res) => {
 // Saving: only the customer's own job details and lines. Prices always come from the
 // price list here (a line we already priced keeps our price); charges, discounts and
 // tax are ours to set.
-async function savePortalQuote(l, existing, body) {
+async function savePortalQuote(l, existing, body, keys = null) {
   const { rows: prices } = await query(`
     SELECT p.product_id, p.name, p.category, p.active, cp.unit_price, p.pricing_unit AS unit, p.girth_in AS girth,
            p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate
@@ -627,7 +627,7 @@ async function savePortalQuote(l, existing, body) {
     internal_notes: note ? `Customer note: ${note}` : null,
     sections,
   };
-  return saveOrder(existing ? existing.order_id : null, header, { who: `${l.full_name} (customer)`, extra: { from_portal: true } });
+  return saveOrder(existing ? existing.order_id : null, header, { who: `${l.full_name} (customer)`, extra: { from_portal: true }, keys });
 }
 
 const saveRoute = (getExisting) => [signedIn, express.json({ limit: '1mb' }), async (req, res) => {
@@ -635,9 +635,10 @@ const saveRoute = (getExisting) => [signedIn, express.json({ limit: '1mb' }), as
   try {
     const existing = await getExisting(req);
     if (existing === false) return res.status(400).json({ ok: false, error: 'This quote can\'t be changed anymore. Call us if something needs to change.' });
-    const id = await savePortalQuote(l, existing, req.body || {});
+    const keys = {};
+    const id = await savePortalQuote(l, existing, req.body || {}, keys);
     if (!existing) notices.quoteCreated(id);
-    res.json({ ok: true, redirect: `/portal/orders/${id}` });
+    res.json({ ok: true, redirect: `/portal/orders/${id}`, order_id: id, keys });
   } catch (err) {
     const msg = dbMessage(err);
     if (!msg) throw err;

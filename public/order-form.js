@@ -46,9 +46,14 @@
   }
 
   // ------------------------------------------------------------------ state
+  const newKey = () => `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const toRow = (it) => {
     const len = it.length_in === null || it.length_in === undefined ? null : Number(it.length_in);
     return {
+      ckey: newKey(),
+      // Drawings already on the line, and files picked here to upload when it's saved.
+      saved_files: it.order_item_id ? (it.attachments || []).filter((a) => !portal || a.from_customer).map((a) => a.filename) : [],
+      files: [],
       order_item_id: it.order_item_id || null,
       product_id: it.product_id || null,
       lastProduct: it.product_id || null,
@@ -226,6 +231,18 @@
     return `<label class="pitch-opt">Pitch ${box('pitch1', 'Roof pitch')}${p.pitches === 2 ? ` to ${box('pitch2', 'Second roof pitch')}` : ''}</label>`;
   }
 
+  // Upload a drawing for the line (Tyler 2026-11-12): a PDF or picture, sent once the quote saves.
+  function filesHtml(row, p) {
+    const names = [...(row.saved_files || []), ...(row.files || []).map((f) => `${f.name} (uploads when you save)`)];
+    const odd = p && (p.category === 'trim' || p.category === 'custom_trim' || p.category === 'downspout');
+    return `<div class="line-files">
+      <label class="btn small upload-btn" title="Add a PDF or picture (JPG or PNG) for this line">📎 Upload
+        <input type="file" data-upload accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" multiple hidden></label>
+      ${names.map((n) => `<span class="small file-name">📎 ${esc(n)}</span>`).join('')}
+      ${odd && !names.length ? '<span class="muted small">Not the standard profile? Upload a drawing with dimensions.</span>' : ''}
+    </div>`;
+  }
+
   function rowHtml(row, si, ii) {
     const p = productById.get(Number(row.product_id));
     const needsLength = p && (p.unit === 'sqft' || p.unit === 'lf');
@@ -238,7 +255,7 @@
         <input class="in" data-f="inch" value="${esc(row.inch)}" aria-label="Inches"><span class="unit">"</span>
       </td>
       <td><select data-f="product_id" class="product" data-combo data-combo-next="select.color, .qty" aria-label="Item">${productOptions(row.product_id)}</select>
-        <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${pitchHtml(row, p)}${screwOptionHtml(row, p)}</td>
+        <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${pitchHtml(row, p)}${screwOptionHtml(row, p)}${filesHtml(row, p)}</td>
       <td><select data-f="color_id" class="color" data-combo data-combo-next=".width input, .price" aria-label="Color">${colorOptions(row.color_id, p)}</select></td>
       <td class="width">${widthCell(row, p)}</td>
       <td class="num billed"></td>
@@ -513,6 +530,8 @@
     if (portal && !portal.prices) root.classList.add('hide-prices');
     root.innerHTML = `<div id="form-error" class="alert" hidden></div>
       ${headerHtml()}
+      <p class="notice drawing-reminder">📎 If any piece is different from its standard profile in any way, use <strong>Upload</strong>
+        on that line to add a drawing with dimensions (PDF or picture).</p>
       <div id="sections">${renderSections()}</div>
       <button type="button" class="btn" data-act="add-section">+ Add section</button>
       <div class="section screws" id="closures-box"><div id="closures-auto"></div>${extraHtml('Closures')}</div>
@@ -631,7 +650,39 @@
     row.unit_price = listPrice(p, Number(row.color_id), row.width_in);
   }
 
-  root.addEventListener('change', (e) => { if (e.target.dataset.cq) setTimeout(recompute); });
+  root.addEventListener('change', (e) => {
+    if (e.target.dataset.cq) setTimeout(recompute);
+    // Files picked for a line wait until the quote is saved.
+    if (e.target.matches('[data-upload]')) {
+      const r = rowOf(e.target);
+      const ok = [...e.target.files].filter((f) => /^(application\/pdf|image\/(jpeg|png))$/.test(f.type) && f.size <= 20 * 1024 * 1024);
+      if (ok.length < e.target.files.length) showError('Only PDFs and pictures (JPG or PNG) up to 20 MB can be uploaded.');
+      r.row.files = [...(r.row.files || []), ...ok];
+      dirty = true;
+      const { s, i } = r.tr.dataset;
+      r.tr.outerHTML = rowHtml(r.row, s, i);
+      recompute();
+    }
+  });
+
+  // After saving: send each line's picked files to its saved line. Says which didn't go.
+  async function uploadFiles(out) {
+    const failed = [];
+    for (const sec of state.sections) {
+      for (const row of sec.items) {
+        const lineId = out.keys && out.keys[row.ckey];
+        for (const f of row.files || []) {
+          const url = portal ? `/portal/orders/${out.order_id}/files?line=${lineId || ''}`
+            : `/orders/${out.order_id}/attachments?line=${lineId || ''}`;
+          try {
+            const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': f.type, 'X-Filename': encodeURIComponent(f.name) }, body: f });
+            if (!r.ok) failed.push(f.name);
+          } catch (err) { failed.push(f.name); }
+        }
+      }
+    }
+    return failed;
+  }
 
   root.addEventListener('input', (e) => {
     const t = e.target;
@@ -720,7 +771,7 @@
     // A new line starts as a copy of the one above (same panel, color and width):
     // cut sheets are mostly several lengths of the same panel.
     items.push(prev
-      ? { ...prev, order_item_id: null, pieces: '', ft: '', inch: '', description: '' }
+      ? { ...prev, order_item_id: null, pieces: '', ft: '', inch: '', description: '', ckey: newKey(), saved_files: [], files: [] }
       : toRow({}));
     render();
     const rows = root.querySelectorAll(`fieldset[data-s="${si}"] tbody tr`);
@@ -792,6 +843,7 @@
           unit_price: row.unit_price,
           description: row.description,
           screw_option: row.screw_option || null,
+          ckey: row.ckey,
           pitch: [row.pitch1, row.pitch2].map((x) => String(x || '').trim()).filter(Boolean).map((x) => `${x}:12`).join(' to ') || null,
         });
       }
@@ -827,6 +879,16 @@
           : `The server had a problem saving this order (error ${res.status}).` }));
       if (!out.ok) return showError(out.error);
       dirty = false;
+      if (state.sections.some((sec) => sec.items.some((row) => row.files && row.files.length))) {
+        button.textContent = 'Uploading files…';
+        const failed = await uploadFiles(out);
+        if (failed.length) {
+          // Saved already, so don't let a second Save make a copy: go to the quote after a moment.
+          showError(`The quote is saved, but ${failed.join(', ')} didn't upload. Taking you to the quote; add them there under Drawings.`);
+          setTimeout(() => { window.location = out.redirect; }, 6000);
+          return;
+        }
+      }
       window.location = out.redirect;
     } catch (err) {
       showError('Could not reach the server. Check your connection and try again.');

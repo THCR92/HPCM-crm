@@ -1909,3 +1909,18 @@ test('roof pitch: D Style Eave takes one pitch, a pitch break two; shown on the 
   const sheet = await (await fetch(`${base}/orders/${id}`)).text();
   assert.match(sheet, /Pitch 4:12 to 1:12/);
 });
+
+test('quote form uploads: the save says which saved line each form line became, and a drawing goes on that line', async () => {
+  const eave = await productId('TRM-D-STYLE-EAVE');
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const out = await (await post('/orders', { customer_id: c.customer_id, accessories_checked: true, closures: 'none',
+    sections: [{ area: 'trim', items: [{ product_id: eave, pieces: 2, length_in: 120, unit_price: 20, ckey: 'kabc' }] }] })).json();
+  assert.ok(out.ok, out.error);
+  const { rows: [line] } = await query('SELECT order_item_id FROM order_items WHERE order_id = $1', [out.order_id]);
+  assert.strictEqual(out.keys.kabc, line.order_item_id);
+  const r = await fetch(`${base}/orders/${out.order_id}/attachments?line=${out.keys.kabc}`, { method: 'POST',
+    headers: { 'Content-Type': 'application/pdf', 'X-Filename': encodeURIComponent('eave drawing.pdf') }, body: Buffer.from('%PDF-1.4 test') });
+  assert.ok((await r.json()).ok);
+  const { rows: [a] } = await query('SELECT order_item_id, filename FROM order_attachments WHERE order_id = $1', [out.order_id]);
+  assert.deepStrictEqual(a, { order_item_id: line.order_item_id, filename: 'eave drawing.pdf' });
+});
