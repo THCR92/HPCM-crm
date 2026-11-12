@@ -1229,8 +1229,9 @@ function drawingsSection(o) {
         </span>
       </div>
       ${isImage(a) ? html`<a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${a.filename}"></a>`
-    : html`<object class="no-print" data="${url}" type="application/pdf"><a href="${url}" target="_blank">Open ${a.filename}</a></object>
-      <p class="print-only small">PDF drawing: open it in the CRM to view or print.</p>`}
+    // Drawn into the page, not embedded: Chrome's Print does nothing on a page with an
+    // embedded PDF (Tyler 2026-11-12, HP-10040). Whole-order PDFs now print too.
+    : html`<div class="pdf-pages" data-pdf="${url}" data-name="${a.filename}"></div>`}
     </div>`;
   })}
     ${canEdit ? html`
