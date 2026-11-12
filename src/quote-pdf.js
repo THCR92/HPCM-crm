@@ -3,6 +3,7 @@
 // no billing units, no coil supplier.
 const path = require('path');
 const PDFDocument = require('pdfkit');
+const { PDFDocument: PdfLib } = require('pdf-lib');
 
 const NAVY = '#1d315e';
 const MUTED = '#5b6573';
@@ -21,9 +22,31 @@ const usDate = (d) => {
 };
 
 // o: an order from loadOrder(); sizeCol(i) and areaLabel(section) come from the order page.
-function quotePdf(o, { sizeCol, areaLabel }) {
+// files: attachment_id -> { content_type, data } for the line drawings, which show under
+// their line (Tyler 2026-11-12). Pictures go straight in; a PDF drawing's pages are
+// drawn into space kept for them, after pdfkit is done (pdfkit can't read PDFs).
+async function quotePdf(o, opts) {
+  const spots = [];
+  const out = await layoutPdf(o, opts, spots);
+  if (!spots.length) return out;
+  const pdf = await PdfLib.load(out);
+  for (const s of spots) {
+    try {
+      const src = await PdfLib.load(s.data, { ignoreEncryption: true });
+      const [emb] = await pdf.embedPdf(src, [s.pageIndex]);
+      const page = pdf.getPage(s.page);
+      const k = Math.min(s.w / emb.width, s.h / emb.height);
+      page.drawPage(emb, { x: s.x, y: page.getHeight() - s.y - emb.height * k, width: emb.width * k, height: emb.height * k });
+    } catch (err) { /* leave the space; the line already names the file */ }
+  }
+  return Buffer.from(await pdf.save());
+}
+
+function layoutPdf(o, { sizeCol, areaLabel, files = new Map() }, spots) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'LETTER', margin: 40, info: { Title: `${o.order_number}`, Author: 'High Plains Custom Metal' } });
+    let pageNo = 0;
+    doc.on('pageAdded', () => { pageNo += 1; });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -87,10 +110,29 @@ function quotePdf(o, { sizeCol, areaLabel }) {
       for (const i of sec.items) {
         row({
           qty: num(i.pieces), len: i.length_display || '',
-          item: `${i.product_name}${i.description ? `\n${i.description}` : ''}`,
+          item: `${i.product_name}${i.pitch ? ` (pitch ${i.pitch})` : ''}${i.description ? `\n${i.description}` : ''}`,
           color: i.customer_color || '', size: sizeCol(i, { shop: false }) || '',
           each: money(i.pieces ? i.line_total / i.pieces : i.line_total), amt: money(i.line_total),
         });
+        for (const a of i.attachments || []) {
+          const f = files.get(a.attachment_id);
+          if (!f) continue;
+          const isPdf = f.content_type === 'application/pdf';
+          const pages = isPdf ? Math.min(2, f.pages || 0) : 1;
+          for (let n = 0; n < pages; n += 1) {
+            const h = 250;
+            if (y + h + 8 > doc.page.height - doc.page.margins.bottom - 20) { doc.addPage(); y = doc.page.margins.top; }
+            const x = left + cols[0].w + cols[1].w;
+            const w = width - cols[0].w - cols[1].w - 6;
+            if (isPdf) {
+              spots.push({ page: pageNo, x, y: y + 4, w, h, data: f.data, pageIndex: n });
+            } else {
+              try { doc.image(f.data, x, y + 4, { fit: [w, h] }); } catch (err) { continue; }
+            }
+            y += h + 8;
+          }
+          doc.moveTo(left, y).lineTo(left + width, y).lineWidth(0.5).strokeColor(LINE).stroke();
+        }
       }
     }
 
@@ -127,4 +169,19 @@ function quotePdf(o, { sizeCol, areaLabel }) {
   });
 }
 
-module.exports = { quotePdf };
+// The line drawings an order's PDF shows: rows of { attachment_id, content_type, data }.
+// Only pictures pdfkit can read (PNG, JPG) and PDFs pdf-lib can open (with their page count).
+async function drawingFiles(rows) {
+  const files = new Map();
+  for (const r of rows) {
+    if (r.content_type === 'application/pdf') {
+      try {
+        const pages = (await PdfLib.load(r.data, { ignoreEncryption: true })).getPageCount();
+        files.set(r.attachment_id, { ...r, pages });
+      } catch (err) { /* unreadable: the line just won't show it */ }
+    } else if (r.content_type === 'image/png' || r.content_type === 'image/jpeg') files.set(r.attachment_id, r);
+  }
+  return files;
+}
+
+module.exports = { quotePdf, drawingFiles };

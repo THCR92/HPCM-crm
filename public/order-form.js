@@ -241,9 +241,9 @@
       return `<a class="line-thumb" href="${esc(f.url)}" target="_blank" rel="noopener" title="Open ${esc(f.name)} full size">
         <img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"></a>`;
     }
-    return `<details class="line-pdf"><summary>📄 ${esc(f.name)} <span class="muted">(show)</span></summary>
-      <object data="${esc(f.url)}" type="application/pdf"><a href="${esc(f.url)}" target="_blank" rel="noopener">Open ${esc(f.name)}</a></object>
-      <a class="small" href="${esc(f.url)}" target="_blank" rel="noopener">Open in a new tab</a></details>`;
+    // Drawn into the page by /line-pdfs.js.
+    return `<div class="line-drawing"><div class="pdf-pages" data-pdf="${esc(f.url)}" data-name="${esc(f.name)}"></div>
+      <a class="small" href="${esc(f.url)}" target="_blank" rel="noopener">📎 ${esc(f.name)} (open full size)</a></div>`;
   }
 
   // Upload a drawing for the line (Tyler 2026-11-12): a PDF or picture, sent once the quote saves.

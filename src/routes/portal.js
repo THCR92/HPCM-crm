@@ -408,11 +408,12 @@ router.get('/portal/orders/:id(\\d+)', signedIn, async (req, res) => {
     <div class="no-print">${steps(o)}</div>
     ${handoffBox(o)}
     ${decided || ''}
-    ${customerSheet(o, { linePrices: l.portal_line_prices, totals: l.portal_totals })}
+    ${customerSheet(o, { linePrices: l.portal_line_prices, totals: l.portal_totals,
+    fileUrl: (a) => `/portal/orders/${o.order_id}/files/${a.attachment_id}`, fileOk: (a) => a.from_customer })}
     ${answer}
     ${photosSection(o)}
     ${filesSection(o)}`,
-    scripts: ['/attachments.js'],
+    scripts: ['/attachments.js', '/vendor/pdfjs/pdf.min.js', '/line-pdfs.js'],
   }));
 });
 
@@ -518,7 +519,7 @@ function formPage(l, { title, order, catalog, action }) {
     <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
     <script>window.ORDER_FORM = ${jsonForScript({
     order, ...catalog, portal: { prices: l.portal_line_prices, totals: l.portal_totals, action } })};</script>`,
-    scripts: ['/combo.js', '/screws.js', '/trim-price.js', '/order-form.js'],
+    scripts: ['/combo.js', '/screws.js', '/trim-price.js', '/order-form.js', '/vendor/pdfjs/pdf.min.js', '/line-pdfs.js'],
   });
 }
 

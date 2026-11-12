@@ -432,14 +432,14 @@ h2.inline-h { display: inline; }
 /* Drawings shown inside their line on the quote page and the edit form (Tyler 2026-11-12). */
 .line-drawings { display: flex; flex-wrap: wrap; align-items: flex-start; margin-top: .3rem; width: 100%; }
 .line-drawings > * { margin: 0 .5rem .4rem 0; }
-.line-thumb img { display: block; max-width: 220px; max-height: 180px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
-.line-pdf { width: 100%; }
-.line-pdf summary { cursor: pointer; font-size: .85rem; }
-.line-pdf object { display: block; width: 100%; min-width: 320px; height: 480px; border: 1px solid var(--line); margin: .3rem 0; }
+.line-thumb img { display: block; max-width: 100%; max-height: 520px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
 .line-drawing-row td { border-top: 0; padding-top: 0; }
-.pdf-print canvas { display: block; max-width: 100%; max-height: 4.5in; width: auto; height: auto; border: 1px solid #999; margin: 0 0 .1in; }
+.line-drawing { margin: 0 .6rem .5rem 0; max-width: 100%; }
+.line-drawing > a.small { display: block; }
+.pdf-pages canvas { display: block; max-width: 100%; max-height: 520px; width: auto; height: auto; border: 1px solid var(--line); background: #fff; margin: 0 0 .3rem; }
 @media print {
   .line-drawings { display: block; }
-  .line-thumb, .pdf-print canvas { display: block; break-inside: avoid; page-break-inside: avoid; margin: 0 0 .1in; }
+  .line-thumb, .pdf-pages canvas { display: block; break-inside: avoid; page-break-inside: avoid; margin: 0 0 .1in; }
+  .pdf-pages canvas { max-height: 4.5in; border-color: #999; }
   .line-thumb img { max-width: 100%; max-height: 4.5in; border-color: #999; }
 }

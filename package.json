@@ -16,6 +16,7 @@
   "dependencies": {
     "express": "^4.22.3",
     "nodemailer": "^10.1.7",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^3.11.174",
     "pdfkit": "^0.17.2",
     "pg": "^8.23.1",

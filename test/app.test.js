@@ -544,11 +544,16 @@ test('drawings attach to an order line, show on the cut sheet, and stay when the
   // Shown in a row under its line (and printed there).
   assert.match(page, /📎 Drawing below<\/div><\/td>[\s\S]*?<tr class="line-drawing-row">[\s\S]*?alt="Eave trim\.png"/);
   assert.match(page, /Line 1: /);
+  // The customer copy shows it under its line too, and its PDF still builds.
+  const copy = await (await fetch(`${base}/orders/${id}/customer`)).text();
+  assert.match(copy, /<tr class="line-drawing-row">[\s\S]*?alt="Eave trim\.png"/);
+  const qpdf = await fetch(`${base}/orders/${id}/customer.pdf`);
+  assert.strictEqual(qpdf.status, 200);
+  assert.match(Buffer.from(await qpdf.arrayBuffer()).subarray(0, 5).toString(), /%PDF-/);
   assert.match(page, /Bend A first/);
   const file = await fetch(`${base}/orders/${id}/attachments/${aid}`);
   assert.strictEqual(file.headers.get('content-type'), 'image/png');
   assert.deepStrictEqual(Buffer.from(await file.arrayBuffer()), png);
-  assert.doesNotMatch(await (await fetch(`${base}/orders/${id}/customer`)).text(), /Eave trim/);
 
   await query('DELETE FROM order_items WHERE order_id = $1', [id]);
   const { rows: [a] } = await query('SELECT order_id, order_item_id FROM order_attachments WHERE attachment_id = $1', [aid]);

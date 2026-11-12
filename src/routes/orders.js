@@ -7,7 +7,7 @@ const { RUNNABLE, footage, runError } = require('../production');
 const { syncOrderSupplies } = require('../supplies');
 const qbo = require('../qbo');
 const mail = require('../mail');
-const { quotePdf } = require('../quote-pdf');
+const { quotePdf, drawingFiles } = require('../quote-pdf');
 const CustomerTypes = require('../customer-types');
 const notices = require('../notices');
 const proof = require('../proof');
@@ -545,7 +545,7 @@ function formPage(res, { title, order, catalog }) {
     <h1>${title}</h1>
     <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
     <script>window.ORDER_FORM = ${jsonForScript({ order, ...catalog })};</script>`,
-    scripts: ['/combo.js', '/screws.js', '/trim-price.js', '/order-form.js'],
+    scripts: ['/combo.js', '/screws.js', '/trim-price.js', '/order-form.js', '/vendor/pdfjs/pdf.min.js', '/line-pdfs.js'],
   }));
 }
 
@@ -758,7 +758,9 @@ const totalsRows = (o) => html`
 
 // The customer's copy of a quote or order. The portal can hide line prices
 // (linePrices) or the order totals (totals) per customer.
-function customerSheet(o, { linePrices = true, totals = true } = {}) {
+// Line drawings show under their line; the portal shows only the customer's own (fileUrl/fileOk).
+function customerSheet(o, { linePrices = true, totals = true,
+  fileUrl = (a) => `/orders/${o.order_id}/attachments/${a.attachment_id}`, fileOk = () => true } = {}) {
   const isQuote = o.status === 'quote';
   const docName = isQuote ? 'Quote' : 'Order';
   const quoteDate = isQuote ? o.quoted_on : o.ordered_on;
@@ -789,7 +791,8 @@ function customerSheet(o, { linePrices = true, totals = true } = {}) {
           <td>${i.product_name}${i.pitch ? ` (pitch ${i.pitch})` : ''}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}</td>
           <td>${i.customer_color}</td><td>${sizeCol(i, { shop: false })}</td>
           ${linePrices ? html`<td class="num">${money(i.pieces ? i.line_total / i.pieces : i.line_total)}</td>
-          <td class="num">${money(i.line_total)}</td>` : ''}</tr>`)}</tbody>
+          <td class="num">${money(i.line_total)}</td>` : ''}</tr>
+          ${lineDrawingRow((i.attachments || []).filter(fileOk), { cols: linePrices ? 7 : 5, url: fileUrl })}`)}</tbody>
       </table>`)}
       <div class="sheet-foot">
         <div>
@@ -825,7 +828,12 @@ function emailText(o, sender) {
   };
 }
 const sheetArea = (sec) => (sec.is_auto ? (sec.label || 'Screws') : `${AREA_LABEL[sec.area] || sec.area}${sec.label ? ` · ${sec.label}` : ''}`);
-const pdfFor = (o) => quotePdf(o, { sizeCol, areaLabel: sheetArea });
+// The line drawings go in too, under their lines (Tyler 2026-11-12).
+const pdfFor = async (o) => {
+  const { rows } = await query(`SELECT attachment_id, content_type, data FROM order_attachments
+    WHERE order_id = $1 AND order_item_id IS NOT NULL AND NOT is_proof`, [o.order_id]);
+  return quotePdf(o, { sizeCol, areaLabel: sheetArea, files: await drawingFiles(rows) });
+};
 
 // What the customer sees: one price per piece (the line amount over the pieces),
 // no billing units, no coil supplier. The CRM emails it with the PDF attached
@@ -872,6 +880,7 @@ router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
     : html`<p class="muted small no-print">To email it: click <strong>Download PDF</strong>, then
       <a href="${gmail}" target="_blank" rel="noopener">open Gmail</a> with the message filled in and attach the PDF.</p>`}
     ${customerSheet(o)}`,
+    scripts: ['/vendor/pdfjs/pdf.min.js', '/line-pdfs.js'],
   }));
 });
 
@@ -1104,22 +1113,21 @@ router.post('/:id(\\d+)/photos', express.raw({ type: () => true, limit: ATTACH_M
 // photos, PDFs). Pictures print on the cut sheet; PDFs open in a new tab.
 // ---------------------------------------------------------------------------
 
-// Drawings on a line, shown in the line itself for review (Tyler 2026-11-12). Screen only:
-// the printed cut sheet has them full size at the end.
-function lineDrawings(o, i) {
-  if (!i.attachments.length) return '';
-  // A row under the line. Pictures print as they are; PDFs are drawn into the page by
-  // /line-pdfs.js so they print too (a browser won't print an embedded PDF).
-  return html`<tr class="line-drawing-row"><td></td><td colspan="6"><div class="line-drawings">${i.attachments.map((a) => {
-    const url = `/orders/${o.order_id}/attachments/${a.attachment_id}`;
-    return isImage(a)
-      ? html`<a class="line-thumb" href="${url}" target="_blank" rel="noopener" title="Open ${a.filename} full size"><img src="${url}" alt="${a.filename}"></a>`
-      : html`<div class="line-pdf-wrap"><details class="line-pdf no-print"><summary>📄 ${a.filename} <span class="muted">(show)</span></summary>
-        <object data="${url}" type="application/pdf"><a href="${url}" target="_blank" rel="noopener">Open ${a.filename}</a></object>
-        <a class="small" href="${url}" target="_blank" rel="noopener">Open in a new tab</a></details>
-        <div class="pdf-print print-only" data-pdf="${url}" data-name="${a.filename}"></div></div>`;
+// Drawings on a line, in a row under it on the cut sheet and the customer copy, on screen
+// and on paper, with nothing to click (Tyler 2026-11-12). Pictures show as they are; PDFs
+// are drawn into the page by /line-pdfs.js (a browser won't print an embedded PDF).
+// cols: the table's column count; url(a): where the file is served.
+function lineDrawingRow(files, { cols, url }) {
+  if (!files.length) return '';
+  return html`<tr class="line-drawing-row"><td colspan="2"></td><td colspan="${cols - 2}"><div class="line-drawings">${files.map((a) => {
+    const u = url(a);
+    return html`<div class="line-drawing">${isImage(a)
+      ? html`<a class="line-thumb" href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${a.filename}"></a>`
+      : html`<div class="pdf-pages" data-pdf="${u}" data-name="${a.filename}"></div>`}
+      <a class="small no-print" href="${u}" target="_blank" rel="noopener">📎 ${a.filename} (open full size)</a></div>`;
   })}</div></td></tr>`;
 }
+const lineDrawings = (o, i) => lineDrawingRow(i.attachments, { cols: 7, url: (a) => `/orders/${o.order_id}/attachments/${a.attachment_id}` });
 
 function drawingsSection(o) {
   const items = o.sections.flatMap((s) => s.items);
