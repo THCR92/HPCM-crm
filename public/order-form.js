@@ -60,6 +60,8 @@
       unit_price: it.unit_price ?? '',
       description: it.description || '',
       screw_option: it.screw_option || '',
+      pitch1: (it.pitch || '').split(' to ')[0].replace(':12', ''),
+      pitch2: ((it.pitch || '').split(' to ')[1] || '').replace(':12', ''),
     };
   };
   const autoSection = (order.sections || []).find((s) => s.is_auto && s.label !== 'Closures');
@@ -216,6 +218,14 @@
       `<option ${o === cur ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
   }
 
+  // Roof pitch for trim bent to it (Tyler 2026-11-12): one pitch, or two for a pitch break.
+  function pitchHtml(row, p) {
+    if (!p || !p.pitches) return '';
+    const box = (f, label) => `<input class="pitch-in ${row[f] ? '' : 'missing'}" data-f="${f}" inputmode="decimal" value="${esc(row[f])}"
+      placeholder="4" aria-label="${label}"><span class="unit">:12</span>`;
+    return `<label class="pitch-opt">Pitch ${box('pitch1', 'Roof pitch')}${p.pitches === 2 ? ` to ${box('pitch2', 'Second roof pitch')}` : ''}</label>`;
+  }
+
   function rowHtml(row, si, ii) {
     const p = productById.get(Number(row.product_id));
     const needsLength = p && (p.unit === 'sqft' || p.unit === 'lf');
@@ -228,7 +238,7 @@
         <input class="in" data-f="inch" value="${esc(row.inch)}" aria-label="Inches"><span class="unit">"</span>
       </td>
       <td><select data-f="product_id" class="product" data-combo data-combo-next="select.color, .qty" aria-label="Item">${productOptions(row.product_id)}</select>
-        <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${screwOptionHtml(row, p)}</td>
+        <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${pitchHtml(row, p)}${screwOptionHtml(row, p)}</td>
       <td><select data-f="color_id" class="color" data-combo data-combo-next=".width input, .price" aria-label="Color">${colorOptions(row.color_id, p)}</select></td>
       <td class="width">${widthCell(row, p)}</td>
       <td class="num billed"></td>
@@ -782,6 +792,7 @@
           unit_price: row.unit_price,
           description: row.description,
           screw_option: row.screw_option || null,
+          pitch: [row.pitch1, row.pitch2].map((x) => String(x || '').trim()).filter(Boolean).map((x) => `${x}:12`).join(' to ') || null,
         });
       }
       if (s.extra) s.posted = items;

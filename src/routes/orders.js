@@ -59,7 +59,7 @@ async function loadOrder(id) {
   const { rows: sections } = await query(
     'SELECT * FROM order_sections WHERE order_id = $1 ORDER BY sort_order, section_id', [id]);
   const { rows: items } = await query(`
-    SELECT oi.*, p.name AS product_name, p.sku, p.category, p.is_rental, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
+    SELECT oi.*, p.name AS product_name, p.sku, p.category, p.is_rental, p.needs_pitch, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
            p.flat_extra_in AS product_flat_extra,
            g.gauge,
            -- The color without its coil supplier, on the cut sheet too (Tyler 2026-11-05).
@@ -96,7 +96,7 @@ async function loadOrder(id) {
 async function loadCatalog() {
   const { rows: products } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies, p.taxable,
-           p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
+           p.needs_pitch AS pitches, p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
            p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
            pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name, g.gauge,
@@ -213,6 +213,23 @@ function parseHeader(b) {
   };
 }
 
+// Roof pitch on a line (Tyler 2026-11-12): "4:12", or "4:12 to 1:12" for a pitch break.
+// Takes "4", "4:12" or "4/12" for each pitch. Blank is allowed on a quote.
+const PITCH = /^(\d{1,2}(?:\.\d{1,2})?)(?:\s*[:/]\s*12)?$/;
+function parsePitch(value, count, what) {
+  const s = String(value ?? '').trim();
+  if (!s) return null;
+  const parts = s.split(/\s+to\s+/i);
+  if (parts.length !== count) {
+    throw new UserError(`${what}: enter ${count === 2 ? 'both roof pitches, e.g. 4:12 to 1:12' : 'the roof pitch, e.g. 4:12'}.`);
+  }
+  return parts.map((x) => {
+    const m = x.trim().match(PITCH);
+    if (!m || !(Number(m[1]) > 0) || Number(m[1]) > 24) throw new UserError(`${what}: "${x.trim()}" isn't a roof pitch. Enter it like 4:12.`);
+    return `${Number(m[1])}:12`;
+  }).join(' to ');
+}
+
 function parseSections(b, productsById) {
   if (!Array.isArray(b.sections)) throw new UserError('The order has no sections.');
   return b.sections.map((s, si) => {
@@ -257,6 +274,7 @@ function parseSections(b, productsById) {
         description: text(it.description, 4000),
         screw_option: text(it.screw_option),
         qbo_item_id: text(it.qbo_item_id),
+        pitch: p.pitches ? parsePitch(it.pitch, p.pitches, `${where(ii + 1)}: ${p.name}`) : null,
       };
     });
     return {
@@ -335,7 +353,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
   if (!orderId) header.created_by = who;
   const { rows: prodRows } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.taxable, p.max_length_in,
-           p.girth_in AS girth, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov,
+           p.needs_pitch AS pitches, p.girth_in AS girth, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov,
            pp.fastening::text AS fastening, p.standard_length_in,
            pp.closure_product_id AS closure_id, pp.outer_closure_product_id AS outer_closure_id, pp.vented_closure_product_id AS vented_closure_id, cp.unit_price AS price
     FROM products p LEFT JOIN panel_profiles pp USING (profile_id) LEFT JOIN v_current_prices cp USING (product_id)`);
@@ -410,7 +428,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
       for (const it of s.items) {
         lineNo += 1;
         const vals = [sectionId, lineNo, it.product.id, it.color_id, it.pieces, it.length_in,
-          it.width_in, it.unit_price, it.description, it.screw_option, !!it.is_added, it.qbo_item_id || null];
+          it.width_in, it.unit_price, it.description, it.screw_option, !!it.is_added, it.qbo_item_id || null, it.pitch || null];
         let itemId = it.order_item_id;
         if (itemId) {
           const r = await db.query(`
@@ -419,7 +437,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
                    width_in = COALESCE($7, (SELECT pp.coverage_width_in FROM products p
                                             JOIN panel_profiles pp USING (profile_id)
                                             WHERE p.product_id = $3)),
-                   unit_price = $8, description = $9, screw_option = $10, is_added = $11,
+                   unit_price = $8, description = $9, screw_option = $10, is_added = $11, pitch = $13,
                    -- The QuickBooks item a line came from stays with it while it's the same product.
                    qbo_item_id = CASE WHEN oi.product_id = $3 THEN COALESCE($12, oi.qbo_item_id) ELSE $12 END,
                    pricing_unit = p.pricing_unit, taxable = p.taxable,
@@ -429,15 +447,15 @@ async function saveOrder(orderId, body, { who = userName(), extra = {} } = {}) {
                    width_add_in = CASE WHEN p.pricing_unit = 'each' AND $7::numeric IS NOT NULL
                                        THEN (fn_sized_trim_basis(p.product_id, $7::numeric)).width_add END
             FROM products p
-            WHERE p.product_id = $3 AND oi.order_item_id = $13 AND oi.order_id = $14`,
+            WHERE p.product_id = $3 AND oi.order_item_id = $14 AND oi.order_id = $15`,
           [...vals, itemId, orderId]);
           if (!r.rowCount) itemId = null;
         }
         if (!itemId) {
           const { rows: [r] } = await db.query(`
             INSERT INTO order_items (order_id, section_id, line_no, product_id, color_id, pieces,
-                                     length_in, width_in, unit_price, description, screw_option, is_added, qbo_item_id)
-            VALUES ($13, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING order_item_id`, [...vals, orderId]);
+                                     length_in, width_in, unit_price, description, screw_option, is_added, qbo_item_id, pitch)
+            VALUES ($14, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING order_item_id`, [...vals, orderId]);
           itemId = r.order_item_id;
         }
         if (it.product.category === 'custom_trim') {
@@ -626,6 +644,14 @@ router.post('/:id(\\d+)/status', async (req, res) => {
   if (APPROVED.includes(status) && !cur.need_by && !needBy) {
     return res.redirect(`${back}?status_error=${encodeURIComponent('Set a Need-by date to approve this quote.')}`);
   }
+  // Trim bent to the roof pitch can't be made without it.
+  if (APPROVED.includes(status)) {
+    const { rows: noPitch } = await query(`SELECT p.name FROM order_items oi JOIN products p USING (product_id)
+      WHERE oi.order_id = $1 AND p.needs_pitch > 0 AND oi.pitch IS NULL ORDER BY oi.line_no`, [req.params.id]);
+    if (noPitch.length) {
+      return res.redirect(`${back}?status_error=${encodeURIComponent(`Enter the roof pitch on ${[...new Set(noPitch.map((r) => r.name))].join(', ')} (edit the quote) before approving.`)}`);
+    }
+  }
   // Ready (or completed without going through Ready) needs a length check photo of every line.
   if (status === 'ready' || (status === 'completed' && !['ready', 'completed'].includes(cur.status))) {
     const missing = await proof.blockingPhotos(Number(req.params.id));
@@ -755,7 +781,7 @@ function customerSheet(o, { linePrices = true, totals = true } = {}) {
           ${linePrices ? html`<th class="num">Price each</th><th class="num">Amount</th>` : ''}</tr></thead>
         <tbody>${sec.items.map((i) => html`
           <tr><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
-          <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}</td>
+          <td>${i.product_name}${i.pitch ? ` (pitch ${i.pitch})` : ''}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}</td>
           <td>${i.customer_color}</td><td>${sizeCol(i, { shop: false })}</td>
           ${linePrices ? html`<td class="num">${money(i.pieces ? i.line_total / i.pieces : i.line_total)}</td>
           <td class="num">${money(i.line_total)}</td>` : ''}</tr>`)}</tbody>
@@ -960,7 +986,7 @@ router.get('/:id(\\d+)', async (req, res) => {
           <th>Width</th><th class="done-col">Done</th></tr></thead>
         <tbody>${s.items.length ? s.items.map((i) => html`
           <tr class="${i.done_at ? 'line-done' : ''}"><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
-          <td>${i.product_name}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}
+          <td>${i.product_name}${i.pitch ? html` <strong class="pitch">Pitch ${i.pitch}</strong>` : i.needs_pitch ? html` <strong class="pitch missing-pitch">Pitch: ____</strong>` : ''}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}
             ${i.attachments.map((a) => html`<div class="small"><a href="#drawing-${a.attachment_id}">📎 Drawing: ${a.filename}</a></div>`)}</td>
           <td>${i.gauge || ''}</td><td>${i.color_name}</td><td>${sizeCol(i)}</td>
           <td class="done-col">${doneCell(o, i)}</td></tr>`)

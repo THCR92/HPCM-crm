@@ -1884,3 +1884,28 @@ test('customer portal: several logins; one sees all the customer\'s quotes, anot
   await form(`/customers/${cid}/logins/${kameron}/access`, { sees_all: '1' });
   assert.match(await home(kameron), new RegExp(`/portal/orders/${forAll}`));
 });
+
+test('roof pitch: D Style Eave takes one pitch, a pitch break two; shown on the cut sheet; needed to approve', async () => {
+  const [eave, brk] = await Promise.all(['TRM-D-STYLE-EAVE', 'TRM-PITCH-BREAK-TRANSITION'].map((sku) => productId(sku)));
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  const order = (p1, p2) => ({ customer_id: c.customer_id, accessories_checked: true, closures: 'none', need_by: '2030-01-01',
+    sections: [{ area: 'trim', items: [
+      { product_id: eave, pieces: 4, length_in: 120, unit_price: 20, pitch: p1 },
+      { product_id: brk, pieces: 2, length_in: 120, unit_price: 20, pitch: p2 }] }] });
+  // Bad pitch: a plain message.
+  let out = await (await post('/orders', order('4:12', '4:12'))).json();
+  assert.match(out.error, /both roof pitches/);
+  // Blank is fine on a quote, but it can't be approved like that.
+  out = await (await post('/orders', order('', ''))).json();
+  assert.ok(out.ok, out.error);
+  const id = Number(out.redirect.split('/').pop());
+  const r = await fetch(`${base}/orders/${id}/status`, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'status=confirmed' });
+  assert.match(decodeURIComponent(r.headers.get('location')), /Enter the roof pitch on D Style Eave, Pitch Break\/Transition/);
+  out = await (await post(`/orders/${id}`, order('5/12', '4 to 1:12'))).json();
+  assert.ok(out.ok, out.error);
+  const { rows } = await query('SELECT pitch FROM order_items WHERE order_id = $1 ORDER BY line_no', [id]);
+  assert.deepStrictEqual(rows.map((x) => x.pitch), ['5:12', '4:12 to 1:12']);
+  const sheet = await (await fetch(`${base}/orders/${id}`)).text();
+  assert.match(sheet, /Pitch 4:12 to 1:12/);
+});

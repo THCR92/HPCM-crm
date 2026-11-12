@@ -155,6 +155,9 @@ async function productForm(res, p, error, back) {
       <label>Flat width (inches of coil)<input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}"></label>
       <label>Trim: price per inch of flat width ($)<input name="price_per_flat_in" type="number" step="0.01" min="0"
         value="${p.price_per_flat_in ?? ''}" placeholder="${isNew ? '26 ga trim: 3.40 if blank' : 'blank = list price per piece'}"></label>
+      <label>Roof pitch on each line<select name="needs_pitch">
+        ${[[0, 'Not needed'], [1, 'Needs the roof pitch (e.g. 4:12)'], [2, 'Needs two pitches (e.g. 4:12 to 1:12)']]
+    .map(([v, l]) => opt(v, p.needs_pitch || 0, l))}</select></label>
       <label>SKU<input name="sku" value="${p.sku}" placeholder="made from the name if blank"></label>
       ${isNew ? html`<label>Price<input name="unit_price" type="number" step="0.01" min="0" value="${p.unit_price ?? ''}" placeholder="leave blank to enter it on each quote"></label>` : ''}
       <label class="check"><input type="checkbox" name="is_cut_to_length" value="1" ${p.is_cut_to_length ? 'checked' : ''}> Every line needs a length</label>
@@ -187,6 +190,7 @@ const productFromBody = (b) => ({
   girth_in: optNum(b.girth_in),
   // Trim priced by the inch of flat width, per piece (26 ga $3.40, 24 ga parapet $4.40).
   price_per_flat_in: optNum(b.price_per_flat_in) || null,
+  needs_pitch: [1, 2].includes(Number(b.needs_pitch)) ? Number(b.needs_pitch) : 0,
   is_cut_to_length: b.is_cut_to_length === '1',
   taxable: b.taxable === '1',
   active: b.active === '1',
@@ -210,7 +214,7 @@ const dbProblem = (err) => (err.code === '23505' ? 'Another product already uses
   : err.code === '23514' ? 'Those settings don\'t fit together (a panel needs a profile and gauge; custom trim is per sq ft).' : null);
 
 const COLS = ['name', 'sku', 'category', 'pricing_unit', 'profile_id', 'gauge_id', 'standard_length_in',
-  'max_length_in', 'girth_in', 'price_per_flat_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental'];
+  'max_length_in', 'girth_in', 'price_per_flat_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental', 'needs_pitch'];
 
 router.get('/admin/products/new', need('catalog'), async (req, res) => {
   // "Copy" on the Price list: a new product that starts with another one's settings and price.

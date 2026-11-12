@@ -415,3 +415,9 @@ tr.line-done td { background: #eef7ee; }
 details#production { margin-top: 1.5rem; }
 details#production > summary { cursor: pointer; }
 h2.inline-h { display: inline; }
+/* Roof pitch on trim lines (Tyler 2026-11-12) */
+.order-form label.pitch-opt, label.pitch-opt { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: .3rem; font-size: .85rem; margin-top: .3rem; }
+.order-form .pitch-opt input.pitch-in, .pitch-opt input.pitch-in { width: 3.2rem; flex: none; }
+.pitch-opt .unit { flex: none; }
+.pitch-opt input.missing { border-color: var(--danger, #c0392b); }
+.lines .pitch { white-space: nowrap; margin-left: .4rem; }
