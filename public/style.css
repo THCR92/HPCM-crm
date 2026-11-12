@@ -443,3 +443,8 @@ h2.inline-h { display: inline; }
   .pdf-pages canvas { max-height: 4.5in; border-color: #999; }
   .line-thumb img { max-width: 100%; max-height: 4.5in; border-color: #999; }
 }
+/* Count of customer quotes waiting on the office, on the menu (Tyler 2026-11-12). */
+.nav-badge { display: inline-block; min-width: 1.3em; padding: 0 .35em; border-radius: 1em; background: #d93025; color: #fff;
+  font-size: .75rem; font-weight: 700; line-height: 1.4; text-align: center; vertical-align: middle; }
+.need-by-note { margin: -.3rem 0 0; color: var(--muted); }
+.need-by-note.rush { color: #a4262c; font-weight: 600; }

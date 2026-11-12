@@ -108,7 +108,8 @@ ${user ? html`<header class="topbar">
   <nav>${shown.map(([href, label]) => (href === 'menu'
     ? html`<details class="nav-menu"><summary class="${inMenu ? 'active' : ''}">${can('reports', user) ? label : 'Inventory'}</summary>
       <div class="nav-drop">${menu.map(([h, l]) => html`<a href="${h}" class="${active === h ? 'active' : ''}">${l}</a>`)}</div></details>`
-    : html`<a href="${href}" class="${active === href ? 'active' : ''}">${label}</a>`))}</nav>
+    : html`<a href="${href === '/orders' && user.waiting ? '/orders?tab=waiting' : href}" class="${active === href ? 'active' : ''}">${label}${
+      href === '/orders' && user.waiting ? html` <span class="nav-badge" title="${user.waiting} customer quote${user.waiting === 1 ? '' : 's'} waiting on you">${user.waiting}</span>` : ''}</a>`))}</nav>
   <form class="scan-box" method="get" action="/scan" role="search"><input name="code" placeholder="Scan or type a code" aria-label="Scan or type a code" autocomplete="off"></form>
   <div class="who"><a href="/account" title="My account">${user.full_name}</a>
     <form method="post" action="/logout" class="inline"><button class="linkish">Sign out</button></form></div>

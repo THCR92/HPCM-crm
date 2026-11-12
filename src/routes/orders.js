@@ -30,10 +30,17 @@ const SETTABLE = ['quote', 'confirmed', 'in_production', 'ready', 'completed', '
 const APPROVED = ['confirmed', 'in_production', 'ready', 'completed'];
 const AREAS = ['roof', 'wall', 'trim', 'other'];
 
+const Waiting = require('../waiting');
+// A date (or timestamp) as YYYY-MM-DD in Cheyenne, and today's.
+const dateStr = (d) => (typeof d === 'string' ? d.slice(0, 10) : new Date(d).toLocaleDateString('en-CA', { timeZone: 'America/Denver' }));
+const todayStr = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
+// Expired quotes leave Open and Quotes for their own tab (Tyler 2026-11-12).
 const TABS = {
-  open: { label: 'Open', where: "o.status IN ('quote','confirmed','in_production','ready')" },
-  quote: { label: 'Quotes', where: "o.status = 'quote'" },
-  approved: { label: 'Customer approved', where: "o.status = 'quote' AND o.customer_decision = 'approved'" },
+  open: { label: 'Open', where: `o.status IN ('quote','confirmed','in_production','ready') AND NOT ${Waiting.EXPIRED}` },
+  waiting: { label: 'Waiting on you', where: Waiting.WAITING },
+  quote: { label: 'Quotes', where: `o.status = 'quote' AND NOT ${Waiting.EXPIRED}` },
+  approved: { label: 'Customer approved', where: `o.status = 'quote' AND o.customer_decision = 'approved' AND NOT ${Waiting.EXPIRED}` },
+  expired: { label: 'Expired quotes', where: Waiting.EXPIRED },
   shop: { label: 'In the shop', where: "o.status IN ('confirmed','in_production','ready')" },
   completed: { label: 'Completed', where: "o.status IN ('completed','invoiced')" },
   all: { label: 'All', where: 'true' },
@@ -502,15 +509,14 @@ router.get('/', async (req, res) => {
   const q = (req.query.q || '').trim();
   const { rows } = await query(`
     SELECT o.order_id, o.order_number, o.job_name, o.po_number, o.status, o.ordered_on, o.need_by,
-           o.fulfillment, o.customer_decision, c.display_name AS customer_name, t.grand_total
+           o.fulfillment, o.customer_decision, o.from_portal, o.staff_seen_at, c.display_name AS customer_name, t.grand_total
     FROM orders o JOIN customers c USING (customer_id) JOIN v_order_totals t USING (order_id)
     WHERE ${TABS[tab].where}
       AND ($1 = '' OR o.order_number ILIKE '%' || $1 || '%' OR o.job_name ILIKE '%' || $1 || '%'
            OR o.po_number ILIKE '%' || $1 || '%' OR c.display_name ILIKE '%' || $1 || '%')
     ORDER BY o.need_by NULLS LAST, o.order_id DESC`, [q]);
   const prices = can('prices');
-  const { rows: [waiting] } = await query(`SELECT count(*)::int AS n FROM orders
-    WHERE status = 'quote' AND customer_decision = 'approved'`);
+  const { rows: [waiting] } = await query(`SELECT count(*)::int AS n FROM orders o WHERE ${Waiting.WAITING}`);
   res.send(layout({
     title: 'Orders', active: '/orders',
     body: html`
@@ -518,8 +524,10 @@ router.get('/', async (req, res) => {
       <h1>Orders</h1>
       ${can('quotes') ? html`<a class="btn primary" href="/orders/new">+ New quote</a>` : ''}
     </div>
-    ${waiting.n && tab !== 'approved' && can('approve') ? html`<div class="notice">${waiting.n === 1 ? 'A customer approved a quote' : `Customers approved ${waiting.n} quotes`}
-      in the portal. <a href="?tab=approved">Approve ${waiting.n === 1 ? 'it' : 'them'} for the shop</a>.</div>` : ''}
+    ${waiting.n && tab !== 'waiting' && (can('approve') || can('quotes')) ? html`<div class="notice">${waiting.n === 1 ? 'A customer quote is' : `${waiting.n} customer quotes are`}
+      waiting on you (sent from the portal, or approved by the customer). <a href="?tab=waiting">See ${waiting.n === 1 ? 'it' : 'them'}</a>.</div>` : ''}
+    ${tab === 'expired' ? html`<p class="muted">Quotes past their "good until" date. Open one and press <strong>Reopen with today's prices</strong>
+      if the customer calls back.</p>` : ''}
     <div class="tabs">${Object.entries(TABS).map(([k, t]) =>
       html`<a href="?tab=${k}" class="${k === tab ? 'active' : ''}">${t.label}</a>`)}</div>
     <form class="search"><input type="hidden" name="tab" value="${tab}">
@@ -528,7 +536,7 @@ router.get('/', async (req, res) => {
       <thead><tr><th>Order #</th><th>Customer</th><th>Job</th><th>PO</th><th>Status</th>
         <th>Need by</th><th></th>${prices ? html`<th class="num">Total</th>` : ''}</tr></thead>
       <tbody>${rows.length ? rows.map((o) => html`
-        <tr><td><a href="/orders/${o.order_id}">${o.order_number}</a></td><td>${o.customer_name}</td>
+        <tr><td><a href="/orders/${o.order_id}">${o.order_number}</a>${o.from_portal && !o.staff_seen_at && o.status === 'quote' ? html` <span class="nav-badge">new</span>` : ''}</td><td>${o.customer_name}</td>
         <td>${o.job_name}</td><td>${o.po_number}</td><td>${statusBadge(o.status)}${o.status === 'quote' && o.customer_decision
           ? html` <span class="muted small">${o.customer_decision === 'approved' ? 'customer approved' : 'customer declined'}</span>` : ''}</td>
         <td>${date(o.need_by)}</td><td>${o.fulfillment === 'delivery' ? 'Delivery' : 'Pickup'}</td>
@@ -589,6 +597,11 @@ const saveHandler = (getId) => async (req, res) => {
   try {
     const keys = {};
     const id = await saveOrder(getId(req), req.body, { keys });
+    // Reopened with today's prices: good for two more weeks.
+    if (req.body.renew === true) {
+      await query(`UPDATE orders SET quote_expires_on = (now() AT TIME ZONE 'America/Denver')::date + 14
+        WHERE order_id = $1 AND status = 'quote'`, [id]);
+    }
     // A confirmed order's QuickBooks invoice gets the changes (quotes aren't sent).
     qbo.orderCompleted(id);
     res.json({ ok: true, redirect: `/orders/${id}`, order_id: id, keys });
@@ -918,6 +931,10 @@ router.get('/:id(\\d+)', async (req, res) => {
   const o = await loadOrder(req.params.id);
   if (!o) return res.status(404).send('Order not found');
   const editable = EDITABLE.includes(o.status);
+  // A customer's portal quote stops waiting once someone in the office opens it.
+  if (o.from_portal && !o.staff_seen_at && (can('quotes') || can('approve'))) {
+    await query('UPDATE orders SET staff_seen_at = now() WHERE order_id = $1', [o.order_id]);
+  }
 
   const sectionTotals = (items) => {
     const sq = items.filter((i) => i.pricing_unit === 'sqft').reduce((a, i) => a + i.billable_qty, 0);
@@ -970,6 +987,12 @@ router.get('/:id(\\d+)', async (req, res) => {
     ${req.query.note ? html`<div class="notice no-print">${req.query.note}</div>` : ''}
     ${portalNote(o)}
     ${o.from_portal ? html`<p class="no-print muted small">The customer wrote this quote in the portal, at price list prices.</p>` : ''}
+    ${o.status === 'quote' && o.valid_until && dateStr(o.valid_until) < todayStr() ? html`<div class="notice no-print">This quote expired on ${date(o.valid_until)}.
+      ${can('quotes') ? html`<a class="btn small primary" href="/orders/${o.order_id}/edit?renew=1">Reopen with today's prices</a>
+      <span class="muted small">Prices on the lines update to today's price list; check them, then Save. It's good for two more weeks.</span>` : ''}</div>` : ''}
+    ${o.from_portal && o.need_by && Waiting.businessDays(dateStr(o.created_at), dateStr(o.need_by)) < Waiting.RUSH_DAYS
+    ? html`<div class="alert no-print"><strong>Rush:</strong> sent ${Waiting.businessDays(dateStr(o.created_at), dateStr(o.need_by))} business days before its Need by date
+      (${date(o.need_by)}). Under ${Waiting.RUSH_DAYS} business days isn't guaranteed; let the customer know if it can't be met.</div>` : ''}
 
     <section class="sheet">
       <div class="sheet-head">

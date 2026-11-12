@@ -329,6 +329,24 @@
       </select></label>`;
   }
 
+  // Customer quotes: orders sent less than 10 business days before the Need by date aren't
+  // guaranteed (Tyler 2026-11-12).
+  const RUSH_DAYS = 10;
+  function rushDays(needBy) {
+    if (!needBy) return Infinity;
+    const d = new Date();
+    const end = new Date(`${needBy}T12:00:00`);
+    d.setHours(12, 0, 0, 0);
+    let n = 0;
+    while (d < end) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) n += 1; }
+    return n;
+  }
+  function needByNote(needBy) {
+    const days = rushDays(needBy);
+    const base = `Please allow at least ${RUSH_DAYS} business days. Orders sent less than ${RUSH_DAYS} business days before the Need by date can't be guaranteed without our approval; call (307) 331-6449 for a rush.`;
+    return days < RUSH_DAYS ? `⚠ That's ${days} business day${days === 1 ? '' : 's'} away. ${base}` : base;
+  }
+
   function headerHtml() {
     const h = state.header;
     const field = (name, label, type = 'text', extra = '') =>
@@ -344,6 +362,7 @@
       ${field('job_name', 'Job name')}
       ${field('po_number', 'Project / PO #')}
       ${field('need_by', 'Need by', 'date')}
+      ${portal ? `<p class="span2 small need-by-note ${rushDays(h.need_by) < RUSH_DAYS ? 'rush' : ''}" id="need-by-note">${needByNote(h.need_by)}</p>` : ''}
       <label>Pickup or delivery
         <select data-h="fulfillment">
           <option value="pickup" ${h.fulfillment !== 'delivery' ? 'selected' : ''}>Pickup</option>
@@ -545,7 +564,8 @@
 
   function render() {
     if (portal && !portal.prices) root.classList.add('hide-prices');
-    root.innerHTML = `<div id="form-error" class="alert" hidden></div>
+    root.innerHTML = `${state.header.renew ? `<div class="notice">Reopening an expired quote: every line with a list price now has <strong>today's price</strong>
+      (with this customer's premiums). Check the lines, then Save. It will be good for two more weeks.</div>` : ''}<div id="form-error" class="alert" hidden></div>
       ${headerHtml()}
       <p class="notice drawing-reminder">📎 If any piece is different from its standard profile in any way, use <strong>Upload</strong>
         on that line to add a drawing with dimensions (PDF or picture).</p>
@@ -705,6 +725,10 @@
     const t = e.target;
     dirty = true;
     if (t.dataset.h) state.header[t.dataset.h] = t.type === 'checkbox' ? t.checked : t.value;
+    if (t.dataset.h === 'need_by') {
+      const note = root.querySelector('#need-by-note');
+      if (note) { note.textContent = needByNote(t.value); note.classList.toggle('rush', rushDays(t.value) < RUSH_DAYS); }
+    }
     else if (t.dataset.sf) state.sections[t.closest('fieldset').dataset.s][t.dataset.sf] = t.value;
     else if (t.dataset.f) {
       const r = rowOf(t);
@@ -918,5 +942,18 @@
 
   // Start every section with one empty line to type into.
   for (const s of state.sections) if (!s.items.length && !s.extra) s.items.push(toRow({}));
+  // Reopening an expired quote (Tyler 2026-11-12): today's prices on every list-priced line.
+  if (!portal && order.order_id && new URLSearchParams(window.location.search).get('renew') === '1') {
+    state.header.renew = true;
+    for (const sec of state.sections) {
+      for (const row of sec.items) {
+        const p = productById.get(Number(row.product_id));
+        if (!p || p.price === null || p.price === undefined) continue;
+        const price = listPrice(p, Number(row.color_id), row.width_in);
+        if (price !== '') row.unit_price = price;
+      }
+    }
+    dirty = true;
+  }
   render();
 }());

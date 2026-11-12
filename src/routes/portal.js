@@ -628,7 +628,7 @@ async function savePortalQuote(l, existing, body, keys = null) {
     internal_notes: note ? `Customer note: ${note}` : null,
     sections,
   };
-  return saveOrder(existing ? existing.order_id : null, header, { who: `${l.full_name} (customer)`, extra: { from_portal: true }, keys });
+  return saveOrder(existing ? existing.order_id : null, header, { who: `${l.full_name} (customer)`, extra: { from_portal: true, staff_seen_at: null }, keys });
 }
 
 const saveRoute = (getExisting) => [signedIn, express.json({ limit: '1mb' }), async (req, res) => {

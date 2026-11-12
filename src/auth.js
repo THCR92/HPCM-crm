@@ -125,7 +125,10 @@ function middleware() {
       // Keep the browser's cookie in step with the sliding expiry, so a screen left on
       // a page (the shop TV board) stays signed in.
       if (req.method === 'GET') setCookie(req, res, parseCookies(req.headers.cookie)[COOKIE], SESSION_DAYS * 86400);
-      store.run(user, next);
+      // The count of quotes waiting on the office, for the menu (src/waiting.js).
+      const office = can('quotes', user) || can('approve', user);
+      const count = req.method === 'GET' && office ? require('./waiting').waitingCount(query).catch(() => 0) : Promise.resolve(0);
+      count.then((n) => { user.waiting = n; store.run(user, next); });
     }, next);
   };
 }

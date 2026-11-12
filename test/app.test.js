@@ -1987,3 +1987,35 @@ test('emails: a portal quote goes to the shop inbox; a Ready order tells the cus
     mail.io.forceConfigured = false;
   }
 });
+
+test('quotes waiting on the office show as a count; expired quotes move to their own tab and reopen with today\'s prices', async () => {
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
+  // A portal quote no one has opened yet waits on the office.
+  const { rows: [w] } = await query(`INSERT INTO orders (customer_id, from_portal, need_by)
+    VALUES ($1, true, (now() AT TIME ZONE 'America/Denver')::date + 3) RETURNING order_id, order_number`, [c.customer_id]);
+  let list = await (await fetch(`${base}/orders?tab=waiting`)).text();
+  assert.match(list, /class="nav-badge"/);
+  assert.ok(list.includes(w.order_number));
+  const page = await (await fetch(`${base}/orders/${w.order_id}`)).text();
+  assert.match(page, /<strong>Rush:<\/strong>/);
+  list = await (await fetch(`${base}/orders?tab=waiting`)).text();
+  assert.ok(!list.includes(w.order_number), 'opened, so no longer waiting');
+
+  // Past its good-until date: out of Open and Quotes, into Expired.
+  const eave = await productId('TRM-D-STYLE-EAVE');
+  const out = await (await post('/orders', { customer_id: c.customer_id, accessories_checked: true, closures: 'none',
+    sections: [{ area: 'trim', items: [{ product_id: eave, pieces: 2, length_in: 120, width_in: 6, unit_price: 1 }] }] })).json();
+  assert.ok(out.ok, out.error);
+  await query("UPDATE orders SET quote_expires_on = current_date - 1 WHERE order_id = $1", [out.order_id]);
+  const { rows: [o] } = await query('SELECT order_number FROM orders WHERE order_id = $1', [out.order_id]);
+  assert.ok(!(await (await fetch(`${base}/orders?tab=quote`)).text()).includes(o.order_number));
+  assert.ok((await (await fetch(`${base}/orders?tab=expired`)).text()).includes(o.order_number));
+  assert.match(await (await fetch(`${base}/orders/${out.order_id}`)).text(), /Reopen with today's prices/);
+  // Saved from the reopen page: good for two more weeks.
+  const { rows: [line] } = await query('SELECT order_item_id, section_id FROM order_items WHERE order_id = $1', [out.order_id]);
+  const r = await (await post(`/orders/${out.order_id}`, { customer_id: c.customer_id, accessories_checked: true, closures: 'none', renew: true,
+    sections: [{ section_id: line.section_id, area: 'trim', items: [{ order_item_id: line.order_item_id, product_id: eave, pieces: 2, length_in: 120, width_in: 6, unit_price: 20.4 }] }] })).json();
+  assert.ok(r.ok, r.error);
+  const { rows: [e] } = await query("SELECT quote_expires_on - (now() AT TIME ZONE 'America/Denver')::date AS days FROM orders WHERE order_id = $1", [out.order_id]);
+  assert.strictEqual(e.days, 14);
+});
