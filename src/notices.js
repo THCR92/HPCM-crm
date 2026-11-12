@@ -24,6 +24,9 @@ async function quoteAnswered(orderId) {
 }
 
 // A customer wrote a quote in the portal.
+// Quotes customers send from the portal also go to the shop's inbox (Tyler 2026-11-12).
+const QUOTE_INBOX = process.env.QUOTE_INBOX || 'info@highplainscustommetal.com';
+
 async function quoteCreated(orderId) {
   const { rows: [o] } = await query(`
     SELECT o.order_number, o.job_name, o.created_by, o.internal_notes, c.display_name
@@ -35,7 +38,8 @@ async function quoteCreated(orderId) {
     '', 'It is priced from the price list. They can approve it from the portal; check it when they do.',
     '', `${site()}/orders/${orderId}`,
   ].join('\n');
-  await mail.send({ to: await mail.managers(), subject: `New quote ${o.order_number} from ${o.display_name}`, text, kind: 'quote_created', orderId });
+  const to = [...new Set([QUOTE_INBOX, ...[].concat(await mail.managers() || [])].filter(Boolean))];
+  await mail.send({ to, subject: `New quote ${o.order_number} from ${o.display_name}`, text, kind: 'quote_created', orderId });
 }
 
 // An order is packed and ready: tell the customer (their portal login, or the order's email).
@@ -51,9 +55,11 @@ async function orderReady(orderId) {
       ORDER BY (l.login_id = o.customer_login_id) IS TRUE DESC, l.login_id LIMIT 1) l ON true
     WHERE o.order_id = $1`, [orderId]);
   if (!o) return;
+  // Their portal login, and the email on the order (or the customer's) too (Tyler 2026-11-12).
   const portal = o.portal_enabled && o.login_email;
-  const to = portal ? o.login_email : o.contact_email || o.customer_email;
-  if (!to) return;
+  const to = [...new Set([portal ? o.login_email : null, o.contact_email || o.customer_email]
+    .filter(Boolean).map((e) => e.trim().toLowerCase()))];
+  if (!to.length) return;
   const what = `order ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''}${o.po_number ? `, PO ${o.po_number}` : ''}`;
   const text = [
     `Hello${portal ? ` ${o.login_name.split(' ')[0]}` : ''},`, '',
@@ -62,7 +68,7 @@ async function orderReady(orderId) {
       : `Your ${what} is ready for pickup at our shop, 805 E Fox Farm Rd Unit B, Cheyenne. We're open ${SHOP_HOURS}.`,
     ...(portal ? ['', `See the order and the photos of each line here: ${site()}/portal/orders/${orderId}`] : []),
   ].join('\n');
-  await mail.send({ to, subject: `${o.order_number} is ready${o.fulfillment === 'delivery' ? '' : ' for pickup'}`, text, kind: 'order_ready', orderId });
+  await mail.send({ to, subject: `${o.po_number ? `PO ${o.po_number}: ` : ''}${o.order_number} is ready${o.fulfillment === 'delivery' ? '' : ' for pickup'}`, text, kind: 'order_ready', orderId });
 }
 
 // A link for a customer login to set its password (first invite or a reset).

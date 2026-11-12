@@ -1583,7 +1583,7 @@ test('customer portal: invite, set password, see only their quotes, approve; sta
   await addPhotos(id);
   await form(`/orders/${id}/status`, { status: 'ready' });
   await new Promise((r) => setTimeout(r, 200));
-  assert.ok(sent.some((m) => m.to === email && /ready for pickup/.test(m.subject)));
+  assert.ok(sent.some((m) => [].concat(m.to).includes(email) && /ready for pickup/.test(m.subject)));
   mail.io.forceConfigured = false;
 
   // Turning the portal off signs them out.
@@ -1960,4 +1960,30 @@ test('VIP Contractor pays 15% below list; a customer can have their own percent 
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
   assert.strictEqual(await CustomerTypes.premiumFor(v.customer_id), -15);
   assert.ok(lp);
+});
+
+test('emails: a portal quote goes to the shop inbox; a Ready order tells the customer with the PO in the subject', async () => {
+  const mail = require('../src/mail');
+  const notices = require('../src/notices');
+  const sent = [];
+  mail.io.forceConfigured = true;
+  mail.io.send = async (m) => { sent.push(m); };
+  try {
+    const { rows: [c] } = await query(
+      "INSERT INTO customers (display_name, email) VALUES ('Test ' || gen_random_uuid(), 'office@example.com') RETURNING customer_id");
+    const { rows: [o] } = await query(`INSERT INTO orders (customer_id, po_number, contact_email, fulfillment)
+      VALUES ($1, '1111 Dunn Ave', 'Site@Example.com', 'pickup') RETURNING order_id, order_number`, [c.customer_id]);
+    // Notices send in the background: wait for each.
+    const waitFor = async (n) => { for (let i = 0; i < 100 && sent.length < n; i += 1) await new Promise((r) => setTimeout(r, 20)); };
+    notices.quoteCreated(o.order_id);
+    await waitFor(1);
+    assert.ok([].concat(sent[0].to).includes('info@highplainscustommetal.com'));
+    notices.orderReady(o.order_id);
+    await waitFor(2);
+    assert.strictEqual(sent[1].subject, `PO 1111 Dunn Ave: ${o.order_number} is ready for pickup`);
+    assert.deepStrictEqual(sent[1].to, ['site@example.com']);
+    assert.match(sent[1].text, /PO 1111 Dunn Ave/);
+  } finally {
+    mail.io.forceConfigured = false;
+  }
 });
