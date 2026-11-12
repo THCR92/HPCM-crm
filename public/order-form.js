@@ -367,7 +367,7 @@
     try {
       const d = await (await fetch(`${portal ? '/portal' : '/orders'}/delivery-charge?address=${encodeURIComponent(h.job_address_text)}`)).json();
       if (d.charge !== undefined) {
-        deliveryNote = `About ${d.miles} miles from our shop: delivery $${d.charge.toFixed(2)} ($50 within 8 miles; farther, $50 plus $0.55 a mile round trip).`;
+        deliveryNote = `About ${d.miles} miles from our shop: delivery $${d.charge.toFixed(2)} ($50 up to 10 miles; farther, $50 plus $0.55 a mile for the round-trip miles past 10).`;
         // Staff can change it; a customer's quote always gets the figured charge.
         if (portal || !Number(h.delivery_charge) || Number(h.delivery_charge) === deliveryAuto) setDelivery(d.charge);
         deliveryAuto = d.charge;

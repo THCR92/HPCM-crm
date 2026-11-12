@@ -1,14 +1,14 @@
-// Delivery charge from the shop to the job (Tyler 2026-11-12): $50 within 8 miles of
-// 805 E Fox Farm Rd; farther than that, $50 plus $0.55 a mile for the round trip
-// (there and back). Miles are driving miles, one way, from free public map services:
+// Delivery charge from the shop to the job (Tyler 2026-11-12): $50 up to 10 miles from
+// 805 E Fox Farm Rd; farther than that, $50 plus $0.55 a mile for the round-trip miles
+// past 10 (12 miles away = 2 extra each way = 4 x $0.55). Miles are driving miles, one way, from free public map services:
 // the US Census geocoder finds the address and OSRM finds the road distance. If either
 // can't answer, the charge is left for the office to fill in.
 const SHOP = { lon: -104.790844, lat: 41.116555 }; // 805 E Fox Farm Rd, Cheyenne (Census geocoder)
 const BASE = 50;
-const FREE_MILES = 8;
+const FREE_MILES = 10;
 const PER_MILE = 0.55;
 
-const chargeFor = (miles) => (miles <= FREE_MILES ? BASE : Math.round((BASE + PER_MILE * miles * 2) * 100) / 100);
+const chargeFor = (miles) => (miles <= FREE_MILES ? BASE : Math.round((BASE + PER_MILE * (miles - FREE_MILES) * 2) * 100) / 100);
 
 // Kept for the day, so typing the same address twice doesn't ask again.
 const cache = new Map();
@@ -57,6 +57,6 @@ async function quote(address) {
   return result;
 }
 
-const RULE = `$${BASE} within ${FREE_MILES} miles of our shop; farther, $${BASE} plus $${PER_MILE.toFixed(2)} a mile round trip`;
+const RULE = `$${BASE} up to ${FREE_MILES} miles from our shop; farther, $${BASE} plus $${PER_MILE.toFixed(2)} a mile for the round-trip miles past ${FREE_MILES}`;
 
 module.exports = { quote, chargeFor, io, RULE, BASE, FREE_MILES, PER_MILE };

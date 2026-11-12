@@ -2075,7 +2075,7 @@ test('customer portal: the one who sent a quote can cancel it, or cancel and del
   assert.strictEqual(o.status, 'confirmed');
 });
 
-test('delivery: needs the job address; charge is $50 within 8 miles, else $50 + $0.55 a mile round trip; run on site is for standing seam', async () => {
+test('delivery: needs the job address; charge is $50 up to 10 miles, else $50 + $0.55 a mile for the round-trip miles past 10; run on site is for standing seam', async () => {
   const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Test ' || gen_random_uuid()) RETURNING customer_id");
   const eave = await productId('TRM-D-STYLE-EAVE');
   const trim = [{ area: 'trim', items: [{ product_id: eave, pieces: 2, length_in: 120, width_in: 6, unit_price: 20 }] }];
@@ -2088,7 +2088,7 @@ test('delivery: needs the job address; charge is $50 within 8 miles, else $50 + 
   assert.deepStrictEqual([Number(o.delivery_charge), Number(o.delivery_miles)], [50, 5]);
   out = await (await post('/orders', order({ fulfillment: 'delivery', job_address_text: '9 Far Rd, Burns WY' }))).json();
   ({ rows: [o] } = await query('SELECT delivery_charge FROM orders WHERE order_id = $1', [out.order_id]));
-  assert.strictEqual(Number(o.delivery_charge), 63.2); // 50 + 0.55 x 24
+  assert.strictEqual(Number(o.delivery_charge), 52.2); // 50 + 0.55 x (12 - 10) x 2
   // A charge typed in on the staff form stays.
   out = await (await post('/orders', order({ fulfillment: 'delivery', job_address_text: '9 Far Rd, Burns WY', delivery_charge: 40 }))).json();
   ({ rows: [o] } = await query('SELECT delivery_charge FROM orders WHERE order_id = $1', [out.order_id]));
@@ -2102,7 +2102,7 @@ test('delivery: needs the job address; charge is $50 within 8 miles, else $50 + 
   assert.ok(out.ok, out.error);
   assert.match(await (await fetch(`${base}/orders/${out.order_id}`)).text(), /Run on site/);
   assert.deepStrictEqual(await (await fetch(`${base}/orders/delivery-charge?address=${encodeURIComponent('9 Far Rd')}`)).json(),
-    { miles: 12, charge: 63.2, matched: 'TEST' });
+    { miles: 12, charge: 52.2, matched: 'TEST' });
 });
 
 test('portal roles: Sales sends a quote, HPCM confirms it, a Manager places the order with its Need by date; the Admin runs the team', async () => {
