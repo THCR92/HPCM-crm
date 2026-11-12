@@ -992,9 +992,9 @@ router.get('/:id(\\d+)', async (req, res) => {
         <tbody>${s.items.length ? s.items.map((i) => html`
           <tr class="${i.done_at ? 'line-done' : ''}"><td class="num">${num(i.pieces)}</td><td>${i.length_display}</td>
           <td>${i.product_name}${i.pitch ? html` <strong class="pitch">Pitch ${i.pitch}</strong>` : i.needs_pitch ? html` <strong class="pitch missing-pitch">Pitch: ____</strong>` : ''}${i.description ? html`<div class="muted small">${i.description}</div>` : ''}
-            ${i.attachments.map((a) => html`<div class="small"><a href="#drawing-${a.attachment_id}">📎 Drawing: ${a.filename}</a></div>`)}</td>
+            ${i.attachments.length ? html`<div class="small">📎 Drawing below</div>` : ''}</td>
           <td>${i.gauge || ''}</td><td>${i.color_name}</td><td>${sizeCol(i)}</td>
-          <td class="done-col">${doneCell(o, i)}</td></tr>`)
+          <td class="done-col">${doneCell(o, i)}</td></tr>${lineDrawings(o, i)}`)
         : html`<tr><td colspan="7" class="empty">Nothing in this section.</td></tr>`}</tbody>
       </table>`)}
 
@@ -1038,7 +1038,7 @@ router.get('/:id(\\d+)', async (req, res) => {
     ${drawingsSection(o)}
     ${rentals}
     ${production}`,
-    scripts: ['/production.js', '/attachments.js', '/photos.js'],
+    scripts: ['/production.js', '/attachments.js', '/photos.js', '/vendor/pdfjs/pdf.min.js', '/line-pdfs.js'],
   }));
 });
 
@@ -1104,20 +1104,37 @@ router.post('/:id(\\d+)/photos', express.raw({ type: () => true, limit: ATTACH_M
 // photos, PDFs). Pictures print on the cut sheet; PDFs open in a new tab.
 // ---------------------------------------------------------------------------
 
+// Drawings on a line, shown in the line itself for review (Tyler 2026-11-12). Screen only:
+// the printed cut sheet has them full size at the end.
+function lineDrawings(o, i) {
+  if (!i.attachments.length) return '';
+  // A row under the line. Pictures print as they are; PDFs are drawn into the page by
+  // /line-pdfs.js so they print too (a browser won't print an embedded PDF).
+  return html`<tr class="line-drawing-row"><td></td><td colspan="6"><div class="line-drawings">${i.attachments.map((a) => {
+    const url = `/orders/${o.order_id}/attachments/${a.attachment_id}`;
+    return isImage(a)
+      ? html`<a class="line-thumb" href="${url}" target="_blank" rel="noopener" title="Open ${a.filename} full size"><img src="${url}" alt="${a.filename}"></a>`
+      : html`<div class="line-pdf-wrap"><details class="line-pdf no-print"><summary>📄 ${a.filename} <span class="muted">(show)</span></summary>
+        <object data="${url}" type="application/pdf"><a href="${url}" target="_blank" rel="noopener">Open ${a.filename}</a></object>
+        <a class="small" href="${url}" target="_blank" rel="noopener">Open in a new tab</a></details>
+        <div class="pdf-print print-only" data-pdf="${url}" data-name="${a.filename}"></div></div>`;
+  })}</div></td></tr>`;
+}
+
 function drawingsSection(o) {
   const items = o.sections.flatMap((s) => s.items);
   const lineLabel = (a) => (a.order_item_id ? `Line ${a.line_no}: ${a.product_name}` : 'Whole order');
   const canEdit = o.status !== 'invoiced' && can('drawings');
   if (!o.attachments.length && !canEdit) return '';
   return html`
-  <section id="drawings" class="drawings${o.attachments.length ? '' : ' no-print'}">
+  <section id="drawings" class="drawings${o.attachments.some((a) => !a.order_item_id) ? '' : ' no-print'}">
     <h2>Drawings &amp; files</h2>
     ${o.attachments.length ? '' : html`<p class="muted no-print">No drawings yet. Export the page from the reMarkable
       (Share, then PDF or PNG) and attach it here. Pictures (PNG or JPG) also print with the cut sheet.</p>`}
     ${o.attachments.map((a) => {
     const url = `/orders/${o.order_id}/attachments/${a.attachment_id}`;
     return html`
-    <div class="drawing" id="drawing-${a.attachment_id}">
+    <div class="drawing${a.order_item_id ? ' no-print' : ''}" id="drawing-${a.attachment_id}">
       <div class="drawing-head">
         <strong>${lineLabel(a)}</strong>
         <span class="muted small">${a.filename} · ${fileSize(a.byte_size)}${a.uploaded_by ? ` · added by ${a.uploaded_by}` : ''}${a.from_customer ? ' (customer)' : ''}</span>

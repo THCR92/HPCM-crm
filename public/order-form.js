@@ -52,7 +52,11 @@
     return {
       ckey: newKey(),
       // Drawings already on the line, and files picked here to upload when it's saved.
-      saved_files: it.order_item_id ? (it.attachments || []).filter((a) => !portal || a.from_customer).map((a) => a.filename) : [],
+      saved_files: it.order_item_id ? (it.attachments || []).filter((a) => !portal || a.from_customer).map((a) => ({
+        name: a.filename,
+        image: /^image\//.test(a.content_type),
+        url: portal ? `/portal/orders/${order.order_id}/files/${a.attachment_id}` : `/orders/${order.order_id}/attachments/${a.attachment_id}`,
+      })) : [],
       files: [],
       order_item_id: it.order_item_id || null,
       product_id: it.product_id || null,
@@ -231,14 +235,27 @@
     return `<label class="pitch-opt">Pitch ${box('pitch1', 'Roof pitch')}${p.pitches === 2 ? ` to ${box('pitch2', 'Second roof pitch')}` : ''}</label>`;
   }
 
+  // A drawing already on the line, shown right there so it can be checked while editing (Tyler 2026-11-12).
+  function savedFileHtml(f) {
+    if (f.image) {
+      return `<a class="line-thumb" href="${esc(f.url)}" target="_blank" rel="noopener" title="Open ${esc(f.name)} full size">
+        <img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"></a>`;
+    }
+    return `<details class="line-pdf"><summary>📄 ${esc(f.name)} <span class="muted">(show)</span></summary>
+      <object data="${esc(f.url)}" type="application/pdf"><a href="${esc(f.url)}" target="_blank" rel="noopener">Open ${esc(f.name)}</a></object>
+      <a class="small" href="${esc(f.url)}" target="_blank" rel="noopener">Open in a new tab</a></details>`;
+  }
+
   // Upload a drawing for the line (Tyler 2026-11-12): a PDF or picture, sent once the quote saves.
   function filesHtml(row, p) {
-    const names = [...(row.saved_files || []), ...(row.files || []).map((f) => `${f.name} (uploads when you save)`)];
+    const saved = row.saved_files || [];
+    const names = [...saved.map((f) => f.name), ...(row.files || []).map((f) => f.name)];
     const odd = p && (p.category === 'trim' || p.category === 'custom_trim' || p.category === 'downspout');
     return `<div class="line-files">
       <label class="btn small upload-btn" title="Add a PDF or picture (JPG or PNG) for this line">📎 Upload
         <input type="file" data-upload accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" multiple hidden></label>
-      ${names.map((n) => `<span class="small file-name">📎 ${esc(n)}</span>`).join('')}
+      ${(row.files || []).map((f) => `<span class="small file-name">📎 ${esc(f.name)} (uploads when you save)</span>`).join('')}
+      ${saved.length ? `<div class="line-drawings">${saved.map(savedFileHtml).join('')}</div>` : ''}
       ${odd && !names.length ? '<span class="muted small">Not the standard profile? Upload a drawing with dimensions.</span>' : ''}
     </div>`;
   }

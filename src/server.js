@@ -10,6 +10,8 @@ app.get('/healthz', (req, res) => res.send(`ok ${(process.env.RENDER_GIT_COMMIT 
 // Render sits in front of the app; trust it so secure cookies work.
 app.set('trust proxy', 1);
 app.use(express.static(path.join(__dirname, '..', 'public')));
+// pdf.js draws line drawings (PDFs) into the cut sheet so they print.
+app.use('/vendor/pdfjs', express.static(path.join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'build')));
 
 // QuickBooks webhooks: no sign-in, and the raw body is needed to check QuickBooks' signature.
 const qbo = require('./qbo');

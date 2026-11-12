@@ -541,7 +541,8 @@ test('drawings attach to an order line, show on the cut sheet, and stay when the
   assert.ok(aid);
 
   const page = await (await fetch(`${base}/orders/${id}`)).text();
-  assert.match(page, /📎 Drawing: Eave trim\.png/);
+  // Shown in a row under its line (and printed there).
+  assert.match(page, /📎 Drawing below<\/div><\/td>[\s\S]*?<tr class="line-drawing-row">[\s\S]*?alt="Eave trim\.png"/);
   assert.match(page, /Line 1: /);
   assert.match(page, /Bend A first/);
   const file = await fetch(`${base}/orders/${id}/attachments/${aid}`);
