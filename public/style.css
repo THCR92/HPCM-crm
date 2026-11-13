@@ -350,7 +350,13 @@ h2 .section-print { margin-left: .8rem; vertical-align: middle; font-weight: 400
   .count-sheet { font-size: 11px; }
   .count-sheet table.count th { background: #eee !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .count-sheet table.count tr { break-inside: avoid; }
+  /* Coil and flat sheet sheets: one-line rows, filled out to the end of a letter page. */
+  .count-sheet { page: countsheet; }
+  .count-sheet table.count.fill { table-layout: fixed; }
+  .count-sheet table.count.fill td { height: .3in; padding-top: 0; padding-bottom: 0; vertical-align: middle;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: auto; min-width: 0; }
 }
+@page countsheet { size: letter; margin: .5in; }
 
 /* ---- customer portal ---------------------------------------------------- */
 .portal-bar { border-radius: var(--radius); margin-bottom: 1rem; }

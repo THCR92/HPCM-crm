@@ -1469,19 +1469,22 @@ test('printing: Print buttons on report pages, count sheets with an optional bli
     assert.strictEqual(r.status, 200, p);
     assert.match(await r.text(), /window\.print\(\)/, p);
   }
-  for (const k of ['supplies', 'coils', 'stock', 'tools']) {
-    assert.match(await (await fetch(`${base}/${k === 'stock' ? 'stock' : k}`)).text(), new RegExp(`/count-sheets/${k}`), k);
+  for (const k of ['supplies', 'coils', 'stock', 'tools', 'flat-sheets']) {
+    assert.match(await (await fetch(`${base}/${k === 'flat-sheets' ? 'stock' : k}`)).text(), new RegExp(`/count-sheets/${k}`), k);
     const r = await fetch(`${base}/count-sheets/${k}`);
     assert.strictEqual(r.status, 200, k);
     const page = await r.text();
     assert.match(page, /Counted by:/, k);
     if (k !== 'tools') {
-      assert.match(page, /CRM (shows|feet left|pieces)/, k);
+      assert.match(page, /CRM (shows|feet|pieces|sheets)/, k);
       const blind = await (await fetch(`${base}/count-sheets/${k}?blind=1`)).text();
       assert.doesNotMatch(blind, /<th class="num">CRM/, k);
       assert.match(blind, /\(blind\)/, k);
     }
   }
+  // Coil and flat sheet sheets fill out a letter page with blank rows (Tyler 2026-11-13).
+  const rows = (await (await fetch(`${base}/count-sheets/flat-sheets`)).text()).match(/<tr>/g).length;
+  assert.ok(rows >= 27, `${rows} rows`);
 });
 
 test('customer portal: invite, set password, see only their quotes, approve; staff confirms', async () => {

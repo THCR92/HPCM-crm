@@ -17,6 +17,7 @@ const SHEETS = {
   coils: { title: 'Coil count sheet', back: '/coils', backLabel: 'Coils' },
   stock: { title: 'Finished stock count sheet', back: '/stock', backLabel: 'Finished stock' },
   tools: { title: 'Tool count sheet', back: '/tools', backLabel: 'Tools' },
+  'flat-sheets': { title: 'Flat sheet count sheet', back: '/stock', backLabel: 'Finished stock' },
 };
 
 const group = (rows, keyOf) => {
@@ -28,7 +29,16 @@ const group = (rows, keyOf) => {
   }
   return [...m];
 };
-const blanks = (cols) => html`${Array.from({ length: BLANK_ROWS }, () => html`<tr>${Array.from({ length: cols }, () => html`<td>&nbsp;</td>`)}</tr>`)}`;
+const blanks = (cols, n = BLANK_ROWS) => html`${Array.from({ length: n }, () => html`<tr>${Array.from({ length: cols }, () => html`<td>&nbsp;</td>`)}</tr>`)}`;
+
+// Coil and flat sheet sheets fill out the letter page with blank rows (Tyler 2026-11-13).
+// Their rows print one line high (.fill in style.css): FIRST_PAGE rows fit under the
+// heading on page one, MORE_PAGES on each page after it (the sign-off line included).
+const FIRST_PAGE = 27;
+const MORE_PAGES = 30;
+// Column widths (percent) for those sheets, so long color names can't widen the page.
+const colWidths = (list) => html`<colgroup>${list.filter(Boolean).map((w) => html`<col style="width:${w}%">`)}</colgroup>`;
+const fillRows = (used) => (used < FIRST_PAGE ? FIRST_PAGE - used : (MORE_PAGES - ((used - FIRST_PAGE) % MORE_PAGES)) % MORE_PAGES);
 
 async function supplies(blind) {
   const { rows } = await query(`
@@ -58,13 +68,33 @@ async function coils(blind) {
   const { rows } = await query(`SELECT * FROM v_coils WHERE ${ON_HAND} ORDER BY color_label, gauge, width_in, coil_tag`);
   return html`
     <p class="muted small">Tick each coil that's there. Write the feet left if you measure it (or the weight off the scale). List any coil not on this sheet at the bottom.</p>
-    <table class="count">
-      <thead><tr><th>Coil tag</th><th>Color</th><th>Gauge</th><th class="num">Width</th>${blind ? '' : html`<th class="num">CRM feet left</th>`}
+    <table class="count fill">
+      ${colWidths([10, 36, 7, 7, blind ? 0 : 9, 7, 10, blind ? 23 : 14])}
+      <thead><tr><th>Coil tag</th><th>Color</th><th>Gauge</th><th class="num">Width</th>${blind ? '' : html`<th class="num">CRM feet</th>`}
         <th>Here ✓</th><th>Feet / weight</th><th>Notes</th></tr></thead>
       <tbody>${rows.map((c) => html`<tr><td><strong>${c.coil_tag}</strong></td><td>${c.color_label}</td><td>${c.gauge}</td>
         <td class="num">${num(c.width_in, 3)}"</td>${blind ? '' : html`<td class="num">${num(c.current_lf, 0)}</td>`}
         <td class="box"></td><td class="box"></td><td class="wide"></td></tr>`)}
-        ${blanks(blind ? 7 : 8)}</tbody>
+        ${blanks(blind ? 7 : 8, fillRows(rows.length))}</tbody>
+    </table>`;
+}
+
+// Flat sheets on hand, with room to write the ones the CRM doesn't have (Tyler 2026-11-13).
+async function flatSheets(blind) {
+  const { rows } = await query(`
+    SELECT p.name, col.label AS color_label, g.gauge, fn_format_length(fg.length_in) AS length_display, fg.qty_on_hand
+    FROM finished_goods fg JOIN products p USING (product_id) JOIN v_colors col ON col.color_id = fg.color_id
+    LEFT JOIN gauges g ON g.gauge_id = p.gauge_id
+    WHERE fg.qty_on_hand > 0 AND p.category = 'flat_sheet'
+    ORDER BY col.label, g.gauge, fg.length_in DESC`);
+  return html`
+    <p class="muted small">Write each stack: color, gauge, sheet size and how many sheets. Add any not on this sheet in the blank rows.</p>
+    <table class="count fill">
+      ${colWidths([34, 9, 12, blind ? 0 : 11, 12, blind ? 33 : 22])}
+      <thead><tr><th>Color</th><th>Gauge</th><th>Size</th>${blind ? '' : html`<th class="num">CRM sheets</th>`}<th>Counted</th><th>Notes</th></tr></thead>
+      <tbody>${rows.map((s) => html`<tr><td>${s.color_label}</td><td>${s.gauge || ''}</td><td>${s.length_display}</td>
+        ${blind ? '' : html`<td class="num">${s.qty_on_hand}</td>`}<td class="box"></td><td class="wide"></td></tr>`)}
+        ${blanks(blind ? 5 : 6, fillRows(rows.length))}</tbody>
     </table>`;
 }
 
@@ -72,9 +102,10 @@ async function stock(blind) {
   const { rows } = await query(`
     SELECT p.name, col.label AS color_label, fn_format_length(fg.length_in) AS length_display, fg.qty_on_hand, fg.is_remnant
     FROM finished_goods fg JOIN products p USING (product_id) JOIN v_colors col ON col.color_id = fg.color_id
-    WHERE fg.qty_on_hand > 0
+    WHERE fg.qty_on_hand > 0 AND p.category <> 'flat_sheet'
     ORDER BY p.name, col.label, fg.length_in DESC`);
   return html`
+    <p class="muted small">Flat sheets have their own count sheet.</p>
     <table class="count">
       <thead><tr><th>Product</th><th>Color</th><th>Length</th>${blind ? '' : html`<th class="num">CRM pieces</th>`}<th>Counted</th><th>Notes</th></tr></thead>
       <tbody>${rows.map((s) => html`<tr><td>${s.name}${s.is_remnant ? html` <span class="muted small">remnant</span>` : ''}</td>
@@ -104,9 +135,9 @@ async function tools() {
     </table>`);
 }
 
-const BUILD = { supplies, coils, stock, tools };
+const BUILD = { supplies, coils, stock, tools, 'flat-sheets': flatSheets };
 
-router.get('/count-sheets/:kind(supplies|coils|stock|tools)', async (req, res) => {
+router.get('/count-sheets/:kind(supplies|coils|stock|tools|flat-sheets)', async (req, res) => {
   const kind = req.params.kind;
   const sheet = SHEETS[kind];
   const blind = req.query.blind === '1' && kind !== 'tools';

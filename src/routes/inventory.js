@@ -248,7 +248,8 @@ router.get('/stock', async (req, res) => {
   res.send(layout({
     title: 'Stock', active: '/stock',
     body: html`
-    <div class="page-head"><h1>Finished stock</h1><div class="actions">${printButton('/count-sheets/stock')}</div></div>
+    <div class="page-head"><h1>Finished stock</h1><div class="actions">${printButton('/count-sheets/stock')}
+      <a class="btn" href="/count-sheets/flat-sheets">Flat sheet count sheet</a></div></div>
     ${printedLine('Finished stock')}
     <p class="muted">Panels and trim already cut: run ahead to stock, or remnants left over from a job.</p>
     ${alert(req)}
