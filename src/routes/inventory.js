@@ -241,15 +241,14 @@ router.get('/stock', async (req, res) => {
     ORDER BY p.name, col.label, fg.length_in DESC`);
   const { rows: products } = await query(`
     SELECT product_id, name, category FROM products
-    WHERE active AND category IN ('panel', 'trim', 'custom_trim', 'flat_sheet')
+    WHERE active AND category IN ('panel', 'trim', 'custom_trim')
     ORDER BY array_position(enum_range(NULL::product_category), category), name`);
   const { rows: coils } = await query(`SELECT coil_id, coil_tag, color_label, gauge, current_lf
                                        FROM v_coils WHERE ${ON_HAND} ORDER BY coil_tag`);
   res.send(layout({
     title: 'Stock', active: '/stock',
     body: html`
-    <div class="page-head"><h1>Finished stock</h1><div class="actions">${printButton('/count-sheets/stock')}
-      <a class="btn" href="/count-sheets/flat-sheets">Flat sheet count sheet</a></div></div>
+    <div class="page-head"><h1>Finished stock</h1><div class="actions">${printButton('/count-sheets/stock')}</div></div>
     ${printedLine('Finished stock')}
     <p class="muted">Panels and trim already cut: run ahead to stock, or remnants left over from a job.</p>
     ${alert(req)}

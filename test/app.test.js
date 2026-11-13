@@ -1464,13 +1464,13 @@ test('deleting: quotes and cancelled orders, customers without orders; real orde
 });
 
 test('printing: Print buttons on report pages, count sheets with an optional blind count', async () => {
-  for (const p of ['/reports', '/coils', '/supplies', '/stock', '/tools']) {
+  for (const p of ['/reports', '/coils', '/supplies', '/stock', '/tools', '/flat-sheets']) {
     const r = await fetch(base + p);
     assert.strictEqual(r.status, 200, p);
     assert.match(await r.text(), /window\.print\(\)/, p);
   }
   for (const k of ['supplies', 'coils', 'stock', 'tools', 'flat-sheets']) {
-    assert.match(await (await fetch(`${base}/${k === 'flat-sheets' ? 'stock' : k}`)).text(), new RegExp(`/count-sheets/${k}`), k);
+    assert.match(await (await fetch(`${base}/${k}`)).text(), new RegExp(`/count-sheets/${k}`), k);
     const r = await fetch(`${base}/count-sheets/${k}`);
     assert.strictEqual(r.status, 200, k);
     const page = await r.text();
@@ -1485,6 +1485,38 @@ test('printing: Print buttons on report pages, count sheets with an optional bli
   // Coil and flat sheet sheets fill out a letter page with blank rows (Tyler 2026-11-13).
   const rows = (await (await fetch(`${base}/count-sheets/flat-sheets`)).text()).match(/<tr>/g).length;
   assert.ok(rows >= 27, `${rows} rows`);
+});
+
+test('flat sheets have their own page: add (or shear from a coil), use, count', async () => {
+  const form = (path, body) => fetch(base + path, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() });
+  const color = (await query('SELECT color_id FROM colors WHERE active LIMIT 1')).rows[0].color_id;
+  const gauge = (await query('SELECT gauge_id FROM gauges WHERE gauge = 26')).rows[0].gauge_id;
+  await query('DELETE FROM flat_sheets WHERE color_id = $1 AND gauge_id = $2 AND length_in = 123', [color, gauge]);
+  const r = await form('/flat-sheets', { color_id: color, gauge_id: gauge, qty: 12, width_in: 48, ft: 10, inch: '3' });
+  assert.strictEqual(r.status, 302);
+  assert.doesNotMatch(r.headers.get('location'), /error/);
+  const sheet = async () => (await query('SELECT * FROM flat_sheets WHERE color_id = $1 AND gauge_id = $2 AND length_in = 123', [color, gauge])).rows[0];
+  assert.strictEqual((await sheet()).qty_on_hand, 12);
+  // Sheared from a coil: the coil loses the footage.
+  const coil = (await query(`INSERT INTO coils (coil_tag, color_id, gauge_id, width_in, initial_lf, current_lf, status)
+    VALUES ('FS-' || gen_random_uuid(), $1, $2, 48, 500, 500, 'in_stock') RETURNING coil_id`, [color, gauge])).rows[0].coil_id;
+  await form('/flat-sheets', { color_id: color, gauge_id: gauge, qty: 4, width_in: 48, ft: 10, inch: '3', coil_id: coil });
+  assert.strictEqual((await sheet()).qty_on_hand, 16);
+  assert.strictEqual(Number((await query('SELECT current_lf FROM v_coils WHERE coil_id = $1', [coil])).rows[0].current_lf), 459);
+  const id = (await sheet()).flat_sheet_id;
+  await form(`/flat-sheets/${id}/change`, { qty: 5, reason: 'used', note: 'HP-1' });
+  assert.strictEqual((await sheet()).qty_on_hand, 11);
+  const tooMany = await form(`/flat-sheets/${id}/change`, { qty: 50, reason: 'used' });
+  assert.match(tooMany.headers.get('location'), /error/);
+  await form(`/flat-sheets/${id}/change`, { qty: 9, reason: 'count' });
+  assert.strictEqual((await sheet()).qty_on_hand, 9);
+  const page = await (await fetch(`${base}/flat-sheets`)).text();
+  assert.match(page, /48&quot; × 10&#39; 3&quot;/);
+  assert.match(page, /Sheared from coil/);
+  assert.match(await (await fetch(`${base}/count-sheets/flat-sheets`)).text(), /48("|&quot;) × 10&#39; 3&quot;/);
+  // Not on the Finished stock page any more.
+  assert.doesNotMatch(await (await fetch(`${base}/stock`)).text(), /count-sheets\/flat-sheets/);
 });
 
 test('customer portal: invite, set password, see only their quotes, approve; staff confirms', async () => {

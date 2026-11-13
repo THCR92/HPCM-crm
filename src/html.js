@@ -79,6 +79,7 @@ const NAV = [
 const MENU = [
   ['/reports', 'Reports', 'reports'],
   ['/coils', 'Coils'],
+  ['/flat-sheets', 'Flat sheets'],
   ['/stock', 'Finished stock'],
   ['/supplies', 'Supplies'],
   ['/tools', 'Tools'],

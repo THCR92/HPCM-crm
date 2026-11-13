@@ -17,7 +17,7 @@ const SHEETS = {
   coils: { title: 'Coil count sheet', back: '/coils', backLabel: 'Coils' },
   stock: { title: 'Finished stock count sheet', back: '/stock', backLabel: 'Finished stock' },
   tools: { title: 'Tool count sheet', back: '/tools', backLabel: 'Tools' },
-  'flat-sheets': { title: 'Flat sheet count sheet', back: '/stock', backLabel: 'Finished stock' },
+  'flat-sheets': { title: 'Flat sheet count sheet', back: '/flat-sheets', backLabel: 'Flat sheets' },
 };
 
 const group = (rows, keyOf) => {
@@ -82,17 +82,16 @@ async function coils(blind) {
 // Flat sheets on hand, with room to write the ones the CRM doesn't have (Tyler 2026-11-13).
 async function flatSheets(blind) {
   const { rows } = await query(`
-    SELECT p.name, col.label AS color_label, g.gauge, fn_format_length(fg.length_in) AS length_display, fg.qty_on_hand
-    FROM finished_goods fg JOIN products p USING (product_id) JOIN v_colors col ON col.color_id = fg.color_id
-    LEFT JOIN gauges g ON g.gauge_id = p.gauge_id
-    WHERE fg.qty_on_hand > 0 AND p.category = 'flat_sheet'
-    ORDER BY col.label, g.gauge, fg.length_in DESC`);
+    SELECT s.*, col.label AS color_label, g.gauge, fn_format_length(s.length_in) AS length_display
+    FROM flat_sheets s LEFT JOIN v_colors col USING (color_id) LEFT JOIN gauges g USING (gauge_id)
+    WHERE s.qty_on_hand > 0
+    ORDER BY col.label NULLS LAST, g.gauge, s.width_in, s.length_in DESC`);
   return html`
     <p class="muted small">Write each stack: color, gauge, sheet size and how many sheets. Add any not on this sheet in the blank rows.</p>
     <table class="count fill">
       ${colWidths([34, 9, 12, blind ? 0 : 11, 12, blind ? 33 : 22])}
       <thead><tr><th>Color</th><th>Gauge</th><th>Size</th>${blind ? '' : html`<th class="num">CRM sheets</th>`}<th>Counted</th><th>Notes</th></tr></thead>
-      <tbody>${rows.map((s) => html`<tr><td>${s.color_label}</td><td>${s.gauge || ''}</td><td>${s.length_display}</td>
+      <tbody>${rows.map((s) => html`<tr><td>${s.color_label || ''}</td><td>${s.gauge || ''}</td><td>${num(s.width_in, 3)}" × ${s.length_display}</td>
         ${blind ? '' : html`<td class="num">${s.qty_on_hand}</td>`}<td class="box"></td><td class="wide"></td></tr>`)}
         ${blanks(blind ? 5 : 6, fillRows(rows.length))}</tbody>
     </table>`;
