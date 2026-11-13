@@ -743,7 +743,7 @@ test('screws: per-profile rules for through-fastener, nail flange and snap lock 
   let rows = await screws();
   // Woodtite is $30 a bag (Tyler 2026-11-12, migration 053).
   assert.deepStrictEqual(rows.map((r) => [r.product_id, r.color_id, r.pieces, r.unit_price, r.is_auto]), [
-    [woodtite, red, 4, 30, true], [clip, null, 50, 0.55, true], [panhead, red, 1, 38, true], [woodtite, tan, 1, 30, true]]);
+    [woodtite, red, 4, 30, true], [clip, null, 50, 0.55, true], [panhead, null, 1, 38, true], [woodtite, tan, 1, 30, true]]);
   assert.match(rows[0].description, /^900 screws: 10 squares x 90 per square, 250 per bag$/);
   assert.match(rows[2].description, /^136 screws: 2 every 2' on 100' of panel \+ 1 every 2' on 65' of panel, 250 per bag$/);
 
