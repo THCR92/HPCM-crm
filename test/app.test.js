@@ -73,7 +73,7 @@ test('order totals are computed per pricing unit and lines keep their ids on edi
     sections: [
       { area: 'roof', items: [{ product_id: snap, pieces: 10, length_in: 120, width_in: 18, unit_price: 3.65 }] },
       { area: 'wall', items: [{ product_id: pbr, pieces: 4, length_in: 150, unit_price: 5.65 }] },
-      { area: 'trim', items: [{ product_id: trim, pieces: 3, length_in: 126, width_in: 12, unit_price: 3.40 }] },
+      { area: 'trim', items: [{ product_id: trim, pieces: 3, length_in: 126, width_in: 12, unit_price: 40.80 }] },
     ],
   };
   let res = await post('/orders', order);
@@ -84,10 +84,11 @@ test('order totals are computed per pricing unit and lines keep their ids on edi
   const lines = async () => (await query(
     'SELECT order_item_id, billable_qty, line_total FROM order_items WHERE order_id = $1 ORDER BY line_no', [id])).rows;
   const first = await lines();
-  // 10 x 10' x 18" = 150 sq ft; 4 x 12.5' = 50 LF; 3 x 10.5' x 12" girth = 31.5 sq ft
-  assert.deepStrictEqual(first.map((l) => l.billable_qty), [150, 50, 31.5]);
+  // 10 x 10' x 18" = 150 sq ft; 4 x 12.5' = 50 LF; custom trim like other trim (Tyler 2026-11-13):
+  // 3 x 10.5' = 3.15 ten-foot pieces at 12" x $3.40 = $40.80 each
+  assert.deepStrictEqual(first.map((l) => l.billable_qty), [150, 50, 3.15]);
   const { rows: [t] } = await query('SELECT pre_tax_total FROM v_order_totals WHERE order_id = $1', [id]);
-  assert.strictEqual(t.pre_tax_total, 547.5 + 282.5 + 107.1 + 50);
+  assert.strictEqual(t.pre_tax_total, 547.5 + 282.5 + 128.52 + 50);
 
   // Edit: change the roof qty, drop the wall line.
   order.sections[0].items[0] = { ...order.sections[0].items[0], order_item_id: first[0].order_item_id, pieces: 12 };

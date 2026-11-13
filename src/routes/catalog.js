@@ -66,7 +66,8 @@ router.get('/products', need('prices'), async (req, res) => {
         <tbody>${items.map((p) => html`
           <tr><td>${p.name}<div class="muted small">${p.sku}${edit ? html` · <a href="/admin/products/${p.product_id}?back=products">edit</a>
             · <a href="/admin/products/new?from=${p.product_id}&back=products" title="Start a new product with this one's settings">copy</a>` : ''}${can('screws') && p.category !== 'panel' ? html` · <a href="/admin/screws?for=i:${p.product_id}">screws</a>` : ''}</div></td>
-          <td>${p.pricing_unit === 'each' && p.standard_length_in ? `per ${num(p.standard_length_in / 12)}' piece` : UNIT_LABEL[p.pricing_unit]}</td>
+          <td>${p.category === 'custom_trim' ? `per inch of flat width, per ${num((p.standard_length_in || 120) / 12)}' piece`
+    : p.pricing_unit === 'each' && p.standard_length_in ? `per ${num(p.standard_length_in / 12)}' piece` : UNIT_LABEL[p.pricing_unit]}</td>
           ${cut ? html`<td>${edit ? html`<form method="post" action="/products/${p.product_id}/girth" class="inline">
             <input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}" placeholder="inches" style="width:5.5rem">
             <button class="btn small">Save</button></form>` : (p.girth_in ? `${num(p.girth_in, 3)}"` : '')}${p.flat_extra_in && p.girth_in ? html`
@@ -90,6 +91,8 @@ router.post('/products/:id(\\d+)/price', need('catalog'), async (req, res) => {
     VALUES ($1, $2, current_date, 'Edited in CRM')
     ON CONFLICT (product_id, effective_from) DO UPDATE SET unit_price = EXCLUDED.unit_price`,
   [req.params.id, price]);
+  // Custom trim's price is its rate per flat inch.
+  await query("UPDATE products SET price_per_flat_in = $2 WHERE product_id = $1 AND category = 'custom_trim'", [req.params.id, price]);
   res.redirect('/products?saved=1');
 });
 

@@ -203,8 +203,9 @@ const makeSku = (name) => name.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace
 function productProblem(p) {
   if (!p.name) return 'Enter a name.';
   if (p.category === 'panel' && (!p.profile_id || !p.gauge_id)) return 'A panel needs a profile and a gauge.';
-  if (p.category === 'custom_trim' && p.pricing_unit !== 'sqft') return 'Custom trim is priced per sq ft.';
-  if (p.price_per_flat_in !== null && p.category !== 'trim') return 'Only trim is priced per inch of flat width.';
+  // Custom trim is priced like the other trim: per 10' piece at a rate per flat inch (Tyler 2026-11-13).
+  if (p.category === 'custom_trim' && (p.pricing_unit !== 'each' || !p.price_per_flat_in)) return 'Custom trim is priced per piece, with a price per inch of flat width.';
+  if (p.price_per_flat_in !== null && !['trim', 'custom_trim'].includes(p.category)) return 'Only trim is priced per inch of flat width.';
   for (const k of ['standard_length_in', 'max_length_in', 'girth_in']) {
     if (p[k] !== null && !(p[k] > 0)) return 'Lengths and widths must be more than zero.';
   }

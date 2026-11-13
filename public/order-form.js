@@ -212,7 +212,7 @@
     }
     if (p.category === 'custom_trim') {
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="0.125"
-                value="${esc(row.width_in)}" placeholder="girth" title="Girth: flat stretch-out width in inches"><span class="unit">" girth</span>`;
+                value="${esc(row.width_in)}" placeholder="girth" title="Girth: flat stretch-out width in inches.${p.rate ? ` Priced at $${Number(p.rate).toFixed(2)} per flat inch per 10' piece.` : ''}"><span class="unit">" girth</span>`;
     }
     return '';
   }
