@@ -161,7 +161,7 @@ router.get('/admin/quickbooks', need('admin'), async (req, res) => {
       <ul>
         <li>Customers added or changed here are added or updated in QuickBooks right away.</li>
         <li>Customers added or changed in QuickBooks show up here within a few minutes. QuickBooks sub-customers (jobs) stay in QuickBooks.</li>
-        <li>An order becomes a QuickBooks invoice when it's confirmed, with the same number (HP-…), due 15 days after pickup or delivery.
+        <li>An order becomes a QuickBooks invoice when it's Ready, with the same number (HP-…), due 15 days after pickup or delivery.
           Each line keeps its quantity, length and price; delivery, discount and deposit come along, and so does the CRM's sales tax.</li>
         <li>Open estimates (pending or accepted) written in QuickBooks show up here as quotes within a few minutes. To bring in
           one that didn't (an older one, or one already closed), type its number in "Bring in estimate #" above. Items the CRM sells by the piece come in as

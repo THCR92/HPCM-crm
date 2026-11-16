@@ -20,7 +20,12 @@ router.get('/admin', need('admin'), async (req, res) => {
     (SELECT count(*) FROM colors WHERE active)::int AS colors,
     (SELECT count(*) FROM suppliers)::int AS suppliers,
     (SELECT value FROM app_settings WHERE key = 'sales_tax_rate') AS tax,
-    (SELECT value = '1' FROM app_settings WHERE key = 'require_length_photos') AS photos`);
+    (SELECT value = '1' FROM app_settings WHERE key = 'require_length_photos') AS photos,
+    pg_database_size(current_database())::bigint AS db_bytes,
+    (SELECT COALESCE(sum(byte_size), 0) FROM order_attachments)::bigint AS file_bytes,
+    (SELECT count(*) FROM order_attachments)::int AS files,
+    (SELECT count(*) FROM orders WHERE ordered_on >= current_date - 30)::int AS orders_30`);
+  const mb = (b) => `${num(Number(b) / 1024 / 1024, 0)} MB`;
   const card = (href, title, text) => html`<a class="card admin-card" href="${href}"><h2>${title}</h2><p>${text}</p></a>`;
   res.send(layout({
     title: 'Admin', active: '/admin',
@@ -32,11 +37,14 @@ router.get('/admin', need('admin'), async (req, res) => {
       ${card('/admin/products', 'Products', `${c.products} products. Add new ones, rename, change units, or remove.`)}
       ${card('/colors', 'Colors and finishes', `${c.colors} colors. Add colors, premiums and finishes.`)}
       ${card('/admin/screws', 'Screws and clips', 'Which screws and clips go with each panel and framing, and how many.')}
-      ${card('/admin/quickbooks', 'QuickBooks', 'Connect QuickBooks. Customers sync both ways; confirmed orders become invoices.')}
+      ${card('/admin/quickbooks', 'QuickBooks', 'Connect QuickBooks. Customers sync both ways; orders become invoices when Ready.')}
       ${card('/admin/email', 'Email', mail.configured() ? 'Email is set up. Send a test and see what the CRM has sent.'
     : 'Not set up yet. Customers get links you copy by hand.')}
       ${card('/admin/suppliers', 'Suppliers', `${c.suppliers} suppliers. Edit contact details or remove.`)}
     </div>
+    <p class="card muted small" style="margin-top:1rem">Storage: the database is using <strong>${mb(c.db_bytes)}</strong>,
+      of which ${c.files} photos and files are ${mb(c.file_bytes)}. ${c.orders_30} orders placed in the last 30 days.
+      Check your database's disk size in Render; when this gets near it, the CRM can't save.</p>
     <form method="post" action="/admin/settings/photos" class="card form-row" style="margin-top:1rem">
       <label class="check"><input type="checkbox" name="on" value="1" ${c.photos ? 'checked' : ''}>
         Require a length check photo of every line before an order is Ready or Completed</label>

@@ -1385,10 +1385,15 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     const id = Number((await res.json()).redirect.split('/').pop());
     await form(`/orders/${id}/status`, { status: 'confirmed' });
     await qbo.idle();
-    const { rows: [early] } = await query('SELECT status, qbo_invoice_id FROM orders WHERE order_id = $1', [id]);
-    assert.ok(early.qbo_invoice_id, 'invoiced when confirmed');
-    assert.strictEqual(early.status, 'confirmed', 'a confirmed order stays in the shop steps');
+    // Not invoiced until it's Ready (Tyler 2026-11-16).
+    assert.strictEqual((await query('SELECT qbo_invoice_id FROM orders WHERE order_id = $1', [id])).rows[0].qbo_invoice_id, null);
+    assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /goes to QuickBooks when this order is Ready/);
     await addPhotos(id);
+    await form(`/orders/${id}/status`, { status: 'ready' });
+    await qbo.idle();
+    const { rows: [early] } = await query('SELECT status, qbo_invoice_id FROM orders WHERE order_id = $1', [id]);
+    assert.ok(early.qbo_invoice_id, 'invoiced when ready');
+    assert.strictEqual(early.status, 'ready', 'a ready order stays in the shop steps');
     await form(`/orders/${id}/status`, { status: 'completed' });
     await qbo.idle();
     const { rows: [o] } = await query(`SELECT o.status, o.qbo_invoice_id, o.qbo_doc_number, o.order_number, o.qbo_sync_status, t.tax_amount

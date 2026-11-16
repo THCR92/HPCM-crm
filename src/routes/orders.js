@@ -631,7 +631,7 @@ const saveHandler = (getId) => async (req, res) => {
       await query(`UPDATE orders SET quote_expires_on = (now() AT TIME ZONE 'America/Denver')::date + 14
         WHERE order_id = $1 AND status = 'quote'`, [id]);
     }
-    // A confirmed order's QuickBooks invoice gets the changes (quotes aren't sent).
+    // An order's QuickBooks invoice gets the changes (once it has one; quotes aren't sent).
     qbo.orderCompleted(id);
     res.json({ ok: true, redirect: `/orders/${id}`, order_id: id, keys });
   } catch (err) {
@@ -743,9 +743,9 @@ router.post('/:id(\\d+)/status', async (req, res) => {
     // Boots, screws and other supplies come out of stock when the order is completed.
     await syncOrderSupplies(db, Number(req.params.id), userName());
   });
-  // An order goes to QuickBooks as an invoice when it's confirmed (Tyler 2026-11-05), and is
-  // sent again when it's completed so the invoice has any changes and the order reads Invoiced.
-  if (status === 'completed' || (APPROVED.includes(status) && cur.status === 'quote')) qbo.orderCompleted(Number(req.params.id));
+  // The QuickBooks invoice is made when the order is Ready (Tyler 2026-11-16), and sent again
+  // when it's completed so it has any changes and the order reads Invoiced.
+  if (status === 'ready' || status === 'completed') qbo.orderCompleted(Number(req.params.id));
   if (status === 'ready' && cur.status !== 'ready') notices.orderReady(Number(req.params.id));
   res.redirect(back);
 });
@@ -1331,6 +1331,7 @@ async function qboLine(o) {
       <button class="btn small primary">Use a new number</button></form>` : '';
   if (o.qbo_sync_status === 'error') return html`<p class="no-print"><span class="warn-text">Not in QuickBooks: ${o.qbo_last_error}</span>${retry}${taken}</p>`;
   if (o.qbo_invoice_id) return html`<p class="no-print muted small">In QuickBooks as invoice ${o.qbo_doc_number}${retry}</p>`;
+  if (['confirmed', 'in_production'].includes(o.status)) return html`<p class="no-print muted small">The invoice goes to QuickBooks when this order is Ready.</p>`;
   if (o.qbo_sync_status === 'pending') return html`<p class="no-print muted small">Sending to QuickBooks…</p>`;
   return html`<p class="no-print muted small">Not in QuickBooks yet${retry}</p>`;
 }

@@ -22,7 +22,6 @@ const { INVITE_DAYS, DECLINE_REASONS, SHOP_HOURS, SHOP_ADDRESS, SHOP_MAP } = req
 const mail = require('../mail');
 const proof = require('../proof');
 const notices = require('../notices');
-const qbo = require('../qbo');
 const Waiting = require('../waiting');
 const { hpcmOk } = Waiting;
 
@@ -551,7 +550,6 @@ router.post('/portal/orders/:id(\\d+)/place', signedIn, async (req, res) => {
     WHERE o.order_id = $2 AND ${visible(l)} AND o.status = 'quote' AND o.customer_decision = 'approved'`,
   [l.customer_id, id, needBy, who, po, note]);
   if (!rowCount) return back('This quote changed while you were looking at it. Check it and try again.');
-  qbo.orderCompleted(id);
   notices.orderPlaced(id);
   back();
 });

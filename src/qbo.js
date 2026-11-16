@@ -684,8 +684,9 @@ async function invoiceStillOpen(qboInvoiceId) {
   return voided ? null : inv.DocNumber || 'this order\'s invoice';
 }
 
-// Invoiced when confirmed (Tyler 2026-11-05); sent again when completed.
-const INVOICEABLE = ['confirmed', 'in_production', 'ready', 'completed', 'invoiced'];
+// Invoiced when Ready (Tyler 2026-11-16; was when ordered); sent again when completed.
+const INVOICEABLE = ['ready', 'completed', 'invoiced'];
+const STILL_SENT = ['confirmed', 'in_production'];
 
 // Sends a confirmed order to QuickBooks as an invoice (or updates the one it
 // already has). Once the order is completed, with the real QuickBooks company it
@@ -695,7 +696,9 @@ async function pushInvoice(orderId) {
     SELECT o.*, c.qbo_customer_id, c.email AS customer_email, t.tax_amount, t.tax_exempt AS tax_exempt_effective
     FROM orders o JOIN customers c USING (customer_id) JOIN v_order_totals t USING (order_id)
     WHERE o.order_id = $1`, [orderId]);
-  if (!o || !INVOICEABLE.includes(o.status)) return null;
+  // Invoices start when the order is Ready (Tyler 2026-11-16; was when ordered). One already
+  // in QuickBooks still gets the order's changes.
+  if (!o || !(INVOICEABLE.includes(o.status) || (o.qbo_invoice_id && STILL_SENT.includes(o.status)))) return null;
   const log = { entity: 'Invoice', table: 'orders', id: o.order_id };
   try {
     await query("UPDATE orders SET qbo_sync_status = 'pending' WHERE order_id = $1", [o.order_id]);
