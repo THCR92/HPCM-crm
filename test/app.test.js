@@ -2078,7 +2078,9 @@ test('quotes waiting on the office show as a count; expired quotes move to their
   const page = await (await fetch(`${base}/orders/${w.order_id}`)).text();
   assert.match(page, /<strong>Rush:<\/strong>/);
   // Opening it isn't enough: it waits until HPCM confirms it.
-  assert.match(page, /Confirm quote/);
+  assert.match(page, /Mark quote checked/);
+  assert.match(page, /Quote, not an order/);
+  assert.match(page, /has not placed this order in their portal. Make this quote an order/);
   assert.ok((await (await fetch(`${base}/orders?tab=waiting`)).text()).includes(w.order_number), 'still waiting after opening');
   await fetch(`${base}/orders/${w.order_id}/hpcm-confirm`, { method: 'POST', redirect: 'manual' });
   list = await (await fetch(`${base}/orders?tab=waiting`)).text();
@@ -2201,17 +2203,17 @@ test('portal roles: Sales sends a quote, HPCM confirms it, a Manager places the 
     const id = out.order_id;
     let { rows: [o] } = await query('SELECT need_by, customer_decision, hpcm_confirmed_at, valid_until FROM orders o, LATERAL (SELECT o.quote_expires_on AS valid_until) v WHERE order_id = $1', [id]);
     assert.deepStrictEqual([o.need_by, o.customer_decision, o.hpcm_confirmed_at], [null, 'approved', null]);
-    assert.match(await get(`/portal/orders/${id}`, 'sales'), /We have this quote and will check and confirm it/);
+    assert.match(await get(`/portal/orders/${id}`, 'sales'), /We have this quote and will check it/);
     assert.ok((await (await fetch(`${base}/orders?tab=waiting`)).text()).includes(`/orders/${id}"`), 'waits on the office');
     // Nobody can place it before HPCM confirms.
     assert.match((await form(`/portal/orders/${id}/place`, { need_by: '2099-01-15', checked: '1' }, 'manager')).headers.get('location'), /isn.t%20ready|error=/);
 
     // HPCM confirms: the one who wrote it hears about it.
     await fetch(`${base}/orders/${id}/hpcm-confirm`, { method: 'POST', redirect: 'manual' });
-    await waitFor(/confirmed by High Plains/);
-    const confirmed = sent.find((m) => /confirmed by High Plains/.test(m.subject));
+    await waitFor(/checked by High Plains/);
+    const confirmed = sent.find((m) => /checked by High Plains/.test(m.subject));
     assert.ok(confirmed && /sal-/.test([].concat(confirmed.to).join()), 'author emailed');
-    assert.match(await get(`/portal/orders/${id}`, 'sales'), /A manager or admin at .* places the order/);
+    assert.match(await get(`/portal/orders/${id}`, 'sales'), /nothing is ordered until a manager or admin at .* places the order/);
     assert.match(await get(`/portal/orders/${id}`, 'manager'), /Place the order/);
 
     // Sales can't place orders; a Manager must give the Need by date.
@@ -2233,7 +2235,7 @@ test('portal roles: Sales sends a quote, HPCM confirms it, a Manager places the 
     // A change after HPCM confirmed it sends it back to be confirmed again.
     out = await (await send('/portal/quotes', { job_name: 'Barn', sections: [{ area: 'roof', items: [{ product_id: pbr, pieces: 2, length_in: 120 }] }] }, 'sales')).json();
     await fetch(`${base}/orders/${out.order_id}/hpcm-confirm`, { method: 'POST', redirect: 'manual' });
-    assert.match(await get(`/portal/orders/${out.order_id}/edit`, 'sales'), /comes back to us to confirm again/);
+    assert.match(await get(`/portal/orders/${out.order_id}/edit`, 'sales'), /comes back to us to check again/);
     assert.ok((await (await send(`/portal/orders/${out.order_id}/save`, { job_name: 'Barn',
       sections: [{ area: 'roof', items: [{ product_id: pbr, pieces: 3, length_in: 120 }] }] }, 'sales')).json()).ok);
     assert.strictEqual((await query('SELECT hpcm_confirmed_at FROM orders WHERE order_id = $1', [out.order_id])).rows[0].hpcm_confirmed_at, null);

@@ -95,12 +95,12 @@ const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/
 
 // Roles inside a customer (Tyler 2026-11-12). Admin: everything, and their team's logins.
 // Manager: all quotes and orders, accepts quotes and places orders. Sales: writes quotes
-// (sent to HPCM to confirm) and sees only their own.
+// (sent to HPCM to check) and sees only their own.
 const ROLE_LABEL = { admin: 'Admin', manager: 'Manager', sales: 'Sales' };
 const ROLE_HELP = {
   admin: 'Sees all quotes and orders, places orders, and manages your team\'s logins',
   manager: 'Sees all quotes and orders, accepts quotes and places orders',
-  sales: 'Writes quotes (we confirm them) and sees only their own',
+  sales: 'Writes quotes (we check them) and sees only their own',
 };
 const expiredQuote = (o) => o.status === 'quote' && String(o.valid_until) < today();
 
@@ -289,7 +289,7 @@ function steps(o) {
   const yours = ordered || o.customer_decision === 'approved';
   const list = [
     [o.from_portal ? 'Sent to us' : 'Quoted', true],
-    [ours ? 'We confirmed' : 'Our confirmation', ours],
+    [ours ? 'Checked by us' : 'We check it', ours],
     [yours ? 'You accepted' : 'Your answer', yours],
     [ordered ? 'Ordered' : 'Place order', ordered],
     ['In production', after(['in_production', 'ready', 'completed', 'invoiced'])],
@@ -305,8 +305,8 @@ const customerStatus = (o) => {
   if (o.status === 'quote') {
     if (o.customer_decision === 'declined') return 'Declined';
     if (o.valid_until < today()) return 'Expired';
-    if (!hpcmOk(o)) return 'Sent to us to confirm';
-    if (o.customer_decision === 'approved') return 'Confirmed, ready to order';
+    if (!hpcmOk(o)) return 'Sent to us to check';
+    if (o.customer_decision === 'approved') return 'Checked, ready when you are';
     return 'Waiting on your answer';
   }
   if (o.status === 'invoiced') return 'Completed';
@@ -327,9 +327,9 @@ router.get('/portal', signedIn, async (req, res) => {
     ORDER BY o.order_id DESC`, [l.customer_id]);
   const open = (o) => o.status === 'quote' && o.valid_until >= today() && o.customer_decision !== 'declined';
   const groups = [
-    ['Confirmed, ready to order', rows.filter((o) => open(o) && hpcmOk(o) && o.customer_decision === 'approved')],
+    ['Checked by us: quotes, not ordered yet', rows.filter((o) => open(o) && hpcmOk(o) && o.customer_decision === 'approved')],
     ['Quotes waiting on your answer', rows.filter((o) => open(o) && hpcmOk(o) && !o.customer_decision)],
-    ['Sent to us to confirm', rows.filter((o) => open(o) && !hpcmOk(o))],
+    ['Sent to us to check', rows.filter((o) => open(o) && !hpcmOk(o))],
     ['In the works', rows.filter((o) => ['confirmed', 'in_production', 'ready'].includes(o.status))],
     ['Past orders', rows.filter((o) => ['completed', 'invoiced'].includes(o.status))],
     ['Closed quotes', rows.filter((o) => (o.status === 'quote' && !open(o)) || o.status === 'cancelled')],
@@ -348,8 +348,8 @@ router.get('/portal', signedIn, async (req, res) => {
     <div class="page-head"><h1>${l.customer_name}${l.sees_all ? '' : html` <span class="muted small">· your quotes and orders</span>`}</h1>
       <div class="actions"><a class="btn primary" href="/portal/quotes/new">+ Start a quote</a></div></div>
     ${req.query.deleted ? html`<div class="notice">The quote is cancelled and deleted from your list.</div>` : ''}
-    ${l.role === 'sales' ? html`<p class="muted small">Quotes you write are good for 14 days and go to us to confirm.
-      Once we confirm one, a manager or admin on your team places the order.</p>` : ''}
+    ${l.role === 'sales' ? html`<p class="muted small">Quotes you write are good for 14 days and go to us to check.
+      A checked quote is still only a quote: nothing is ordered until a manager or admin on your team places the order.</p>` : ''}
     ${rows.length ? '' : html`<p class="muted">Nothing here yet. Start a quote, or quotes we write for you will show up here.</p>`}
     ${groups.filter(([, list]) => list.length).map(([title, list]) => html`<h2>${title}</h2>${table(list)}`)}`,
   }));
@@ -396,11 +396,11 @@ router.get('/portal/orders/:id(\\d+)', signedIn, async (req, res) => {
   if (isQuote && o.customer_decision !== 'declined' && expired) {
     answer = html`<div class="alert">This quote expired on ${date(o.valid_until)}. Call us at ${SHOP_PHONE} and we'll update it.</div>`;
   } else if (isQuote && !hpcmOk(o)) {
-    answer = html`<div class="notice no-print">We have this quote and will check and confirm it. You'll get an email when we do;
-      then a manager or admin on your team can place the order.</div>`;
+    answer = html`<div class="notice no-print">We have this quote and will check it. You'll get an email when we do.
+      It stays a quote until a manager or admin on your team places the order.</div>`;
   } else if (isQuote && o.customer_decision === 'approved') {
     answer = l.can_approve ? placeForm(o, req.query.need_by)
-      : html`<div class="notice no-print">Confirmed by you and by us. A manager or admin at ${l.customer_name} places the order.</div>`;
+      : html`<div class="notice no-print">Checked by us. This is still a quote: nothing is ordered until a manager or admin at ${l.customer_name} places the order.</div>`;
   } else if (isQuote && !o.customer_decision) {
     if (!l.can_approve) {
       answer = html`<p class="muted">A manager or admin at ${l.customer_name} needs to answer this quote.</p>`;
@@ -498,7 +498,7 @@ function placeForm(o, needBy) {
   return html`
   <form method="post" action="/portal/orders/${o.order_id}/place" class="card form-grid portal-answer no-print" id="place-order">
     <h2 class="span2">Place the order</h2>
-    <p class="span2">Confirmed by you and by us. Placing it sends it to our shop to be made${o.customer_decided_by ? html` <span class="muted small">(accepted by ${o.customer_decided_by})</span>` : ''}.</p>
+    <p class="span2"><strong>This is still a quote.</strong> We checked it, so it's fine to use for your own estimate. Place the order only when your job is ready to go ahead: placing it tells our shop to buy the metal and make it${o.customer_decided_by ? html` <span class="muted small">(accepted by ${o.customer_decided_by})</span>` : ''}.</p>
     <label>Need it by *<input type="date" name="need_by" min="${today()}" value="${needBy || o.need_by || ''}" required></label>
     <label>PO # (optional)<input name="po_number" value="${o.po_number || ''}"></label>
     <p class="span2 small need-by-note" data-base="${base}" data-days="${Waiting.RUSH_DAYS}">${base}</p>
@@ -537,7 +537,7 @@ router.post('/portal/orders/:id(\\d+)/place', signedIn, async (req, res) => {
   }
   const noPitch = [...new Set(o.sections.flatMap((sec) => sec.items).filter((i) => i.needs_pitch > 0 && !i.pitch).map((i) => i.product_name))];
   if (noPitch.length) {
-    return back(`The roof pitch is missing on ${noPitch.join(', ')}. ${canEdit(l, o) ? 'Edit the quote to add it (it comes back to us to confirm), or call' : 'Call'} us at ${SHOP_PHONE}.`);
+    return back(`The roof pitch is missing on ${noPitch.join(', ')}. ${canEdit(l, o) ? 'Edit the quote to add it (it comes back to us to check), or call' : 'Call'} us at ${SHOP_PHONE}.`);
   }
   const who = `${l.full_name} (${l.email})`;
   const note = String(b.note || '').trim().slice(0, 2000) || null;
@@ -766,7 +766,7 @@ function formPage(l, { title, order, catalog, action }) {
     title,
     body: html`
     <h1>${title}</h1>
-    ${order.order_id && hpcmOk(order) ? html`<div class="notice">We already confirmed this quote. If you change it and Save, it comes back to us to confirm again before it can be ordered.</div>` : ''}
+    ${order.order_id && hpcmOk(order) ? html`<div class="notice">We already checked this quote. If you change it and Save, it comes back to us to check again before it can be ordered.</div>` : ''}
     <div id="order-form" class="order-form"><p class="muted">Loading…</p></div>
     <script>window.ORDER_FORM = ${jsonForScript({
     order, ...catalog, portal: { prices: l.portal_line_prices, totals: l.portal_totals, action } })};</script>`,

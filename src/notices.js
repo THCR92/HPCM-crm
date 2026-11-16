@@ -57,11 +57,11 @@ async function quoteConfirmed(orderId) {
   const text = [
     `Hello ${o.full_name.split(' ')[0]},`, '',
     o.customer_decision === 'approved'
-      ? `We checked and confirmed your ${what}. ${o.role === 'sales' ? 'A manager or admin on your team' : 'You or a manager on your team'} can now place the order in the portal.`
+      ? `We checked your ${what}. It's accurate to use for your estimate. It is still a quote: nothing is ordered until ${o.role === 'sales' ? 'a manager or admin on your team' : 'you or a manager on your team'} places the order in the portal.`
       : `We checked your ${what} and made some changes. Look it over and accept it in the portal.`,
     '', `${site()}/portal/orders/${orderId}`,
   ].join('\n');
-  await mail.send({ to: o.email, subject: `Quote ${o.order_number} confirmed by High Plains Custom Metal`, text, kind: 'quote_confirmed', orderId });
+  await mail.send({ to: o.email, subject: `Quote ${o.order_number} checked by High Plains Custom Metal`, text, kind: 'quote_confirmed', orderId });
 }
 
 // A manager or admin at a customer placed an order from the portal.
@@ -74,7 +74,7 @@ async function orderPlaced(orderId) {
     `${o.approved_by} placed order ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''}${o.po_number ? `, PO ${o.po_number}` : ''} for ${o.display_name} in the customer portal.`,
     `Need by: ${o.need_by ? new Date(o.need_by).toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : 'not given'}`,
     ...(o.customer_decision_note ? [`Their note: ${o.customer_decision_note}`] : []),
-    '', 'It is now Confirmed (approved for the shop).', '', `${site()}/orders/${orderId}`,
+    '', 'It is now Ordered (approved for the shop).', '', `${site()}/orders/${orderId}`,
   ].join('\n');
   const to = [...new Set([QUOTE_INBOX, ...[].concat(await mail.managers() || [])].filter(Boolean))];
   await mail.send({ to, subject: `Order placed: ${o.order_number}${o.po_number ? `, PO ${o.po_number}` : ''} from ${o.display_name}`, text, kind: 'order_placed', orderId });

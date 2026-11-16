@@ -687,7 +687,7 @@ async function hpcmConfirm(id) {
 }
 router.post('/:id(\\d+)/hpcm-confirm', need('quotes', 'approve'), async (req, res) => {
   const ok = await hpcmConfirm(Number(req.params.id));
-  res.redirect(`/orders/${req.params.id}${ok ? `?note=${encodeURIComponent('Confirmed. The customer can place the order from the portal now.')}` : ''}`);
+  res.redirect(`/orders/${req.params.id}${ok ? `?note=${encodeURIComponent('Marked checked. It is still a quote; the customer places the order from the portal when their job is ready.')}` : ''}`);
 });
 
 router.post('/:id(\\d+)/status', async (req, res) => {
@@ -731,8 +731,10 @@ router.post('/:id(\\d+)/status', async (req, res) => {
              approved_by = CASE WHEN status = 'quote' AND $1::order_status <> ALL ('{quote,cancelled}'::order_status[])
                                 THEN $4 ELSE approved_by END,
              updated_by = $4,
-             -- Sent back to a quote to be redone: the customer answers it again.
-             customer_decision = CASE WHEN $1::order_status = 'quote' AND status <> 'quote' THEN NULL ELSE customer_decision END,
+             -- Sent back to a quote to be redone: the customer answers it again. A portal quote
+             -- keeps the customer's yes, so their manager can place it when the job is ready.
+             customer_decision = CASE WHEN $1::order_status = 'quote' AND status <> 'quote' AND NOT from_portal THEN NULL ELSE customer_decision END,
+             placed_in_portal = CASE WHEN $1::order_status = 'quote' THEN false ELSE placed_in_portal END,
              completed_at = CASE WHEN $1::order_status = 'completed' THEN COALESCE(completed_at, now()) ELSE completed_at END,
              ready_at = CASE WHEN $1::order_status = 'ready' THEN COALESCE(ready_at, now())
                              WHEN $1::order_status IN ('quote', 'confirmed', 'in_production') THEN NULL
@@ -760,17 +762,17 @@ function portalNote(o) {
   const quote = o.status === 'quote';
   const confirmBox = quote && o.from_portal && !o.hpcm_confirmed_at && o.valid_until && dateStr(o.valid_until) >= todayStr()
     ? html`<div class="alert no-print"><strong>Waiting on you:</strong> ${o.customer_decided_by || 'the customer'} sent this quote from the portal.
-        Check it (edit and Save if anything needs changing), then confirm it. After that, a manager or admin at the customer can place the order.
+        Check it (edit and Save if anything needs changing), then mark it checked. That only says the quote is accurate for their estimate; it stays a quote until a manager or admin at the customer places the order.
         ${can('quotes') || can('approve') ? html`<form method="post" action="/orders/${o.order_id}/hpcm-confirm" class="inline">
-          <button class="btn small primary">Confirm quote</button></form>` : ''}</div>` : '';
+          <button class="btn small primary">Mark quote checked</button></form>` : ''}</div>` : '';
   const placed = o.placed_in_portal && o.status !== 'quote'
     ? html`<div class="notice no-print"><strong>Ordered by the customer in the portal:</strong> ${o.approved_by}${o.ordered_on ? `, ${date(o.ordered_on)}` : ''}.
         ${o.customer_decision_note ? html`<br>“${o.customer_decision_note}”` : ''}</div>` : '';
   const said = placed || (o.customer_decision === 'approved'
     ? html`<div class="notice no-print"><strong>${o.from_portal ? 'Sent by the customer' : 'Customer accepted this quote'}</strong> in the portal: ${o.customer_decided_by}, ${when}.
         ${o.customer_decision_note ? html`<br>“${o.customer_decision_note}”` : ''}
-        ${quote && (!o.from_portal || o.hpcm_confirmed_at) ? html`<br>Confirmed by both${o.hpcm_confirmed_by ? ` (HPCM: ${o.hpcm_confirmed_by})` : ''}.
-          Waiting on a manager or admin at the customer to place the order in the portal (or change the status to Confirmed yourself).` : ''}</div>`
+        ${quote && (!o.from_portal || o.hpcm_confirmed_at) ? html`<br>Checked by HPCM${o.hpcm_confirmed_by ? ` (${o.hpcm_confirmed_by})` : ''}. <strong>Still a quote, not an order.</strong>
+          A manager or admin at the customer places the order in the portal when their job is ready. Only change the status to Ordered yourself if they tell you to go ahead.` : ''}</div>`
     : o.customer_decision === 'declined'
       ? html`<div class="alert no-print"><strong>Customer declined this quote</strong> in the portal: ${o.customer_decided_by}, ${when}
         (${DECLINE_REASONS[o.customer_decline_reason] || 'no reason'}).${o.customer_decision_note ? html`<br>“${o.customer_decision_note}”` : ''}
@@ -1022,8 +1024,10 @@ router.get('/:id(\\d+)', async (req, res) => {
         ${o.status === 'ready' && (can('production') || can('quotes')) ? html`<a class="btn primary" href="/orders/${o.order_id}/handoff">${atJob(o.fulfillment) ? 'Delivered…' : 'Picked up…'}</a>` : ''}
         ${(DELETABLE.includes(o.status) || o.status === 'invoiced') && isAdmin() ? deleteButton(`/orders/${o.order_id}/delete`, `${docName.toLowerCase()} ${o.order_number}`) : ''}
         ${o.status !== 'invoiced' && nextStatuses.length ? html`
-        <form method="post" action="/orders/${o.order_id}/status" class="inline">
-          <select name="status">${nextStatuses.map((s) => html`<option value="${s}">${STATUS_LABEL[s]}</option>`)}</select>
+        <form method="post" action="/orders/${o.order_id}/status" class="inline"${o.status === 'quote' ? html`
+          data-order-check="${(o.customer_portal || o.from_portal) && !o.placed_in_portal ? `${o.customer_name} has not placed this order in their portal. ` : ''}Make this quote an order? The shop will buy metal and build it, and the invoice goes to QuickBooks. Only do this when the customer says to go ahead."
+          onsubmit="return !['confirmed','in_production','ready','completed'].includes(this.status.value) || confirm(this.dataset.orderCheck)"` : ''}>
+          <select name="status" required><option value="">Change to…</option>${nextStatuses.map((s) => html`<option value="${s}">${STATUS_LABEL[s]}</option>`)}</select>
           ${o.need_by || o.status !== 'quote' ? '' : html`<label class="inline-date" title="Needed to approve a quote">Need by
             <input type="date" name="need_by"></label>`}
           ${o.status === 'quote' && nextStatuses.includes('cancelled') ? html`<label class="inline-date lost-reason" hidden>Why lost
@@ -1037,6 +1041,7 @@ router.get('/:id(\\d+)', async (req, res) => {
     </div>
     ${req.query.status_error ? html`<div class="alert no-print">${req.query.status_error}</div>` : ''}
     ${req.query.note ? html`<div class="notice no-print">${req.query.note}</div>` : ''}
+    ${o.status === 'quote' ? html`<p class="no-print quote-line"><strong>Quote, not an order.</strong> Nothing is bought or made until it's changed to Ordered.</p>` : ''}
     ${portalNote(o)}
     ${o.from_portal ? html`<p class="no-print muted small">The customer wrote this quote in the portal, at price list prices.</p>` : ''}
     ${o.status === 'quote' && o.valid_until && dateStr(o.valid_until) < todayStr() ? html`<div class="notice no-print">This quote expired on ${date(o.valid_until)}.
@@ -1305,6 +1310,9 @@ async function qboLine(o) {
   if (!can('prices') || !(await qbo.connected())) return '';
   if (o.status === 'cancelled' && o.qbo_invoice_id) {
     return html`<p class="no-print warn-text">Cancelled, but invoice ${o.qbo_doc_number} is still in QuickBooks: void or delete it there.</p>`;
+  }
+  if (o.status === 'quote' && o.qbo_invoice_id) {
+    return html`<p class="no-print warn-text">Invoice ${o.qbo_doc_number} went to QuickBooks when this was an order. It's a quote again, so void or delete that invoice in QuickBooks.</p>`;
   }
   if (!APPROVED.concat('invoiced').includes(o.status)) return '';
   const retry = can('approve') || can('status') ? html` <form method="post" action="/orders/${o.order_id}/qbo" class="inline">

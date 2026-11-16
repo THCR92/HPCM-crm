@@ -34,7 +34,7 @@ const date = (d) => {
 
 const UNIT_LABEL = { sqft: 'sq ft', lf: 'LF', each: 'ea', bag: 'bag', roll: 'roll' };
 const STATUS_LABEL = {
-  quote: 'Quote', confirmed: 'Confirmed', in_production: 'In production', ready: 'Ready',
+  quote: 'Quote', confirmed: 'Ordered', in_production: 'In production', ready: 'Ready',
   completed: 'Completed', invoiced: 'Invoiced', cancelled: 'Cancelled',
 };
 const AREA_LABEL = { roof: 'Roof', wall: 'Wall', trim: 'Trim', other: 'Other' };
