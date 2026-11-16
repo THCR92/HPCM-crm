@@ -1241,6 +1241,8 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
         return reply(200, { QueryResponse: { [m[1]]: hits } });
       }
       if (/from Customer startposition/.test(q)) return reply(200, { QueryResponse: { Customer: [...qb.customers.values()] } });
+      m = q.match(/from Invoice where DocNumber = '([^']*)'/);
+      if (m) return reply(200, { QueryResponse: { Invoice: [...qb.invoices.values()].filter((i) => i.DocNumber === m[1]) } });
       m = q.match(/from Estimate where DocNumber = '([^']*)'/);
       if (m) return reply(200, { QueryResponse: { Estimate: [...qb.estimates.values()].filter((e) => e.DocNumber === m[1]) } });
     }
@@ -1408,6 +1410,20 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     assert.match(inv.CustomerMemo.value, /Job: Barn\nPO: PO-7/);
     assert.ok([...qb.items.values()].some((i) => i.IncomeAccountRef.value === '79'));
     assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /In QuickBooks as invoice/);
+    // QuickBooks has the invoice but the CRM lost track of it: Send again finds it by number
+    // and updates it instead of failing on a duplicate number (HP-10047, 2026-11-16).
+    const invoiceCount = qb.invoices.size;
+    await query("UPDATE orders SET qbo_invoice_id = NULL, qbo_sync_status = 'error', qbo_last_error = 'Duplicate Document Number Error' WHERE order_id = $1", [id]);
+    await qbo.pushInvoice(id);
+    const { rows: [relinked] } = await query('SELECT qbo_invoice_id, qbo_sync_status FROM orders WHERE order_id = $1', [id]);
+    assert.deepStrictEqual(relinked, { qbo_invoice_id: o.qbo_invoice_id, qbo_sync_status: 'synced' });
+    assert.strictEqual(qb.invoices.size, invoiceCount, 'no second invoice');
+    // The same number on another customer's invoice is explained, not overwritten.
+    qb.invoices.get(o.qbo_invoice_id).CustomerRef = { value: 'someone-else', name: 'Other Roofing' };
+    await query('UPDATE orders SET qbo_invoice_id = NULL WHERE order_id = $1', [id]);
+    await assert.rejects(qbo.pushInvoice(id), /already has an invoice numbered .* for Other Roofing/);
+    qb.invoices.get(o.qbo_invoice_id).CustomerRef = { value: qbOnly };
+    await qbo.pushInvoice(id);
     assert.deepStrictEqual(inv.ShipAddr && [inv.ShipAddr.City, inv.ShipAddr.CountrySubDivisionCode], ['Cheyenne', 'WY'], 'pickups are taxed at the shop');
     const page = await (await fetch(`${base}/admin/quickbooks`)).text();
     assert.match(page, /Connected to Sandbox Co/);
@@ -1423,7 +1439,7 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     // An invoiced (test) order can only be deleted once its QuickBooks invoice is voided or deleted.
     await query("UPDATE orders SET status = 'invoiced' WHERE order_id = $1", [id]);
     assert.match(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), new RegExp(`void invoice ${o.order_number} in QuickBooks first`));
-    Object.assign(inv, { TotalAmt: 0, PrivateNote: 'Voided' });
+    Object.assign(qb.invoices.get(o.qbo_invoice_id), { TotalAmt: 0, PrivateNote: 'Voided' });
     assert.strictEqual(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), '/orders');
   } finally {
     await form('/qbo/disconnect', {});

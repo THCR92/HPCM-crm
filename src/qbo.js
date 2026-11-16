@@ -703,6 +703,17 @@ async function pushInvoice(orderId) {
     const body = await invoiceBody(o);
     let existing = null;
     if (o.qbo_invoice_id) existing = (await api('GET', `invoice/${o.qbo_invoice_id}`).catch(() => null))?.Invoice || null;
+    // QuickBooks may already have this order's invoice without the CRM knowing it (an
+    // answer lost on the way back, or typed in by hand): find it by number and update it
+    // instead of failing on "Duplicate Document Number" (Tyler 2026-11-16, HP-10047/48).
+    if (!existing) {
+      const [same] = (await select(`select * from Invoice where DocNumber = ${quote(o.order_number)}`)).Invoice || [];
+      if (same && String(same.CustomerRef?.value) !== String(o.qbo_customer_id)) {
+        throw new QboError(`QuickBooks already has an invoice numbered ${o.order_number} for ${same.CustomerRef?.name || 'another customer'}. `
+          + 'Change or delete that invoice in QuickBooks, then press Send again.');
+      }
+      existing = same || null;
+    }
     const out = existing
       ? await api('POST', 'invoice', { ...body, Id: existing.Id, SyncToken: existing.SyncToken, sparse: true }, { ...log, op: 'update' })
       : await api('POST', 'invoice', body, { ...log, op: 'create' });
