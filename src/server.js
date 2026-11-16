@@ -42,6 +42,7 @@ app.use('/', require('./routes/admin'));
 app.use('/', require('./routes/catalog'));
 app.use('/', require('./routes/inventory'));
 app.use('/', require('./routes/flatsheets'));
+app.use('/', require('./routes/shop'));
 
 app.use((req, res) => res.status(404).send('Page not found'));
 // eslint-disable-next-line no-unused-vars

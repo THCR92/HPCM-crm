@@ -1150,6 +1150,7 @@ function photosSection(o, required) {
   if (!lines.length) return '';
   const add = PHOTO_STATUSES.includes(o.status) && canPhoto();
   const missing = lines.filter((i) => !i.photos.length).length;
+  const packed = o.photos.filter((a) => !a.order_item_id);
   return html`
   <section id="photos" class="photos no-print">
     <h2>Length check photos</h2>
@@ -1164,8 +1165,11 @@ function photosSection(o, required) {
         <td>${num(i.pieces)}${i.length_display ? html` × <strong>${i.length_display}</strong>` : ''} ${i.product_name}${i.color_name ? html`<div class="muted small">${i.color_name}</div>` : ''}</td>
         <td>${proof.photoCell({ orderId: o.order_id, lineId: i.order_item_id, photos: i.photos, canAdd: add, base: `/orders/${o.order_id}/attachments` })}
           ${add ? i.photos.map((ph) => html`<form method="post" action="/orders/${o.order_id}/attachments/${ph.attachment_id}/delete" class="inline photo-remove"
-            onsubmit="return confirm('Remove this photo?')"><button class="linkish small">remove</button></form>`) : ''}</td></tr>`)}</tbody>
+            onsubmit="return confirm('Remove this photo?')"><button class="linkish small">remove</button></form>`) : ''}</td></tr>`)}
+        ${packed.length || add ? html`<tr><td></td><td><strong>Packed &amp; loaded</strong><div class="muted small">The whole order, ready to go</div></td>
+          <td>${proof.photoCell({ orderId: o.order_id, lineId: 'pack', photos: packed, canAdd: add, base: `/orders/${o.order_id}/attachments` })}</td></tr>` : ''}</tbody>
     </table>
+    ${add ? html`<p class="muted small">On a phone, <a href="/shop/orders/${o.order_id}">Shop photos</a> has bigger camera buttons.</p>` : ''}
   </section>`;
 }
 
@@ -1175,8 +1179,12 @@ router.post('/:id(\\d+)/photos', express.raw({ type: () => true, limit: ATTACH_M
   const type = (req.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (ATTACH_TYPES[type] !== 'image') return res.status(400).json({ error: 'That isn\'t a photo.' });
   if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'The photo is empty.' });
-  const { rows: [line] } = await query(`SELECT o.status FROM order_items oi JOIN orders o USING (order_id)
-    WHERE oi.order_item_id = $1 AND oi.order_id = $2`, [Number(req.query.line) || 0, orderId]);
+  // line=pack: a photo of the whole order packed or loaded, not one line (Tyler 2026-11-16).
+  const pack = req.query.line === 'pack';
+  const { rows: [line] } = pack
+    ? await query('SELECT status FROM orders WHERE order_id = $1', [orderId])
+    : await query(`SELECT o.status FROM order_items oi JOIN orders o USING (order_id)
+      WHERE oi.order_item_id = $1 AND oi.order_id = $2`, [Number(req.query.line) || 0, orderId]);
   if (!line) return res.status(400).json({ error: 'That line isn\'t on this order.' });
   if (!PHOTO_STATUSES.includes(line.status)) return res.status(400).json({ error: 'Photos are for approved orders.' });
   let filename = 'photo.jpg';
@@ -1184,7 +1192,7 @@ router.post('/:id(\\d+)/photos', express.raw({ type: () => true, limit: ATTACH_M
   const { rows: [a] } = await query(`
     INSERT INTO order_attachments (order_id, order_item_id, filename, content_type, byte_size, data, uploaded_by, is_proof)
     VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING attachment_id`,
-  [orderId, Number(req.query.line), filename.slice(0, 200), type, req.body.length, req.body, userName()]);
+  [orderId, pack ? null : Number(req.query.line), filename.slice(0, 200), type, req.body.length, req.body, userName()]);
   res.json({ ok: true, attachment_id: a.attachment_id });
 });
 

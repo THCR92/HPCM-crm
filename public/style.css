@@ -454,3 +454,46 @@ h2.inline-h { display: inline; }
   font-size: .75rem; font-weight: 700; line-height: 1.4; text-align: center; vertical-align: middle; }
 .need-by-note { margin: -.3rem 0 0; color: var(--muted); }
 .need-by-note.rush { color: #a4262c; font-weight: 600; }
+
+/* Phones (Tyler 2026-11-16): the menu folds behind a button and pages fit the screen. */
+.topbar .menu-btn { display: none; }
+@media (max-width: 700px) {
+  .topbar { gap: .5rem; padding: .4rem 12px; }
+  .brand img { height: 40px; }
+  .topbar .menu-btn { display: inline-block; margin-left: auto; background: #fff; border: 1px solid var(--line);
+    border-radius: 6px; padding: .5rem .8rem; font: inherit; font-weight: 700; color: var(--brand); cursor: pointer; }
+  .topbar nav, .topbar .scan-box, .topbar .who { display: none; }
+  .topbar.open nav { display: flex; flex-direction: column; width: 100%; }
+  .topbar.open .scan-box { display: block; width: 100%; }
+  .topbar.open .scan-box input { width: 100%; }
+  .topbar.open .who { display: flex; margin-left: 0; white-space: normal; flex-wrap: wrap; width: 100%; padding: .3rem .75rem .6rem; }
+  .topbar nav a, .nav-menu summary { padding: .75rem; }
+  .nav-drop { position: static; box-shadow: none; border: 0; min-width: 0; padding-left: 1rem; }
+  main { padding: 1rem 12px 3rem; }
+  h1 { font-size: 1.3rem; }
+  .page-head .actions { flex-wrap: wrap; }
+  .page-head .actions form.inline { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+  input, select, textarea { max-width: 100%; }
+}
+
+/* Shop photos page, made for a phone (Tyler 2026-11-16) */
+.shop-search { display: flex; gap: .5rem; margin-bottom: 1rem; }
+.shop-search input { flex: 1; min-width: 0; padding: .6rem; font-size: 1rem; }
+.shop-jobs { display: flex; flex-direction: column; gap: .6rem; }
+.shop-job { display: flex; flex-direction: column; gap: .25rem; background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: .8rem 1rem; color: var(--ink); text-decoration: none; }
+.shop-job:active, .shop-job:hover { border-color: var(--accent); }
+.shop-job-top { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: 1.1rem; }
+.shop-need { margin-left: auto; font-size: .95rem; font-weight: 600; }
+.shop-cust { font-size: 1rem; }
+.shop-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: .8rem 1rem; margin-bottom: .8rem; }
+.shop-card h2 { margin-top: 0; }
+.shop-card.has-photo { border-left: 5px solid #2e7d4f; }
+.shop-line { display: flex; gap: .7rem; align-items: baseline; font-size: 1.05rem; }
+.shop-line-no { color: var(--muted); min-width: 1.4rem; }
+.shop-check { margin-left: auto; color: #2e7d4f; font-weight: 700; font-size: 1.3rem; }
+.shop-thumbs { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0; }
+.shop-thumbs img { width: 84px; height: 84px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.shop-photo { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .6rem; align-items: center; }
+.shop-photo .big-photo { flex: 1 1 9rem; text-align: center; padding: .85rem; font-size: 1.05rem; font-weight: 700; }
+.shop-photo .photo-status { flex-basis: 100%; }

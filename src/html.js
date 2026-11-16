@@ -72,6 +72,7 @@ const NAV = [
   ['/products', 'Price list', 'prices'],
   ['/colors', 'Colors'],
   ['/board', 'Shop board'],
+  ['/shop', 'Shop photos', 'production'],
   ['menu', 'Reports'],
   ['/admin', 'Admin', 'admin'],
 ];
@@ -85,8 +86,12 @@ const MENU = [
   ['/tools', 'Tools'],
 ];
 
+// On a phone the menu folds behind this button (Tyler 2026-11-16).
+const menuButton = raw('<button type="button" class="menu-btn" aria-label="Menu" onclick="this.closest(\'.topbar\').classList.toggle(\'open\')">☰ Menu</button>');
+
 // Returns a plain string, ready for res.send(). `bare` leaves out the menu (sign-in page).
-const layout = ({ title, active, body, scripts = [], bare = false }) => {
+// `app` picks what "Add to Home Screen" opens: the CRM, or the customer portal.
+const layout = ({ title, active, body, scripts = [], bare = false, app = 'crm' }) => {
   const { currentUser, can, isAdmin } = require('./auth');
   const user = bare ? null : currentUser();
   const allowed = ([, , perm]) => !perm || (perm === 'admin' ? isAdmin(user) : can(perm, user));
@@ -101,11 +106,18 @@ const layout = ({ title, active, body, scripts = [], bare = false }) => {
 <title>${title} · HPCM</title>
 <link rel="stylesheet" href="/style.css">
 <link rel="icon" href="/favicon.svg">
+<link rel="manifest" href="${app === 'portal' ? '/portal.webmanifest' : '/manifest.webmanifest'}">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#1d315e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="${app === 'portal' ? 'HPCM Orders' : 'HPCM'}">
 </head>
 <body>
 ${user ? html`<header class="topbar">
   <a class="brand" href="/orders"><img src="/logo.svg" alt="High Plains Custom Metal"></a>
   ${can('quotes', user) ? html`<a class="btn quote-btn" href="/orders/new">+ Quote</a>` : ''}
+  ${menuButton}
   <nav>${shown.map(([href, label]) => (href === 'menu'
     ? html`<details class="nav-menu"><summary class="${inMenu ? 'active' : ''}">${can('reports', user) ? label : 'Inventory'}</summary>
       <div class="nav-drop">${menu.map(([h, l]) => html`<a href="${h}" class="${active === h ? 'active' : ''}">${l}</a>`)}</div></details>`
@@ -118,12 +130,13 @@ ${user ? html`<header class="topbar">
 <main>${body}</main>
 ${user ? raw(`<script>document.addEventListener('click', (e) => { document.querySelectorAll('details.nav-menu[open]')
   .forEach((d) => { if (!d.contains(e.target)) d.open = false; }); });</script>`) : ''}
+${raw(`<script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});</script>`)}
 ${scripts.map((src) => html`<script src="${src}"></script>`)}
 </body>
 </html>`);
 };
 
 module.exports = {
-  html, raw, money, num, date, layout, statusBadge, deleteButton, typedDelete, printButton, printedLine,
+  html, raw, money, num, date, layout, menuButton, statusBadge, deleteButton, typedDelete, printButton, printedLine,
   UNIT_LABEL, STATUS_LABEL, AREA_LABEL, LOST_REASONS,
 };

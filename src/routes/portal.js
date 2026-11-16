@@ -12,7 +12,7 @@ const { query } = require('../db');
 const TrimPrice = require('../../public/trim-price');
 const CustomerTypes = require('../customer-types');
 const { hashPassword, checkPassword, passwordProblem } = require('../auth');
-const { html, layout, money, num, date, STATUS_LABEL } = require('../html');
+const { html, layout, menuButton, money, num, date, STATUS_LABEL } = require('../html');
 const express = require('express');
 const {
   loadOrder, customerSheet, loadCatalog, saveOrder, dbMessage, UserError, jsonForScript,
@@ -109,10 +109,12 @@ function page(login, { title, body, scripts }) {
   return layout({
     title,
     bare: true,
+    app: 'portal',
     scripts,
     body: html`
     <header class="topbar portal-bar">
       <a class="brand" href="/portal"><img src="/logo.svg" alt="High Plains Custom Metal"></a>
+      ${login ? menuButton : ''}
       ${login ? html`<nav><a href="/portal">${login.sees_all ? 'Quotes & orders' : 'My quotes & orders'}</a>${
         login.role === 'admin' ? html`<a href="/portal/team">Team</a>` : ''}<a href="/portal/account">My account</a></nav>
       <div class="who"><span>${login.full_name} (${ROLE_LABEL[login.role] || 'Sales'}) · ${login.customer_name}</span>
@@ -916,6 +918,7 @@ router.post('/portal/orders/:id(\\d+)/save', ...saveRoute(async (req) => {
 function photosSection(o) {
   if (!o.photos.length) return '';
   const lines = o.sections.flatMap((sec) => sec.items).filter((i) => i.photos.length);
+  const packed = o.photos.filter((a) => !a.order_item_id);
   return html`
   <section id="photos" class="photos">
     <h2>Photos of your order</h2>
@@ -926,7 +929,9 @@ function photosSection(o) {
         <td>${num(i.pieces)}${i.length_display ? html` × <strong>${i.length_display}</strong>` : ''} ${i.product_name}${
           i.customer_color ? html`<div class="muted small">${i.customer_color}</div>` : ''}</td>
         <td>${proof.photoCell({ orderId: o.order_id, lineId: i.order_item_id, photos: i.photos, canAdd: false, base: `/portal/orders/${o.order_id}/files` })}</td>
-      </tr>`)}</tbody>
+      </tr>`)}
+      ${packed.length ? html`<tr><td><strong>Packed &amp; loaded</strong></td>
+        <td>${proof.photoCell({ orderId: o.order_id, lineId: 'pack', photos: packed, canAdd: false, base: `/portal/orders/${o.order_id}/files` })}</td></tr>` : ''}</tbody>
     </table>
   </section>`;
 }

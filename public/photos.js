@@ -16,26 +16,28 @@
       return file;
     }
   }
+  // Each picker on the form (camera, or several photos from the phone) uploads in turn.
   document.querySelectorAll('.photo-form').forEach((form) => {
-    const input = form.querySelector('input[type=file]');
     const status = form.querySelector('.photo-status');
-    input.addEventListener('change', async () => {
-      const file = input.files[0];
-      if (!file) return;
-      status.textContent = 'Uploading…';
+    form.querySelectorAll('input[type=file]').forEach((input) => input.addEventListener('change', async () => {
+      const files = Array.from(input.files || []);
+      if (!files.length) return;
       try {
-        const body = await shrink(file);
-        const res = await fetch(form.dataset.action, {
-          method: 'POST',
-          headers: { 'Content-Type': body.type || 'image/jpeg', 'X-Filename': encodeURIComponent(file.name.replace(/\.\w+$/, '.jpg')) },
-          body,
-        });
-        const out = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(out.error || 'The photo didn\'t upload. Try again.');
+        for (let i = 0; i < files.length; i += 1) {
+          status.textContent = files.length > 1 ? `Uploading ${i + 1} of ${files.length}…` : 'Uploading…';
+          const body = await shrink(files[i]);
+          const res = await fetch(form.dataset.action, {
+            method: 'POST',
+            headers: { 'Content-Type': body.type || 'image/jpeg', 'X-Filename': encodeURIComponent(files[i].name.replace(/\.\w+$/, '.jpg')) },
+            body,
+          });
+          const out = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(out.error || 'The photo didn\'t upload. Try again.');
+        }
         window.location.reload();
       } catch (err) {
         status.textContent = err.message;
       }
-    });
+    }));
   });
 }());

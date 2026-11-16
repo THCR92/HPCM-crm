@@ -1778,6 +1778,20 @@ test('length check photos: every line needs one before Ready; the customer sees 
   assert.strictEqual(await status('ready'), `/orders/${id}`);
   assert.strictEqual((await query('SELECT status FROM orders WHERE order_id = $1', [id])).rows[0].status, 'ready');
   assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /Length check photos[\s\S]*Every line has one/);
+  // Shop photos on a phone (Tyler 2026-11-16): the job list, big camera buttons, and a photo of the packed load.
+  const shopList = await (await fetch(`${base}/shop?q=${encodeURIComponent((await query('SELECT order_number FROM orders WHERE order_id = $1', [id])).rows[0].order_number)}`, { headers: { cookie: prod } })).text();
+  assert.match(shopList, new RegExp(`/shop/orders/${id}"`));
+  assert.match(shopList, /2 of 2 lines photographed/);
+  assert.ok((await photo('pack')).ok, 'packed photo');
+  const shopPage = await (await fetch(`${base}/shop/orders/${id}`, { headers: { cookie: prod } })).text();
+  assert.match(shopPage, /Take photo[\s\S]*From phone/);
+  assert.match(shopPage, /photos\?line=pack/);
+  assert.strictEqual((await query('SELECT count(*)::int AS n FROM order_attachments WHERE order_id = $1 AND is_proof AND order_item_id IS NULL', [id])).rows[0].n, 1);
+  assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /Packed &amp; loaded/);
+  // Installable on a phone's home screen, with the menu behind a button.
+  assert.match(shopPage, /rel="manifest" href="\/manifest.webmanifest"/);
+  assert.match(shopPage, /class="menu-btn"/);
+  assert.strictEqual((await fetch(`${base}/manifest.webmanifest`, { anonymous: true })).status, 200);
 
   // The customer sees them in the portal.
   const { rows: [l] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, password_hash)
@@ -1786,6 +1800,8 @@ test('length check photos: every line needs one before Ready; the customer sees 
   await query("INSERT INTO customer_sessions (session_id, login_id, expires_at) VALUES ($1, $2, now() + interval '1 day')", [sid, l.login_id]);
   const cookie = `hpcm_portal=${sid}`;
   const page = await (await fetch(`${base}/portal/orders/${id}`, { headers: { cookie } })).text();
+  assert.match(page, /Packed &amp; loaded/);
+  assert.match(page, /rel="manifest" href="\/portal.webmanifest"/);
   assert.match(page, /Photos of your order/);
   assert.match(page, /Ready for pickup\.<\/strong> At our shop[\s\S]*Monday to Friday, 8 am to 4 pm/);
   assert.strictEqual((await fetch(`${base}/portal/orders/${id}/files/${out.attachment_id}`, { headers: { cookie } })).status, 200);
