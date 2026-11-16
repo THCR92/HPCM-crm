@@ -1422,8 +1422,19 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     qb.invoices.get(o.qbo_invoice_id).CustomerRef = { value: 'someone-else', name: 'Other Roofing' };
     await query('UPDATE orders SET qbo_invoice_id = NULL WHERE order_id = $1', [id]);
     await assert.rejects(qbo.pushInvoice(id), /already has an invoice numbered .* for Other Roofing/);
-    qb.invoices.get(o.qbo_invoice_id).CustomerRef = { value: qbOnly };
-    await qbo.pushInvoice(id);
+    assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /Use a new number/);
+    // "Use a new number": the order takes the next HP number QuickBooks hasn't used; the other invoice stays.
+    const { rows: [{ n: skip }] } = await query("SELECT 'HP-' || (last_value + 1) AS n FROM order_number_seq");
+    save(qb.invoices, { DocNumber: skip, CustomerRef: { value: 'someone-else' } });
+    await form(`/orders/${id}/qbo-renumber`, {});
+    await qbo.idle();
+    const { rows: [renum] } = await query('SELECT order_number, qbo_invoice_id, qbo_sync_status, internal_notes FROM orders WHERE order_id = $1', [id]);
+    assert.notStrictEqual(renum.order_number, o.order_number);
+    assert.notStrictEqual(renum.order_number, skip, 'skips numbers QuickBooks already has');
+    assert.strictEqual(renum.qbo_sync_status, 'synced');
+    assert.match(renum.internal_notes, new RegExp(`Was ${o.order_number}`));
+    assert.strictEqual(qb.invoices.get(renum.qbo_invoice_id).DocNumber, renum.order_number);
+    assert.strictEqual(qb.invoices.get(o.qbo_invoice_id).CustomerRef.value, 'someone-else', 'other invoice untouched');
     assert.deepStrictEqual(inv.ShipAddr && [inv.ShipAddr.City, inv.ShipAddr.CountrySubDivisionCode], ['Cheyenne', 'WY'], 'pickups are taxed at the shop');
     const page = await (await fetch(`${base}/admin/quickbooks`)).text();
     assert.match(page, /Connected to Sandbox Co/);
@@ -1438,8 +1449,8 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
       [[sample.customer_id, pulled.customer_id, customerId]])).rows[0].n, 2);
     // An invoiced (test) order can only be deleted once its QuickBooks invoice is voided or deleted.
     await query("UPDATE orders SET status = 'invoiced' WHERE order_id = $1", [id]);
-    assert.match(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), new RegExp(`void invoice ${o.order_number} in QuickBooks first`));
-    Object.assign(qb.invoices.get(o.qbo_invoice_id), { TotalAmt: 0, PrivateNote: 'Voided' });
+    assert.match(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), new RegExp(`void invoice ${renum.order_number} in QuickBooks first`));
+    Object.assign(qb.invoices.get(renum.qbo_invoice_id), { TotalAmt: 0, PrivateNote: 'Voided' });
     assert.strictEqual(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), '/orders');
   } finally {
     await form('/qbo/disconnect', {});

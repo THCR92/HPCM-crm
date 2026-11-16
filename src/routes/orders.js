@@ -1309,7 +1309,11 @@ async function qboLine(o) {
   if (!APPROVED.concat('invoiced').includes(o.status)) return '';
   const retry = can('approve') || can('status') ? html` <form method="post" action="/orders/${o.order_id}/qbo" class="inline">
     <button class="btn small">${o.qbo_invoice_id ? 'Send again' : 'Send to QuickBooks'}</button></form>` : '';
-  if (o.qbo_sync_status === 'error') return html`<p class="no-print"><span class="warn-text">Not in QuickBooks: ${o.qbo_last_error}</span>${retry}</p>`;
+  const taken = !o.qbo_invoice_id && /already has an invoice numbered/.test(o.qbo_last_error || '') && (can('approve') || can('status'))
+    ? html` <form method="post" action="/orders/${o.order_id}/qbo-renumber" class="inline"
+        onsubmit="return confirm('Give this order the next free HP number and send it to QuickBooks? The other invoice is left alone.')">
+      <button class="btn small primary">Use a new number</button></form>` : '';
+  if (o.qbo_sync_status === 'error') return html`<p class="no-print"><span class="warn-text">Not in QuickBooks: ${o.qbo_last_error}</span>${retry}${taken}</p>`;
   if (o.qbo_invoice_id) return html`<p class="no-print muted small">In QuickBooks as invoice ${o.qbo_doc_number}${retry}</p>`;
   if (o.qbo_sync_status === 'pending') return html`<p class="no-print muted small">Sending to QuickBooks…</p>`;
   return html`<p class="no-print muted small">Not in QuickBooks yet${retry}</p>`;

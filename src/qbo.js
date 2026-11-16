@@ -710,7 +710,7 @@ async function pushInvoice(orderId) {
       const [same] = (await select(`select * from Invoice where DocNumber = ${quote(o.order_number)}`)).Invoice || [];
       if (same && String(same.CustomerRef?.value) !== String(o.qbo_customer_id)) {
         throw new QboError(`QuickBooks already has an invoice numbered ${o.order_number} for ${same.CustomerRef?.name || 'another customer'}. `
-          + 'Change or delete that invoice in QuickBooks, then press Send again.');
+          + 'Press "Use a new number" to give this order the next free number, or change that invoice in QuickBooks and press Send again.');
       }
       existing = same || null;
     }
@@ -730,11 +730,33 @@ async function pushInvoice(orderId) {
   }
 }
 
+// When the order's number is already on another customer's invoice in QuickBooks
+// (QuickBooks counts up from the last HP number for invoices typed in there), the order
+// takes the next HP number that neither the CRM nor QuickBooks has used (Tyler 2026-11-16).
+async function renumberOrder(orderId) {
+  const { rows: [o] } = await query('SELECT order_number, qbo_invoice_id FROM orders WHERE order_id = $1', [orderId]);
+  if (!o || o.qbo_invoice_id) return null;
+  for (let i = 0; i < 25; i += 1) {
+    const { rows: [{ n }] } = await query("SELECT 'HP-' || nextval('order_number_seq') AS n");
+    if ((await query('SELECT 1 FROM orders WHERE order_number = $1', [n])).rows.length) continue;
+    if (((await select(`select Id from Invoice where DocNumber = ${quote(n)}`)).Invoice || []).length) continue;
+    await query(`UPDATE orders SET order_number = $1, internal_notes = concat_ws(E'\n', internal_notes, $2::text)
+      WHERE order_id = $3`, [n, `Was ${o.order_number} (that number was already on another QuickBooks invoice).`, orderId]);
+    return n;
+  }
+  throw new QboError('Couldn\'t find an unused invoice number in QuickBooks.');
+}
+
 // ---- what routes call ----------------------------------------------------------------
 // Each checks for a connection first, so nothing happens until QuickBooks is set up.
 const whenConnected = (job) => later(async () => { if (await connected()) return job(); return null; });
 const customerChanged = (customerId) => whenConnected(() => pushCustomer(customerId));
 const orderCompleted = (orderId) => whenConnected(() => pushInvoice(orderId));
+const newNumber = (orderId) => whenConnected(async () => {
+  const n = await renumberOrder(orderId);
+  if (n) await pushInvoice(orderId);
+  return n;
+});
 
 // ---- connecting -----------------------------------------------------------------------
 async function connectUrl(req, userId) {
@@ -853,7 +875,7 @@ function startChecks() {
 
 module.exports = {
   io, config, configured, redirectUri, connection, connected, later, idle,
-  customerChanged, orderCompleted, invoiceStillOpen, pushCustomer, pushInvoice, pullCustomer, pullCustomerById,
+  customerChanged, orderCompleted, newNumber, renumberOrder, invoiceStillOpen, pushCustomer, pushInvoice, pullCustomer, pullCustomerById,
   checkCustomers, checkEstimates, pullEstimate, pullEstimateById, pullEstimateByNumber, syncAllCustomers, connectUrl, finishConnect, disconnect, handleWebhook, startChecks,
   QboError, API_BASE,
 };

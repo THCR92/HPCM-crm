@@ -231,4 +231,10 @@ router.post('/orders/:id(\\d+)/qbo', need('approve', 'status'), async (req, res)
   res.redirect(`/orders/${req.params.id}`);
 });
 
+// The order's number is on another customer's invoice in QuickBooks: take a new one.
+router.post('/orders/:id(\\d+)/qbo-renumber', need('approve', 'status'), async (req, res) => {
+  await qbo.newNumber(Number(req.params.id));
+  res.redirect(`/orders/${req.params.id}`);
+});
+
 module.exports = router;
