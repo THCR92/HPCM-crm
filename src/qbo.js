@@ -589,6 +589,28 @@ async function productItem(p) {
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const denverDate = (d) => new Date(d || Date.now()).toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
 
+// The invoice's "P.O. Number" box is one of QuickBooks' custom sales form fields, named by
+// the company (Tyler 2026-11-17). Found by name in the company's settings, checked hourly.
+const PO_NAME = /^\s*(p\.?\s*o\.?|purchase\s+order)(\s|#|$|\.|n)/i;
+let poCache = null;
+async function poField() {
+  if (poCache && Date.now() - poCache.at < 60 * 60 * 1000) return poCache.field;
+  let field = null;
+  try {
+    const prefs = (await api('GET', 'preferences')).Preferences || {};
+    const all = (prefs.SalesFormsPrefs?.CustomField || []).flatMap((g) => g.CustomField || []);
+    const on = (n) => all.some((f) => f.Name === `SalesFormsPrefs.UseSalesCustomName${n}` && f.BooleanValue);
+    const hit = all.find((f) => /SalesFormsPrefs\.SalesCustomName\d$/.test(f.Name) && PO_NAME.test(f.StringValue || '')
+      && on(f.Name.slice(-1)));
+    if (hit) field = { DefinitionId: hit.Name.slice(-1), Name: hit.StringValue };
+  } catch (err) {
+    console.error('QuickBooks: couldn\'t read the P.O. Number field:', err.message);
+    return null; // try again next time
+  }
+  poCache = { at: Date.now(), field };
+  return field;
+}
+
 async function invoiceBody(o) {
   const { rows: lines } = await query(`
     SELECT l.*, oi.line_discount, oi.qbo_item_id AS line_qbo_item_id, p.product_id, p.category, p.qbo_item_name, p.taxable AS product_taxable
@@ -626,7 +648,9 @@ async function invoiceBody(o) {
     PAY_NOTE].filter(Boolean).join('\n');
   const email = o.contact_email || o.customer_email;
   const ship = await shipTo(o);
+  const po = o.po_number ? await poField() : null;
   return {
+    ...(po ? { CustomField: [{ DefinitionId: po.DefinitionId, Name: po.Name, Type: 'StringType', StringValue: cut(o.po_number, 31) }] } : {}),
     ...(ship ? { ShipAddr: ship } : {}),
     DocNumber: o.order_number,
     // The day the order was confirmed (ordered_on), which is when it's invoiced now.
@@ -781,6 +805,7 @@ async function connectUrl(req, userId) {
 // QuickBooks sent the person back with a code: trade it for tokens and save the
 // connection. Connecting a different company forgets the old company's ids.
 async function finishConnect(req, { code, state, realmId }, by) {
+  poCache = null;
   const { rows: [s] } = await query(`DELETE FROM qbo_oauth_states WHERE state = $1
     AND created_at > now() - interval '30 minutes' RETURNING state`, [state || '']);
   if (!s) throw new QboError('That Connect link was old or already used. Press Connect again.');
@@ -886,5 +911,5 @@ module.exports = {
   io, config, configured, redirectUri, connection, connected, later, idle,
   customerChanged, orderCompleted, newNumber, renumberOrder, invoiceStillOpen, pushCustomer, pushInvoice, pullCustomer, pullCustomerById,
   checkCustomers, checkEstimates, pullEstimate, pullEstimateById, pullEstimateByNumber, syncAllCustomers, connectUrl, finishConnect, disconnect, handleWebhook, startChecks,
-  QboError, API_BASE,
+  QboError, API_BASE, poField, resetPoField: () => { poCache = null; },
 };

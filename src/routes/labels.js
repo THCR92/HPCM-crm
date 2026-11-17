@@ -37,7 +37,7 @@ async function resolve(raw0) {
   const up = code.toUpperCase();
   let r;
   if (/^HP-?\d+$/.test(up)) {
-    r = await query('SELECT order_id, status FROM orders WHERE order_number = $1', [up.replace(/^HP-?/, 'HP-')]);
+    r = await query('SELECT order_id, status FROM orders WHERE order_number = $1', [`HP-${up.replace(/^HP-?/, '')}`]);
     // A finished order waiting to leave opens straight to pickup / delivery.
     if (r.rows[0]) {
       const { order_id: id, status } = r.rows[0];
@@ -74,12 +74,15 @@ async function resolve(raw0) {
   if (r.rows[0]) return { kind: 'coil', id: r.rows[0].coil_id, path: `/coils/${r.rows[0].coil_id}` };
   r = await query('SELECT tool_id FROM tools WHERE lower(tag) = lower($1)', [code]);
   if (r.rows[0]) return { kind: 'tool', id: r.rows[0].tool_id, path: `/tools/${r.rows[0].tool_id}` };
+  // Just the number finds the order too: 10051 opens HP-10051 (Tyler 2026-11-17).
+  if (/^\d+$/.test(code)) return resolve(`HP-${code}`);
   return null;
 }
 
 const notFound = (code) => layout({
   title: 'Scan', body: html`<h1>Nothing found</h1>
-  <p>No order, line, coil, supply or tool matches <strong>${code}</strong>.</p>
+  <p>No order, line, coil, supply or tool matches <strong>${code}</strong>.
+    <a href="/orders?q=${encodeURIComponent(code)}">Search quotes and orders for it</a>.</p>
   <form method="get" action="/scan" class="card scan-big"><label>Scan or type a code
     <input name="code" autofocus autocomplete="off"></label><button class="btn primary">Open</button></form>`,
 });

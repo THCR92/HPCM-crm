@@ -1218,6 +1218,12 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     const path = u.pathname.replace(`/v3/company/${realm}/`, '');
     const body = opts.body ? JSON.parse(opts.body) : null;
     if (path === `companyinfo/${realm}`) return reply(200, { CompanyInfo: { CompanyName: 'Sandbox Co' } });
+    // The company's invoice custom fields: #2 is turned on and named "P.O. Number".
+    if (path === 'preferences') return reply(200, { Preferences: { SalesFormsPrefs: { CustomField: [
+      { CustomField: [{ Name: 'SalesFormsPrefs.UseSalesCustomName1', Type: 'BooleanType', BooleanValue: false },
+        { Name: 'SalesFormsPrefs.UseSalesCustomName2', Type: 'BooleanType', BooleanValue: true }] },
+      { CustomField: [{ Name: 'SalesFormsPrefs.SalesCustomName1', Type: 'StringType', StringValue: 'Crew' },
+        { Name: 'SalesFormsPrefs.SalesCustomName2', Type: 'StringType', StringValue: 'P.O. Number' }] }] } } });
     if (path === 'customer' && !body.Id && qb.vendors.has(body.DisplayName)) {
       return reply(400, { Fault: { Error: [{ Message: 'Duplicate Name Exists Error', Detail: 'The name supplied already exists. : null', code: '6240' }] } });
     }
@@ -1413,6 +1419,8 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     assert.match(inv.Line[0].Description, /150\.00 sq ft/);
     assert.strictEqual(inv.TxnTaxDetail.TotalTax, o.tax_amount);
     assert.match(inv.CustomerMemo.value, /Job: Barn\nPO: PO-7/);
+    // The PO also fills the invoice's own "P.O. Number" box (Tyler 2026-11-17).
+    assert.deepStrictEqual(inv.CustomField, [{ DefinitionId: '2', Name: 'P.O. Number', Type: 'StringType', StringValue: 'PO-7' }]);
     assert.ok([...qb.items.values()].some((i) => i.IncomeAccountRef.value === '79'));
     assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /In QuickBooks as invoice/);
     // QuickBooks has the invoice but the CRM lost track of it: Send again finds it by number
@@ -2320,4 +2328,18 @@ test('sign-in: too many wrong passwords lock the email for a while; Admins are e
     mail.io.send = realSend;
     alerts.reset();
   }
+});
+
+test('search: a search looks through every quote and order; the top box finds HP-n from just the number', async () => {
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Searchy ' || gen_random_uuid()) RETURNING customer_id, display_name");
+  const { rows: [o] } = await query(`INSERT INTO orders (customer_id, status, job_name) VALUES ($1, 'cancelled', 'Old shed') RETURNING order_id, order_number`, [c.customer_id]);
+  // Not on the Open tab, but a search from it finds it.
+  assert.doesNotMatch(await (await fetch(`${base}/orders`)).text(), new RegExp(c.display_name));
+  const found = await (await fetch(`${base}/orders?tab=open&q=${encodeURIComponent(c.display_name)}`)).text();
+  assert.match(found, new RegExp(o.order_number));
+  assert.match(found, /Searching every quote and order/);
+  const digits = o.order_number.replace('HP-', '');
+  const r = await fetch(`${base}/scan?code=${digits}`, { redirect: 'manual' });
+  assert.strictEqual(r.headers.get('location'), `/orders/${o.order_id}`);
+  assert.match(await (await fetch(`${base}/scan?code=nothing-like-this`)).text(), /Search quotes and orders for it/);
 });

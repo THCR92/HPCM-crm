@@ -528,8 +528,9 @@ const dbMessage = (err) => {
 // Pages
 // ---------------------------------------------------------------------------
 router.get('/', async (req, res) => {
-  const tab = TABS[req.query.tab] ? req.query.tab : 'open';
   const q = (req.query.q || '').trim();
+  // A search looks through every quote and order, whatever tab was open (Tyler 2026-11-17).
+  const tab = q ? 'all' : (TABS[req.query.tab] ? req.query.tab : 'open');
   const { rows } = await query(`
     SELECT o.order_id, o.order_number, o.job_name, o.po_number, o.status, o.ordered_on, o.need_by,
            o.fulfillment, o.customer_decision, o.from_portal, o.staff_seen_at, c.display_name AS customer_name, t.grand_total
@@ -553,8 +554,10 @@ router.get('/', async (req, res) => {
       if the customer calls back.</p>` : ''}
     <div class="tabs">${Object.entries(TABS).map(([k, t]) =>
       html`<a href="?tab=${k}" class="${k === tab ? 'active' : ''}">${t.label}</a>`)}</div>
-    <form class="search"><input type="hidden" name="tab" value="${tab}">
-      <input name="q" value="${q}" placeholder="Search order #, job, PO or customer"><button class="btn">Search</button></form>
+    <form class="search">
+      <input name="q" value="${q}" placeholder="Search all quotes and orders: #, job, PO or customer"><button class="btn">Search</button>
+      ${q ? html` <a href="/orders">Clear</a>` : ''}</form>
+    ${q ? html`<p class="muted small">Searching every quote and order, of any status.</p>` : ''}
     <table class="list">
       <thead><tr><th>Order #</th><th>Customer</th><th>Job</th><th>PO</th><th>Status</th>
         <th>Need by</th><th></th>${prices ? html`<th class="num">Total</th>` : ''}</tr></thead>
