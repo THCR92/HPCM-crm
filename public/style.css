@@ -497,3 +497,8 @@ h2.inline-h { display: inline; }
 .shop-photo { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .6rem; align-items: center; }
 .shop-photo .big-photo { flex: 1 1 9rem; text-align: center; padding: .85rem; font-size: 1.05rem; font-weight: 700; }
 .shop-photo .photo-status { flex-basis: 100%; }
+
+/* The test copy of the site says so on every page (Tyler 2026-11-17). */
+.site-label { background: #b45309; color: #fff; text-align: center; font-weight: 700; padding: .35rem 12px; font-size: .9rem; }
+.site-label a { color: #fff; }
+@media print { .site-label { display: none; } }

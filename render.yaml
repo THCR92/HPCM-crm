@@ -5,6 +5,9 @@ services:
     name: hpcm-crm
     runtime: node
     plan: 0.5c-512mb
+    # The real site follows the "live" branch; changes reach it only when Tyler says
+    # "push it live" (2026-11-17). New work lands on the test site first.
+    branch: live
     buildCommand: npm ci
     # db:setup creates the tables on the first start and does nothing after that.
     startCommand: npm run db:setup && npm start
@@ -31,7 +34,36 @@ services:
       - key: SMTP_PASS
         sync: false
 
+  # Test copy of the site (Tyler 2026-11-17): its own empty database, no QuickBooks
+  # and no email, with an orange TEST banner on every page.
+  - type: web
+    name: hpcm-crm-test
+    runtime: node
+    plan: 0.5c-512mb
+    branch: claude/crm-web-app-x8xkgk
+    buildCommand: npm ci
+    startCommand: npm run db:setup && npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hpcm-test-db
+          property: connectionString
+      - key: APP_PASSWORD
+        sync: false
+      - key: SITE_LABEL
+        value: TEST SITE
+      - key: PUBLIC_URL
+        value: https://hpcm-crm-test.onrender.com
+
 databases:
+  - name: hpcm-test-db
+    plan: 0.1c-256mb
+    postgresMajorVersion: "16"
+    databaseName: hpcm
+    user: hpcm
   - name: hpcm-db
     plan: 0.1c-256mb
     postgresMajorVersion: "16"

@@ -114,6 +114,7 @@ const layout = ({ title, active, body, scripts = [], bare = false, app = 'crm' }
 <meta name="apple-mobile-web-app-title" content="${app === 'portal' ? 'HPCM Orders' : 'HPCM'}">
 </head>
 <body>
+${process.env.SITE_LABEL ? html`<div class="site-label">${process.env.SITE_LABEL}: changes here don't affect the real CRM. Real site: <a href="https://www.hpcmcrm.net">hpcmcrm.net</a></div>` : ''}
 ${user ? html`<header class="topbar">
   <a class="brand" href="/orders"><img src="/logo.svg" alt="High Plains Custom Metal"></a>
   ${can('quotes', user) ? html`<a class="btn quote-btn" href="/orders/new">+ Quote</a>` : ''}
