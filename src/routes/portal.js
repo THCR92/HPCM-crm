@@ -74,19 +74,7 @@ const signedIn = async (req, res, next) => {
 };
 
 // Slow down password guessing: 8 wrong tries for an email locks it for 15 minutes.
-const failures = new Map();
-const LOCK_TRIES = 8;
-const LOCK_MS = 15 * 60 * 1000;
-const locked = (email) => {
-  const f = failures.get(email);
-  if (f && Date.now() - f.first > LOCK_MS) failures.delete(email);
-  return (failures.get(email)?.count || 0) >= LOCK_TRIES;
-};
-const failed = (email) => {
-  const f = failures.get(email) || { count: 0, first: Date.now() };
-  f.count += 1;
-  failures.set(email, f);
-};
+const throttle = require('../throttle');
 
 const safeNext = (n) => (typeof n === 'string' && /^\/portal(\/|$)/.test(n) ? n : '/portal');
 const isEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
@@ -155,15 +143,15 @@ router.post('/portal/login', async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   const next = safeNext(req.body.next);
   const again = (error) => res.status(401).send(loginPage({ next, email, error }));
-  if (locked(email)) return again('Too many tries. Wait 15 minutes, or call us for a new link.');
+  if (throttle.blocked('portal', req, email)) return again('Too many tries. Wait 15 minutes, or call us for a new link.');
   const { rows: [l] } = await query(`
     SELECT l.*, c.portal_enabled FROM customer_logins l JOIN customers c USING (customer_id)
     WHERE lower(l.email) = $1 AND l.active AND c.active`, [email]);
   if (!l || !l.password_hash || !(await checkPassword(req.body.password, l.password_hash))) {
-    failed(email);
+    throttle.miss('portal', req, email);
     return again('That email and password don\'t match.');
   }
-  failures.delete(email);
+  throttle.clear('portal', email);
   if (!l.portal_enabled) return again(`Your online account is turned off right now. Call us at ${SHOP_PHONE}.`);
   await startSession(req, res, l);
   res.redirect(next);
@@ -192,8 +180,9 @@ router.get('/portal/forgot', (req, res) => res.send(forgotPage(false)));
 router.post('/portal/forgot', async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   // Same answer whether or not the email has a login, so this can't be used to find logins.
-  if (mail.configured() && isEmail(email) && !locked(`forgot:${email}`)) {
-    failed(`forgot:${email}`);
+  const tooMany = throttle.blocked('portal-forgot', req, email);
+  throttle.miss('portal-forgot', req, email);
+  if (mail.configured() && isEmail(email) && !tooMany) {
     const token = crypto.randomBytes(24).toString('base64url');
     const { rows: [l] } = await query(`
       UPDATE customer_logins l SET invite_token = $2, invite_expires_at = now() + make_interval(days => $3)

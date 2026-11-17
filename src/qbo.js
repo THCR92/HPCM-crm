@@ -112,6 +112,9 @@ async function accessToken(conn, force = false) {
   } catch (err) {
     if (err.body && err.body.error === 'invalid_grant') {
       await query("UPDATE qbo_connection SET last_error = 'QuickBooks needs to be connected again (the sign-in expired or was removed). An Admin can press Connect on Admin > QuickBooks.' WHERE id = 1");
+      require('./alerts').alert('qbo-signin', 'QuickBooks needs to be connected again', [
+        'The CRM\'s sign-in to QuickBooks expired or was removed, so invoices and customers aren\'t going to QuickBooks.', '',
+        'An Admin can fix it: Admin > QuickBooks > Connect.']);
     }
     throw err;
   }
@@ -729,6 +732,9 @@ async function pushInvoice(orderId) {
     return out.Invoice.Id;
   } catch (err) {
     await query("UPDATE orders SET qbo_sync_status = 'error', qbo_last_error = $1 WHERE order_id = $2", [err.message, o.order_id]);
+    require('./alerts').alert(`invoice:${o.order_id}`, `invoice ${o.order_number} didn't go to QuickBooks`, [
+      `Order ${o.order_number} couldn't be sent to QuickBooks as an invoice.`, '', `QuickBooks said: ${err.message}`, '',
+      `Open the order to fix it and press Send again: ${(process.env.PUBLIC_URL || 'https://www.hpcmcrm.net').replace(/\/$/, '')}/orders/${o.order_id}`]);
     throw err;
   }
 }

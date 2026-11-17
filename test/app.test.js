@@ -2281,3 +2281,43 @@ test('portal roles: Sales sends a quote, HPCM confirms it, a Manager places the 
     mail.io.forceConfigured = false;
   }
 });
+
+test('sign-in: too many wrong passwords lock the email for a while; Admins are emailed when something breaks', async () => {
+  const throttle = require('../src/throttle');
+  const alerts = require('../src/alerts');
+  const mail = require('../src/mail');
+  const { hashPassword } = require('../src/auth');
+  throttle.reset();
+  const email = `lock-${Date.now()}@example.com`;
+  await query(`INSERT INTO users (email, full_name, role, permissions, password_hash) VALUES ($1, 'Lock Test', 'sales', '{}', $2)`,
+    [email, await hashPassword('right-pass-123')]);
+  const tryLogin = (password) => fetch(`${base}/login`, { method: 'POST', anonymous: true, redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ email, password }) });
+  assert.strictEqual((await tryLogin('right-pass-123')).status, 302);
+  for (let i = 0; i < throttle.PER_EMAIL; i += 1) assert.strictEqual((await tryLogin('wrong')).status, 401);
+  const locked = await tryLogin('right-pass-123');
+  assert.strictEqual(locked.status, 429);
+  assert.match(await locked.text(), /Too many tries/);
+  throttle.reset();
+  assert.strictEqual((await tryLogin('right-pass-123')).status, 302);
+
+  const sent = [];
+  const realSend = mail.io.send;
+  mail.io.forceConfigured = true;
+  mail.io.send = async (m) => { sent.push(m); };
+  try {
+    alerts.reset();
+    const req = { method: 'GET', path: '/orders/12', user: { full_name: 'Pat', email: 'pat@example.com' } };
+    assert.ok(await alerts.pageError(new Error('boom'), req));
+    assert.strictEqual(await alerts.pageError(new Error('boom'), { ...req, path: '/orders/13' }), false); // same page, within 6 hours
+    assert.strictEqual(sent.length, 1);
+    assert.match(sent[0].subject, /CRM problem: a page failed \(GET \/orders\/12\)/);
+    assert.match(sent[0].text, /boom/);
+    const { rows } = await query("SELECT email FROM users WHERE active AND role = 'admin'");
+    assert.ok(rows.every((r) => sent[0].to.includes(r.email)));
+  } finally {
+    mail.io.forceConfigured = false;
+    mail.io.send = realSend;
+    alerts.reset();
+  }
+});

@@ -7,6 +7,7 @@ const {
 } = require('../auth');
 const { html, raw, layout, date } = require('../html');
 const mail = require('../mail');
+const throttle = require('../throttle');
 
 const router = require('../async-router')();
 
@@ -68,7 +69,10 @@ router.get('/login/forgot', (req, res) => {
 router.post('/login/forgot', async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   const token = crypto.randomBytes(24).toString('base64url');
-  const { rows: [u] } = await query(`UPDATE users SET reset_token = $2, reset_expires_at = now() + make_interval(mins => $3)
+  // Too many asks for one email or from one address: same answer, but nothing is sent.
+  const tooMany = throttle.blocked('staff-forgot', req, email);
+  throttle.miss('staff-forgot', req, email);
+  const { rows: [u] } = tooMany ? { rows: [] } : await query(`UPDATE users SET reset_token = $2, reset_expires_at = now() + make_interval(mins => $3)
     WHERE lower(email) = $1 AND active RETURNING full_name, email`, [email, token, RESET_MINUTES]);
   let sent = true;
   if (u) {
@@ -147,10 +151,15 @@ router.post('/login', async (req, res) => {
     return res.redirect('/users?welcome=1');
   }
 
+  if (throttle.blocked('staff', req, email)) {
+    return res.status(429).send(loginPage({ setup: false, next, email, error: throttle.MESSAGE }));
+  }
   const { rows: [u] } = await query('SELECT * FROM users WHERE lower(email) = $1 AND active', [email]);
   if (!u || !(await checkPassword(b.password, u.password_hash))) {
+    throttle.miss('staff', req, email);
     return res.status(401).send(loginPage({ setup: false, next, email, error: 'That email and password don\'t match.' }));
   }
+  throttle.clear('staff', email);
   await startSession(req, res, u);
   res.redirect(next);
 });
