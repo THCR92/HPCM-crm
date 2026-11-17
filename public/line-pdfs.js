@@ -11,7 +11,8 @@
     box.setAttribute('data-done', '1');
     var url = box.getAttribute('data-pdf');
     var name = box.getAttribute('data-name');
-    if (!docs[url]) docs[url] = window.pdfjsLib.getDocument(url).promise;
+    // isEvalSupported off: a booby-trapped PDF can't run code in the browser (pdf.js advisory GHSA-wgrm-67xf-hhpq).
+    if (!docs[url]) docs[url] = window.pdfjsLib.getDocument({ url: url, isEvalSupported: false }).promise;
     docs[url].then(function (pdf) {
       var pages = Math.min(pdf.numPages, MAX_PAGES);
       var chain = Promise.resolve();
