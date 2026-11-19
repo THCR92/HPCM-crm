@@ -6,7 +6,15 @@ const { SHOP_HOURS } = require('./routes/portal-shared');
 
 const site = () => (process.env.PUBLIC_URL || 'https://www.hpcmcrm.net').replace(/\/$/, '');
 
-// A customer approved or declined a quote in the portal: tell the Admins and Managers.
+// Customer quote emails go to the shop's inbox only, not to each Admin and Manager as well
+// (Tyler 2026-11-19: too many emails; was inbox + managers since 2026-11-12).
+const QUOTE_INBOX = process.env.QUOTE_INBOX || 'info@highplainscustommetal.com';
+// One quote saved over and over sends one email an hour, not one per Save.
+const QUIET_MINUTES = 60;
+const sentLately = async (orderId, kind) => (await query(`SELECT 1 FROM email_log WHERE order_id = $1 AND kind = $2 AND ok
+  AND sent_at > now() - make_interval(mins => $3) LIMIT 1`, [orderId, kind, QUIET_MINUTES])).rowCount > 0;
+
+// A customer approved or declined a quote in the portal: tell the shop's inbox.
 async function quoteAnswered(orderId) {
   const { rows: [o] } = await query(`
     SELECT o.order_number, o.job_name, o.customer_decision, o.customer_decided_by, o.customer_decision_note,
@@ -21,18 +29,16 @@ async function quoteAnswered(orderId) {
       'A manager or admin at the customer places the order from the portal when they are ready (or you can confirm it yourself).'] : []),
     '', `${site()}/orders/${orderId}`,
   ].join('\n');
-  await mail.send({ to: await mail.managers(), subject: `Quote ${o.order_number} ${verb} by ${o.display_name}`, text, kind: `quote_${verb}`, orderId });
+  await mail.send({ to: QUOTE_INBOX, subject: `Quote ${o.order_number} ${verb} by ${o.display_name}`, text, kind: `quote_${verb}`, orderId });
 }
 
 // A customer wrote a quote in the portal.
-// Quotes customers send from the portal also go to the shop's inbox (Tyler 2026-11-12).
-const QUOTE_INBOX = process.env.QUOTE_INBOX || 'info@highplainscustommetal.com';
 
 async function quoteCreated(orderId, { changed = false } = {}) {
   const { rows: [o] } = await query(`
     SELECT o.order_number, o.job_name, o.created_by, o.updated_by, o.internal_notes, c.display_name
     FROM orders o JOIN customers c USING (customer_id) WHERE o.order_id = $1`, [orderId]);
-  if (!o) return;
+  if (!o || await sentLately(orderId, 'quote_created')) return;
   const text = [
     changed
       ? `${o.display_name} changed quote ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''} in the customer portal (${o.updated_by}).`
@@ -41,7 +47,7 @@ async function quoteCreated(orderId, { changed = false } = {}) {
     '', 'It is priced from the price list. Check it, then press Confirm quote on its page (or edit it and Save).',
     '', `${site()}/orders/${orderId}`,
   ].join('\n');
-  const to = [...new Set([QUOTE_INBOX, ...[].concat(await mail.managers() || [])].filter(Boolean))];
+  const to = QUOTE_INBOX;
   await mail.send({ to, subject: `${changed ? 'Changed' : 'New'} quote ${o.order_number} from ${o.display_name}`, text, kind: 'quote_created', orderId });
 }
 
@@ -76,7 +82,7 @@ async function orderPlaced(orderId) {
     ...(o.customer_decision_note ? [`Their note: ${o.customer_decision_note}`] : []),
     '', 'It is now Ordered (approved for the shop).', '', `${site()}/orders/${orderId}`,
   ].join('\n');
-  const to = [...new Set([QUOTE_INBOX, ...[].concat(await mail.managers() || [])].filter(Boolean))];
+  const to = QUOTE_INBOX;
   await mail.send({ to, subject: `Order placed: ${o.order_number}${o.po_number ? `, PO ${o.po_number}` : ''} from ${o.display_name}`, text, kind: 'order_placed', orderId });
 }
 
@@ -91,7 +97,7 @@ async function quoteCancelled(orderId, who, reason) {
     ...(reason ? ['', `Why: ${reason}`] : []),
     '', `${site()}/orders/${orderId}`,
   ].join('\n');
-  const to = [...new Set([QUOTE_INBOX, ...[].concat(await mail.managers() || [])].filter(Boolean))];
+  const to = QUOTE_INBOX;
   await mail.send({ to, subject: `Quote ${o.order_number} cancelled by ${o.display_name}`, text, kind: 'quote_cancelled', orderId });
 }
 

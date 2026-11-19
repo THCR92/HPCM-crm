@@ -2361,3 +2361,24 @@ test('items marked "No color" never keep a color on quote lines (Tyler 2026-11-1
     await query('UPDATE products SET no_color = false WHERE product_id = $1', [cleat]);
   }
 });
+
+test('customer quote emails go to the shop inbox only, once an hour per quote (Tyler 2026-11-19)', async () => {
+  const notices = require('../src/notices');
+  const mail = require('../src/mail');
+  const sent = [];
+  const realSend = mail.io.send;
+  mail.io.forceConfigured = true;
+  mail.io.send = async (m) => { sent.push(m); };
+  try {
+    const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Inbox ' || gen_random_uuid()) RETURNING customer_id");
+    const { rows: [o] } = await query("INSERT INTO orders (customer_id, from_portal) VALUES ($1, true) RETURNING order_id", [c.customer_id]);
+    await notices.now.quoteCreated(o.order_id);
+    await notices.now.quoteCreated(o.order_id, { changed: true });
+    await notices.now.quoteCreated(o.order_id, { changed: true });
+    assert.strictEqual(sent.length, 1);
+    assert.strictEqual(sent[0].to, 'info@highplainscustommetal.com');
+  } finally {
+    mail.io.forceConfigured = false;
+    mail.io.send = realSend;
+  }
+});
