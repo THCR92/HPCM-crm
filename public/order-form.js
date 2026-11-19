@@ -134,6 +134,10 @@
   // Price of one piece: list price with the color premium and the customer's premium; trim
   // at its flat width (26 ga $3.40 per flat inch; see public/trim-price.js).
   function listPrice(product, colorId, width, pct = premiumPct()) {
+    // A flat sheet's price comes from its color and gauge (finish included), not a premium.
+    const flat = product && product.category === 'flat_sheet' && colorId && colorById.get(colorId)
+      && colorById.get(colorId).flat && colorById.get(colorId).flat[Number(product.gauge)];
+    if (flat) return withPremium(Number(flat), pct).toFixed(2);
     const up = colorId && !(product && product.no_color) && colorById.get(colorId) ? Number(colorById.get(colorId).upcharge) : 0;
     const price = window.TrimPrice.piecePrice(product, width, up);
     return price === null ? '' : withPremium(price, pct).toFixed(2);

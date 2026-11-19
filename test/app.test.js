@@ -2382,3 +2382,17 @@ test('customer quote emails go to the shop inbox only, once an hour per quote (T
     mail.io.send = realSend;
   }
 });
+
+test('flat sheets: priced by gauge and the color\'s finish from the supplier sheets at a 35% margin (Tyler 2026-11-19)', async () => {
+  const price = async (supplier, name, gauge) => (await query(`SELECT v.price FROM v_flat_sheet_prices v JOIN colors c USING (color_id)
+    JOIN suppliers s USING (supplier_id) WHERE s.name ILIKE $1 AND c.name = $2 AND v.gauge = $3 ORDER BY c.finish <> 'smooth' LIMIT 1`,
+  [supplier, name, gauge])).rows[0]?.price;
+  assert.strictEqual(await price('Sheffield%', 'Charcoal Gray', 24), 121.24); // 78.80 / 0.65
+  assert.strictEqual(await price('Sheffield%', 'Regal Red', 26), 89.24); // premium color 58.00
+  assert.strictEqual(await price('Coated Metals%', 'Black Ore', 24), 179.31); // 116.55
+  assert.strictEqual(await price('United Steel%', 'Charcoal Gray', 24), 121.24); // higher of the two sheets
+  const { rows } = await query("SELECT name FROM products WHERE category = 'flat_sheet' AND active ORDER BY name");
+  assert.deepStrictEqual(rows.map((r) => r.name), ["Flat Sheet 22 GA (4' x 10')", "Flat Sheet 24 GA (4' x 10')", "Flat Sheet 26 GA (4' x 10')", "Flat Sheet 28 GA (4' x 10')"]);
+  // The quote form gets each color's flat sheet prices.
+  assert.match(await (await fetch(`${base}/orders/new`)).text(), /"flat":\{"2\d":/);
+});

@@ -121,7 +121,9 @@ async function loadCatalog() {
   const { rows: colors } = await query(`
     SELECT color_id AS id, name, label, supplier_name AS supplier, finish, finish_label, upcharge_pct AS upcharge,
            -- The gauges a color is stocked in; none listed = any gauge.
-           (SELECT array_agg(g.gauge ORDER BY g.gauge) FROM color_gauges cg JOIN gauges g USING (gauge_id) WHERE cg.color_id = v_colors.color_id) AS gauges
+           (SELECT array_agg(g.gauge ORDER BY g.gauge) FROM color_gauges cg JOIN gauges g USING (gauge_id) WHERE cg.color_id = v_colors.color_id) AS gauges,
+           -- Flat sheet price in this color, by gauge (supplier sheets, 35% margin; Tyler 2026-11-19).
+           (SELECT json_object_agg(f.gauge, f.price) FROM v_flat_sheet_prices f WHERE f.color_id = v_colors.color_id) AS flat
     FROM v_colors WHERE active AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.supplier_id = v_colors.supplier_id AND NOT s.active) ORDER BY supplier_name NULLS FIRST, name, finish_sort`);
   const { rows: customers } = await query(`
     SELECT c.customer_id AS id, c.display_name AS name, c.phone, c.email, c.default_fulfillment, c.tax_exempt,
