@@ -529,6 +529,11 @@ router.post('/portal/orders/:id(\\d+)/place', signedIn, async (req, res) => {
   if (noPitch.length) {
     return back(`The roof pitch is missing on ${noPitch.join(', ')}. ${canEdit(l, o) ? 'Edit the quote to add it (it comes back to us to check), or call' : 'Call'} us at ${SHOP_PHONE}.`);
   }
+  // Made-to-fit items (chimney caps) need their size and a drawing on the line (Tyler 2026-11-19).
+  const noDims = [...new Set(o.sections.flatMap((sec) => sec.items).filter((i) => i.needs_dims && (!i.dims || !i.has_drawing)).map((i) => i.product_name))];
+  if (noDims.length) {
+    return back(`${noDims.join(', ')} needs its size (top and side height) and a drawing uploaded to its line. ${canEdit(l, o) ? 'Edit the quote to add them (it comes back to us to check), or call' : 'Call'} us at ${SHOP_PHONE}.`);
+  }
   const who = `${l.full_name} (${l.email})`;
   const note = String(b.note || '').trim().slice(0, 2000) || null;
   const po = String(b.po_number || '').trim().slice(0, 100) || null;

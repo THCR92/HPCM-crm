@@ -111,7 +111,7 @@ function layoutPdf(o, { sizeCol, areaLabel, files = new Map() }, spots) {
       for (const i of sec.items) {
         row({
           qty: num(i.pieces), len: i.length_display || '',
-          item: `${i.product_name}${i.pitch ? ` (pitch ${i.pitch})` : ''}${i.description ? `\n${i.description}` : ''}`,
+          item: `${i.product_name}${i.pitch ? ` (pitch ${i.pitch})` : ''}${i.dims ? ` (${i.dims})` : ''}${i.description ? `\n${i.description}` : ''}`,
           color: i.customer_color || '', size: sizeCol(i, { shop: false }) || '',
           each: money(i.pieces ? i.line_total / i.pieces : i.line_total), amt: money(i.line_total),
         });

@@ -2396,3 +2396,28 @@ test('flat sheets: priced by gauge and the color\'s finish from the supplier she
   // The quote form gets each color's flat sheet prices.
   assert.match(await (await fetch(`${base}/orders/new`)).text(), /"flat":\{"2\d":/);
 });
+
+test('chimney caps: three sizes; a line needs its size and a drawing before it becomes an order (Tyler 2026-11-19)', async () => {
+  const form = (path, body) => fetch(base + path, { method: 'POST', body: new URLSearchParams(body), redirect: 'manual' });
+  const { rows: caps } = await query(`SELECT p.product_id, p.name, cp.unit_price FROM products p JOIN v_current_prices cp USING (product_id)
+    WHERE p.sku LIKE 'ACC-CHIMNEY-CAP-%' AND p.needs_dims ORDER BY cp.unit_price`);
+  assert.deepStrictEqual(caps.map((c) => Number(c.unit_price)), [100, 160, 240]);
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Chimney ' || gen_random_uuid()) RETURNING customer_id");
+  const line = (dims) => ({ customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'other', items: [
+    { product_id: caps[0].product_id, pieces: 1, unit_price: 100, ...(dims ? { dims } : {}) }] }] });
+  // A half-filled size is refused; a blank one is fine on a quote.
+  assert.match((await (await post('/orders', line({ top_l: 20, top_w: '', side_h: 6 }))).json()).error, /top length, top width and side height/);
+  const out = await (await post('/orders', line(null))).json();
+  let r = await form(`/orders/${out.order_id}/status`, { status: 'confirmed', need_by: '2030-01-01' });
+  assert.match(decodeURIComponent(r.headers.get('location')), /needs its size .* and a drawing/);
+  // With the size and a drawing it can be ordered; the cut sheet shows the size.
+  const saved = await (await post(`/orders/${out.order_id}`, line({ top_l: 20, top_w: 18, side_h: 6 }))).json();
+  assert.ok(saved.ok !== false, JSON.stringify(saved));
+  const { rows: [li] } = await query('SELECT order_item_id, dims FROM order_items WHERE order_id = $1', [out.order_id]);
+  assert.strictEqual(li.dims, 'Top 20" x 18", sides 6"');
+  await query(`INSERT INTO order_attachments (order_id, order_item_id, filename, content_type, byte_size, data)
+    VALUES ($1, $2, 'cap.pdf', 'application/pdf', 1, '\\x00')`, [out.order_id, li.order_item_id]);
+  r = await form(`/orders/${out.order_id}/status`, { status: 'confirmed', need_by: '2030-01-01' });
+  assert.doesNotMatch(decodeURIComponent(r.headers.get('location') || ''), /status_error/);
+  assert.match(await (await fetch(`${base}/orders/${out.order_id}`)).text(), /Top 20&quot; x 18&quot;, sides 6&quot;|Top 20" x 18", sides 6"/);
+});

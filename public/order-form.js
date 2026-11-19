@@ -47,6 +47,11 @@
 
   // ------------------------------------------------------------------ state
   const newKey = () => `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  // 'Top 30" x 24", sides 6"' back into its three boxes.
+  const dimsOf = (d) => {
+    const m = String(d || '').match(/Top ([\d.]+)" x ([\d.]+)", sides ([\d.]+)"/);
+    return m ? { top_l: m[1], top_w: m[2], side_h: m[3] } : { top_l: '', top_w: '', side_h: '' };
+  };
   const toRow = (it) => {
     const len = it.length_in === null || it.length_in === undefined ? null : Number(it.length_in);
     return {
@@ -71,6 +76,7 @@
       screw_option: it.screw_option || '',
       pitch1: (it.pitch || '').split(' to ')[0].replace(':12', ''),
       pitch2: ((it.pitch || '').split(' to ')[1] || '').replace(':12', ''),
+      ...dimsOf(it.dims),
     };
   };
   const autoSection = (order.sections || []).find((s) => s.is_auto && s.label !== 'Closures');
@@ -231,6 +237,15 @@
       `<option ${o === cur ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
   }
 
+  // Size of a made-to-fit item like a chimney cap (Tyler 2026-11-19): top length x width, side height.
+  function dimsHtml(row, p) {
+    if (!p || !p.needs_dims) return '';
+    const box = (f, label) => `<input class="pitch-in ${row[f] ? '' : 'missing'}" data-f="${f}" inputmode="decimal" value="${esc(row[f])}"
+      aria-label="${label}" placeholder="in.">`;
+    return `<label class="pitch-opt">Top ${box('top_l', 'Top length, inches')} x ${box('top_w', 'Top width, inches')}
+      Sides ${box('side_h', 'Side height, inches')}"</label>`;
+  }
+
   // Roof pitch for trim bent to it (Tyler 2026-11-12): one pitch, or two for a pitch break.
   function pitchHtml(row, p) {
     if (!p || !p.pitches) return '';
@@ -255,6 +270,12 @@
     const saved = row.saved_files || [];
     const names = [...saved.map((f) => f.name), ...(row.files || []).map((f) => f.name)];
     const odd = p && (p.category === 'trim' || p.category === 'custom_trim' || p.category === 'downspout');
+    if (p && p.needs_dims && !names.length) {
+      return `<div class="line-files">
+      <label class="btn small upload-btn" title="Add a PDF or picture (JPG or PNG) for this line">📎 Upload
+        <input type="file" data-upload accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" multiple hidden></label>
+      <span class="small warn-text">Upload a drawing with the dimensions (needed before it's ordered).</span></div>`;
+    }
     return `<div class="line-files">
       <label class="btn small upload-btn" title="Add a PDF or picture (JPG or PNG) for this line">📎 Upload
         <input type="file" data-upload accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" multiple hidden></label>
@@ -276,7 +297,7 @@
         <input class="in" data-f="inch" value="${esc(row.inch)}" aria-label="Inches"><span class="unit">"</span>
       </td>
       <td><select data-f="product_id" class="product" data-combo data-combo-next="select.color, .qty" aria-label="Item">${productOptions(row.product_id)}</select>
-        <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${pitchHtml(row, p)}${screwOptionHtml(row, p)}${filesHtml(row, p)}</td>
+        <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${pitchHtml(row, p)}${dimsHtml(row, p)}${screwOptionHtml(row, p)}${filesHtml(row, p)}</td>
       <td>${p && p.no_color ? '<span class="muted small">No color</span>'
         : `<select data-f="color_id" class="color" data-combo data-combo-next=".width input, .price" aria-label="Color">${colorOptions(row.color_id, p)}</select>`}</td>
       <td class="width">${widthCell(row, p)}</td>
@@ -938,6 +959,7 @@
           screw_option: row.screw_option || null,
           ckey: row.ckey,
           pitch: [row.pitch1, row.pitch2].map((x) => String(x || '').trim()).filter(Boolean).map((x) => `${x}:12`).join(' to ') || null,
+          dims: { top_l: row.top_l, top_w: row.top_w, side_h: row.side_h },
         });
       }
       if (s.extra) s.posted = items;
