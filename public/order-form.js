@@ -134,7 +134,7 @@
   // Price of one piece: list price with the color premium and the customer's premium; trim
   // at its flat width (26 ga $3.40 per flat inch; see public/trim-price.js).
   function listPrice(product, colorId, width, pct = premiumPct()) {
-    const up = colorId && colorById.get(colorId) ? Number(colorById.get(colorId).upcharge) : 0;
+    const up = colorId && !(product && product.no_color) && colorById.get(colorId) ? Number(colorById.get(colorId).upcharge) : 0;
     const price = window.TrimPrice.piecePrice(product, width, up);
     return price === null ? '' : withPremium(price, pct).toFixed(2);
   }
@@ -273,7 +273,8 @@
       </td>
       <td><select data-f="product_id" class="product" data-combo data-combo-next="select.color, .qty" aria-label="Item">${productOptions(row.product_id)}</select>
         <input class="desc" data-f="description" value="${esc(row.description)}" placeholder="Note (optional)">${pitchHtml(row, p)}${screwOptionHtml(row, p)}${filesHtml(row, p)}</td>
-      <td><select data-f="color_id" class="color" data-combo data-combo-next=".width input, .price" aria-label="Color">${colorOptions(row.color_id, p)}</select></td>
+      <td>${p && p.no_color ? '<span class="muted small">No color</span>'
+        : `<select data-f="color_id" class="color" data-combo data-combo-next=".width input, .price" aria-label="Color">${colorOptions(row.color_id, p)}</select>`}</td>
       <td class="width">${widthCell(row, p)}</td>
       <td class="num billed"></td>
       <td class="price-cell"><span class="unit">$</span><input class="price ${needsPrice ? 'missing' : ''}" data-f="unit_price" type="number" step="0.01" min="0"
@@ -708,6 +709,7 @@
 
   function onProductOrColor(row) {
     const p = productById.get(Number(row.product_id));
+    if (p && p.no_color) row.color_id = '';
     if (p && p.category === 'panel' && p.unit === 'sqft') {
       const w = Number(row.width_in);
       if (!(w >= Number(p.cov_min) && w <= Number(p.cov_max))) row.width_in = String(Number(p.cov));

@@ -2343,3 +2343,21 @@ test('search: a search looks through every quote and order; the top box finds HP
   assert.strictEqual(r.headers.get('location'), `/orders/${o.order_id}`);
   assert.match(await (await fetch(`${base}/scan?code=nothing-like-this`)).text(), /Search quotes and orders for it/);
 });
+
+test('items marked "No color" never keep a color on quote lines (Tyler 2026-11-19)', async () => {
+  const cleat = await productId('TRM-WIND-CLEAT');
+  const { rows: [col] } = await query('SELECT color_id FROM colors WHERE active LIMIT 1');
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('NoColor ' || gen_random_uuid()) RETURNING customer_id");
+  await query('UPDATE products SET no_color = true WHERE product_id = $1', [cleat]);
+  try {
+    // The item's settings page shows the box ticked.
+    assert.match(await (await fetch(`${base}/admin/products/${cleat}`)).text(), /name="no_color" value="1" checked/);
+    const res = await post('/orders', { customer_id: c.customer_id, sections: [{ area: 'trim', items: [
+      { product_id: cleat, color_id: col.color_id, pieces: 2, unit_price: 10 }] }] });
+    const out = await res.json();
+    const { rows: [line] } = await query('SELECT color_id FROM order_items WHERE order_id = $1', [out.order_id]);
+    assert.strictEqual(line.color_id, null);
+  } finally {
+    await query('UPDATE products SET no_color = false WHERE product_id = $1', [cleat]);
+  }
+});

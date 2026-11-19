@@ -107,7 +107,7 @@ async function loadOrder(id) {
 async function loadCatalog() {
   const { rows: products } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies, p.taxable,
-           p.needs_pitch AS pitches, p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth,
+           p.needs_pitch AS pitches, p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth, p.no_color,
            p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate, cp.unit_price AS price,
            pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
            pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name, g.gauge,
@@ -277,7 +277,8 @@ function parseSections(b, productsById) {
       return {
         order_item_id: Number(it.order_item_id) || null,
         product: p,
-        color_id: Number(it.color_id) || null,
+        // An item that doesn't come in colors never keeps one (Tyler 2026-11-19).
+        color_id: p.no_color ? null : Number(it.color_id) || null,
         pieces,
         length_in: length,
         width_in: width,
@@ -325,7 +326,7 @@ async function withScrews(sections, header, productsById) {
       throw new UserError(`Couldn't figure ${p.name}. Untick "Figure screws automatically" and add them as lines.`);
     }
     return {
-      order_item_id: null, product: p, color_id: l.color_id, pieces: l.pieces, length_in: null, width_in: null,
+      order_item_id: null, product: p, color_id: p.no_color ? null : l.color_id, pieces: l.pieces, length_in: null, width_in: null,
       unit_price: l.unit_price, description: l.description, screw_option: null,
     };
   });
@@ -368,7 +369,7 @@ async function saveOrder(orderId, body, { who = userName(), extra = {}, keys = n
   if (!orderId) header.created_by = who;
   const { rows: prodRows } = await query(`
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.taxable, p.max_length_in,
-           p.needs_pitch AS pitches, p.girth_in AS girth, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov,
+           p.needs_pitch AS pitches, p.girth_in AS girth, p.no_color, p.profile_id, pp.name AS profile_name, pp.coverage_width_in AS cov,
            pp.fastening::text AS fastening, p.standard_length_in,
            pp.closure_product_id AS closure_id, pp.outer_closure_product_id AS outer_closure_id, pp.vented_closure_product_id AS vented_closure_id, cp.unit_price AS price
     FROM products p LEFT JOIN panel_profiles pp USING (profile_id) LEFT JOIN v_current_prices cp USING (product_id)`);

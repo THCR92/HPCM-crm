@@ -169,6 +169,7 @@ async function productForm(res, p, error, back) {
       <label>SKU<input name="sku" value="${p.sku}" placeholder="made from the name if blank"></label>
       ${isNew ? html`<label>Price<input name="unit_price" type="number" step="0.01" min="0" value="${p.unit_price ?? ''}" placeholder="leave blank to enter it on each quote"></label>` : ''}
       <label class="check"><input type="checkbox" name="is_cut_to_length" value="1" ${p.is_cut_to_length ? 'checked' : ''}> Every line needs a length</label>
+      <label class="check"><input type="checkbox" name="no_color" value="1" ${p.no_color ? 'checked' : ''}> No color (this item doesn't come in colors)</label>
       <label class="check"><input type="checkbox" name="taxable" value="1" ${p.taxable !== false ? 'checked' : ''}> Taxable</label>
       <label class="check"><input type="checkbox" name="track_stock" value="1" ${p.track_stock ? 'checked' : ''}> Count on hand (Supplies page)</label>
       <label class="check"><input type="checkbox" name="stock_by_color" value="1" ${p.stock_by_color ? 'checked' : ''}> Count each color separately</label>
@@ -200,6 +201,7 @@ const productFromBody = (b) => ({
   price_per_flat_in: optNum(b.price_per_flat_in) || null,
   needs_pitch: [1, 2].includes(Number(b.needs_pitch)) ? Number(b.needs_pitch) : 0,
   is_cut_to_length: b.is_cut_to_length === '1',
+  no_color: b.no_color === '1',
   taxable: b.taxable === '1',
   active: b.active === '1',
   track_stock: b.track_stock === '1',
@@ -223,7 +225,7 @@ const dbProblem = (err) => (err.code === '23505' ? 'Another product already uses
   : err.code === '23514' ? 'Those settings don\'t fit together (a panel needs a profile and gauge; custom trim is per sq ft).' : null);
 
 const COLS = ['name', 'sku', 'category', 'pricing_unit', 'profile_id', 'gauge_id', 'standard_length_in',
-  'max_length_in', 'girth_in', 'price_per_flat_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental', 'needs_pitch'];
+  'max_length_in', 'girth_in', 'price_per_flat_in', 'is_cut_to_length', 'taxable', 'track_stock', 'stock_by_color', 'is_rental', 'needs_pitch', 'no_color'];
 
 router.get('/admin/products/new', need('catalog'), async (req, res) => {
   // "Copy" on the Price list: a new product that starts with another one's settings and price.
