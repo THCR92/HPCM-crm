@@ -103,20 +103,25 @@ async function quoteCancelled(orderId, who, reason) {
 
 // An order is packed and ready: tell the customer (their portal login, or the order's email).
 async function orderReady(orderId) {
+  // Who gets it (Tyler 2026-11-20): the login that put the quote in (or that it's for) when
+  // that login has Ready emails ticked; otherwise the customer's Ready person (Capitol
+  // Roofing: Taylor), else a login that sees all their orders.
   const { rows: [o] } = await query(`
     SELECT o.order_number, o.job_name, o.po_number, o.fulfillment, o.contact_email, c.email AS customer_email,
-           c.portal_enabled, l.email AS login_email, l.full_name AS login_name
+           c.portal_enabled, c.ready_login_id, l.email AS login_email, l.full_name AS login_name
     FROM orders o JOIN customers c USING (customer_id)
-    -- The login it's for, or else one that sees all the customer's orders.
     LEFT JOIN LATERAL (SELECT l.email, l.full_name FROM customer_logins l
       WHERE l.customer_id = c.customer_id AND l.active AND l.password_hash IS NOT NULL
-        AND (l.login_id = o.customer_login_id OR l.sees_all)
-      ORDER BY (l.login_id = o.customer_login_id) IS TRUE DESC, l.login_id LIMIT 1) l ON true
+        AND ((l.login_id = o.customer_login_id AND l.ready_emails) OR l.login_id = c.ready_login_id
+          OR (c.ready_login_id IS NULL AND l.sees_all))
+      ORDER BY (l.login_id = o.customer_login_id AND l.ready_emails) IS TRUE DESC,
+        (l.login_id = c.ready_login_id) IS TRUE DESC, l.login_id LIMIT 1) l ON true
     WHERE o.order_id = $1`, [orderId]);
   if (!o) return;
-  // Their portal login, and the email on the order (or the customer's) too (Tyler 2026-11-12).
+  // That login, plus the email on the order (or the customer's). A customer with a Ready person
+  // picked gets only the login's, so it doesn't reach their invoices inbox or other reps.
   const portal = o.portal_enabled && o.login_email;
-  const to = [...new Set([portal ? o.login_email : null, o.contact_email || o.customer_email]
+  const to = [...new Set([portal ? o.login_email : null, o.ready_login_id && portal ? null : o.contact_email || o.customer_email]
     .filter(Boolean).map((e) => e.trim().toLowerCase()))];
   if (!to.length) return;
   const what = `order ${o.order_number}${o.job_name ? ` (${o.job_name})` : ''}${o.po_number ? `, PO ${o.po_number}` : ''}`;

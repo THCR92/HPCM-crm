@@ -646,7 +646,8 @@ async function invoiceBody(o) {
   if (discount > 0) Line.push({ DetailType: 'DiscountLineDetail', Amount: discount, DiscountLineDetail: { PercentBased: false } });
   const memo = [o.job_name && `Job: ${o.job_name}`, o.po_number && `PO: ${o.po_number}`, o.customer_memo,
     PAY_NOTE].filter(Boolean).join('\n');
-  const email = o.contact_email || o.customer_email;
+  // The customer's invoice email wins over the order's (Capitol Roofing: invoices@, Tyler 2026-11-20).
+  const email = o.invoice_email || o.contact_email || o.customer_email;
   const ship = await shipTo(o);
   const po = o.po_number ? await poField() : null;
   return {
@@ -720,7 +721,7 @@ const STILL_SENT = ['confirmed', 'in_production'];
 // then reads Invoiced and is locked; with the test company it stays Completed.
 async function pushInvoice(orderId) {
   const { rows: [o] } = await query(`
-    SELECT o.*, c.qbo_customer_id, c.email AS customer_email, t.tax_amount, t.tax_exempt AS tax_exempt_effective
+    SELECT o.*, c.qbo_customer_id, c.email AS customer_email, c.invoice_email, t.tax_amount, t.tax_exempt AS tax_exempt_effective
     FROM orders o JOIN customers c USING (customer_id) JOIN v_order_totals t USING (order_id)
     WHERE o.order_id = $1`, [orderId]);
   // Invoices start when the order is Ready (Tyler 2026-11-16; was when ordered). One already

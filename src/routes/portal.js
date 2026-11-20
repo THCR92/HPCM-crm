@@ -648,8 +648,11 @@ router.post('/portal/team', signedIn, adminOnly, async (req, res) => {
   if (!name || !isEmail(email)) return teamBack(res, `error=${encodeURIComponent('Enter a name and an email address.')}`);
   let added;
   try {
-    ({ rows: [added] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, role, created_by)
-      VALUES ($1, $2, $3, $4, $5) RETURNING login_id`, [l.customer_id, name, email, role, `${l.full_name} (customer)`]));
+    // A new Sales login's Ready emails go to the customer's Ready person, when one is picked.
+    ({ rows: [added] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, role, created_by, ready_emails)
+      VALUES ($1, $2, $3, $4, $5,
+        NOT ($4 = 'sales' AND EXISTS (SELECT 1 FROM customers WHERE customer_id = $1 AND ready_login_id IS NOT NULL)))
+      RETURNING login_id`, [l.customer_id, name, email, role, `${l.full_name} (customer)`]));
   } catch (err) {
     if (err.code === '23505') return teamBack(res, `error=${encodeURIComponent('That email already has a login. Call us if it should move to your team.')}`);
     throw err;

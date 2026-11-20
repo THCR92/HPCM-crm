@@ -1423,6 +1423,10 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     assert.deepStrictEqual(inv.CustomField, [{ DefinitionId: '2', Name: 'P.O. Number', Type: 'StringType', StringValue: 'PO-7' }]);
     assert.ok([...qb.items.values()].some((i) => i.IncomeAccountRef.value === '79'));
     assert.match(await (await fetch(`${base}/orders/${id}`)).text(), /In QuickBooks as invoice/);
+    // A customer's invoice email wins over the order's (Capitol Roofing, Tyler 2026-11-20).
+    await query("UPDATE customers SET invoice_email = 'invoices@example.com' FROM orders o WHERE o.order_id = $1 AND o.customer_id = customers.customer_id", [id]);
+    await qbo.pushInvoice(id);
+    assert.strictEqual(qb.invoices.get(o.qbo_invoice_id).BillEmail.Address, 'invoices@example.com');
     // QuickBooks has the invoice but the CRM lost track of it: Send again finds it by number
     // and updates it instead of failing on a duplicate number (HP-10047, 2026-11-16).
     const invoiceCount = qb.invoices.size;
@@ -2431,4 +2435,51 @@ test('sales rep: typed on the quote, shown on the quote and cut sheet, found by 
   assert.match(await (await fetch(`${base}/orders?q=Fred%20Roberts`)).text(), new RegExp(`/orders/${out.order_id}"`));
   // Offered again on this customer's next quote.
   assert.match(await (await fetch(`${base}/orders/new`)).text(), /"reps":\["Fred Roberts"\]/);
+});
+
+test('invoice and Ready emails: set per customer; Ready goes to who put it in or the customer\'s Ready person (Tyler 2026-11-20)', async () => {
+  const mail = require('../src/mail');
+  const notices = require('../src/notices');
+  const sent = [];
+  mail.io.forceConfigured = true;
+  const realSend = mail.io.send;
+  mail.io.send = async (m) => { sent.push(m); };
+  try {
+    const { rows: [c] } = await query(`INSERT INTO customers (display_name, email, portal_enabled)
+      VALUES ('Test ' || gen_random_uuid(), 'office@example.com', true) RETURNING customer_id`);
+    const u = Date.now();
+    const login = async (name, role) => (await query(`INSERT INTO customer_logins (customer_id, full_name, email, role, password_hash)
+      VALUES ($1, $2, $3, $4, 'x') RETURNING login_id`, [c.customer_id, name, `${name.toLowerCase()}${u}@example.com`, role])).rows[0].login_id;
+    const taylor = await login('Taylor', 'manager');
+    const fred = await login('Fred', 'sales');
+    // The customer page sets the invoice email and the Ready person.
+    const post = (path, body) => fetch(base + path, { method: 'POST', redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() });
+    const { rows: [cust] } = await query('SELECT display_name FROM customers WHERE customer_id = $1', [c.customer_id]);
+    await post(`/customers/${c.customer_id}`, { display_name: cust.display_name, email: 'office@example.com', invoice_email: 'invoices@example.com' });
+    await post(`/customers/${c.customer_id}/portal`, { enabled: '1', ready_login_id: String(taylor) });
+    const { rows: [after] } = await query('SELECT invoice_email, ready_login_id FROM customers WHERE customer_id = $1', [c.customer_id]);
+    assert.deepStrictEqual(after, { invoice_email: 'invoices@example.com', ready_login_id: taylor });
+    const page = await (await fetch(`${base}/customers/${c.customer_id}`)).text();
+    assert.match(page, /Invoices go to/);
+    assert.match(page, /Other Ready emails go to/);
+    // A new Sales login's Ready emails go to Taylor.
+    await post(`/customers/${c.customer_id}/logins`, { full_name: 'Sam Rep', email: `sam${u}@example.com`, role: 'sales' });
+    const { rows: [sam] } = await query("SELECT login_id, ready_emails FROM customer_logins WHERE email = $1", [`sam${u}@example.com`]);
+    assert.strictEqual(sam.ready_emails, false);
+    await query("UPDATE customer_logins SET password_hash = 'x' WHERE login_id = $1", [sam.login_id]);
+
+    const order = async (loginId) => (await query(`INSERT INTO orders (customer_id, customer_login_id, contact_email, fulfillment)
+      VALUES ($1, $2, 'someone@example.com', 'pickup') RETURNING order_id`, [c.customer_id, loginId])).rows[0].order_id;
+    const readyTo = async (loginId) => { sent.length = 0; await notices.now.orderReady(await order(loginId)); return sent[0].to; };
+    assert.deepStrictEqual(await readyTo(fred), [`fred${u}@example.com`], 'Fred gets his own');
+    assert.deepStrictEqual(await readyTo(sam.login_id), [`taylor${u}@example.com`], 'other reps go to Taylor');
+    assert.deepStrictEqual(await readyTo(null), [`taylor${u}@example.com`], 'put in at the shop goes to Taylor');
+    // Ticking Ready emails on a login sends it its own.
+    await post(`/customers/${c.customer_id}/logins/${sam.login_id}/ready`, { ready_emails: '1' });
+    assert.deepStrictEqual(await readyTo(sam.login_id), [`sam${u}@example.com`]);
+  } finally {
+    mail.io.forceConfigured = false;
+    mail.io.send = realSend;
+  }
 });

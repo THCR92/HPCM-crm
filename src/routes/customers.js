@@ -8,7 +8,7 @@ const router = require('../async-router')();
 
 const { TYPES, TYPE_LABEL, premiums: typePremiums } = require('../customer-types');
 const FIELDS = ['display_name', 'customer_type', 'company_name', 'first_name', 'last_name',
-  'email', 'phone', 'mobile', 'payment_terms', 'default_fulfillment', 'resale_cert_number', 'notes'];
+  'email', 'invoice_email', 'phone', 'mobile', 'payment_terms', 'default_fulfillment', 'resale_cert_number', 'notes'];
 
 const clean = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
 
@@ -35,6 +35,8 @@ function customerForm(c, { action, error, premiums = {} }) {
     <label>Phone<input name="phone" type="tel" value="${v('phone')}"></label>
     <label>Mobile<input name="mobile" type="tel" value="${v('mobile')}"></label>
     <label class="span2">Email<input name="email" type="email" value="${v('email')}"></label>
+    <label class="span2">Invoice email (QuickBooks)<input name="invoice_email" type="email" value="${v('invoice_email')}" placeholder="same as the order's email">
+      <span class="muted small">If set, every invoice for this customer goes here, whoever placed the order.</span></label>
     <label>Payment terms<input name="payment_terms" value="${v('payment_terms') || 'Due on receipt'}"></label>
     <label>Usually
       <select name="default_fulfillment">
@@ -133,9 +135,14 @@ async function portalCard(c, req) {
       <label class="check"><input type="checkbox" name="enabled" value="1" ${c.portal_enabled ? 'checked' : ''}> Portal on for this customer</label>
       <label class="check"><input type="checkbox" name="line_prices" value="1" ${c.portal_line_prices ? 'checked' : ''}> Show line prices</label>
       <label class="check"><input type="checkbox" name="totals" value="1" ${c.portal_totals ? 'checked' : ''}> Show order totals</label>
-      <noscript><button class="btn small">Save</button></noscript><span class="muted small">Saves when you tick a box.</span></form>` : ''}
+      ${logins.some((l) => l.active) ? html`<label>Other Ready emails go to
+        <select name="ready_login_id"><option value="">their main login</option>${logins.filter((l) => l.active).map((l) =>
+          html`<option value="${l.login_id}" ${c.ready_login_id === l.login_id ? 'selected' : ''}>${l.full_name}</option>`)}</select></label>` : ''}
+      <noscript><button class="btn small">Save</button></noscript><span class="muted small">Saves when you change something.</span></form>
+    <p class="muted small">"Order ready" emails go to the login that put the quote in (or that it's for) when that login has <strong>Ready emails</strong> ticked.
+      Otherwise, and for quotes put in here at the shop, they go to the login picked in "Other Ready emails go to".</p>` : ''}
     ${logins.length ? html`<table class="list">
-      <thead><tr><th>Login</th><th>Email</th><th>Role</th><th>Last signed in</th><th></th></tr></thead>
+      <thead><tr><th>Login</th><th>Email</th><th>Role</th><th>Ready emails</th><th>Last signed in</th><th></th></tr></thead>
       <tbody>${logins.map((l) => html`<tr class="${l.active ? '' : 'muted'}">
         <td>${l.full_name}${l.active ? '' : ' (turned off)'}${l.password_hash ? '' : html` <span class="muted small">· hasn't set a password yet</span>`}</td>
         <td>${l.email}</td>
@@ -144,14 +151,19 @@ async function portalCard(c, req) {
               html`<option value="${v}" ${l.role === v ? 'selected' : ''}>${label}</option>`)}</select>
             <noscript><button class="btn small">Save</button></noscript></form>`
     : PORTAL_ROLES[l.role]}</td>
+        <td>${edit ? html`<form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}/ready" class="inline" onchange="this.submit()">
+            <label class="check"><input type="checkbox" name="ready_emails" value="1" ${l.ready_emails ? 'checked' : ''}
+              aria-label="${l.full_name} gets Ready emails for their own orders"> Their own</label>
+            <noscript><button class="btn small">Save</button></noscript></form>`
+    : (l.ready_emails ? 'Their own' : '')}</td>
         <td>${l.last_login_at ? date(l.last_login_at) : ''}</td>
         <td class="num">${edit ? html`
           <form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}/link" class="inline"><button class="btn small">${l.password_hash ? 'Password reset link' : 'New invite link'}</button></form>
           <form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}" class="inline">
             <input type="hidden" name="active" value="${l.active ? '0' : '1'}">
             <button class="btn small">${l.active ? 'Turn off' : 'Turn on'}</button></form>` : ''}</td></tr>
-        ${edit && l.active ? html`<tr class="invite-row"><td colspan="5">${linkBox(l)}</td></tr>` : ''}
-        ${edit ? html`<tr class="invite-row"><td colspan="5"><details><summary class="small">Change ${l.full_name}'s name or email</summary>
+        ${edit && l.active ? html`<tr class="invite-row"><td colspan="6">${linkBox(l)}</td></tr>` : ''}
+        ${edit ? html`<tr class="invite-row"><td colspan="6"><details><summary class="small">Change ${l.full_name}'s name or email</summary>
           <form method="post" action="/customers/${c.customer_id}/logins/${l.login_id}/edit" class="form-grid">
             <label>Name<input name="full_name" required value="${l.full_name}"></label>
             <label>Email<input name="email" type="email" required value="${l.email}"></label>
@@ -178,6 +190,10 @@ router.post('/:id(\\d+)/portal', need('portal'), async (req, res) => {
   const b = req.body;
   await query(`UPDATE customers SET portal_enabled = $2, portal_line_prices = $3, portal_totals = $4 WHERE customer_id = $1`,
     [req.params.id, b.enabled === '1', b.line_prices === '1', b.totals === '1']);
+  if (b.ready_login_id !== undefined) {
+    await query(`UPDATE customers SET ready_login_id = (SELECT login_id FROM customer_logins WHERE login_id = $2 AND customer_id = $1)
+      WHERE customer_id = $1`, [req.params.id, /^\d+$/.test(b.ready_login_id) ? b.ready_login_id : null]);
+  }
   res.redirect(`/customers/${req.params.id}#portal`);
 });
 
@@ -188,8 +204,10 @@ router.post('/:id(\\d+)/logins', need('portal'), async (req, res) => {
   if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return back('Enter a name and an email address.');
   try {
     // Several logins per customer (Tyler 2026-11-12), each seeing all or only their own.
-    const { rows: [l] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, invite_token, invite_expires_at, created_by, role)
-      VALUES ($1, $2, $3, $4, now() + make_interval(days => $5), $6, $7)
+    const { rows: [l] } = await query(`INSERT INTO customer_logins (customer_id, full_name, email, invite_token, invite_expires_at, created_by, role, ready_emails)
+      VALUES ($1, $2, $3, $4, now() + make_interval(days => $5), $6, $7,
+        -- A new Sales login's Ready emails go to the customer's Ready person, when one is picked.
+        NOT ($7 = 'sales' AND EXISTS (SELECT 1 FROM customers WHERE customer_id = $1 AND ready_login_id IS NOT NULL)))
       RETURNING login_id, true AS added`,
     [req.params.id, name, email, newToken(), INVITE_DAYS, userName(), PORTAL_ROLES[req.body.role] ? req.body.role
       // Not given: the customer's first Admin, then Sales.
@@ -227,6 +245,12 @@ router.post('/:id(\\d+)/logins/:lid(\\d+)/access', need('portal'), async (req, r
     await query('UPDATE customer_logins SET role = $3 WHERE login_id = $2 AND customer_id = $1',
       [req.params.id, req.params.lid, req.body.role]);
   }
+  res.redirect(`/customers/${req.params.id}#portal`);
+});
+
+router.post('/:id(\\d+)/logins/:lid(\\d+)/ready', need('portal'), async (req, res) => {
+  await query('UPDATE customer_logins SET ready_emails = $3 WHERE login_id = $2 AND customer_id = $1',
+    [req.params.id, req.params.lid, req.body.ready_emails === '1']);
   res.redirect(`/customers/${req.params.id}#portal`);
 });
 
@@ -333,7 +357,7 @@ router.get('/:id(\\d+)', async (req, res) => {
     return row('Pricing', `${said}${own ? ' (set for this customer)' : ` (${TYPE_LABEL[c.customer_type] || 'type'} rate)`}`);
   })()}
       ${row('Contact', [c.first_name, c.last_name].filter(Boolean).join(' '))}
-      ${row('Phone', c.phone)}${row('Mobile', c.mobile)}${row('Email', c.email)}
+      ${row('Phone', c.phone)}${row('Mobile', c.mobile)}${row('Email', c.email)}${row('Invoices go to', c.invoice_email)}
       ${row('Terms', c.payment_terms)}${row('Usually', c.default_fulfillment === 'delivery' ? 'Gets delivery' : 'Picks up')}
       ${row('Tax', c.tax_exempt ? `Exempt${c.resale_cert_number ? ` (cert ${c.resale_cert_number})` : ''}` : 'Taxable')}
       ${row('Notes', c.notes)}
