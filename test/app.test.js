@@ -2421,3 +2421,14 @@ test('chimney caps: three sizes; a line needs its size and a drawing before it b
   assert.doesNotMatch(decodeURIComponent(r.headers.get('location') || ''), /status_error/);
   assert.match(await (await fetch(`${base}/orders/${out.order_id}`)).text(), /Top 20&quot; x 18&quot;, sides 6&quot;|Top 20" x 18", sides 6"/);
 });
+
+test('sales rep: typed on the quote, shown on the quote and cut sheet, found by search (Tyler 2026-11-20)', async () => {
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Rep Co ' || gen_random_uuid()) RETURNING customer_id");
+  const out = await (await post('/orders', { customer_id: c.customer_id, sales_rep: 'Fred Roberts', sections: [] })).json();
+  assert.strictEqual((await query('SELECT sales_rep FROM orders WHERE order_id = $1', [out.order_id])).rows[0].sales_rep, 'Fred Roberts');
+  assert.match(await (await fetch(`${base}/orders/${out.order_id}`)).text(), /Sales rep: <strong>Fred Roberts<\/strong>/);
+  assert.match(await (await fetch(`${base}/orders/${out.order_id}/customer`)).text(), /<dt>Sales rep<\/dt><dd>Fred Roberts<\/dd>/);
+  assert.match(await (await fetch(`${base}/orders?q=Fred%20Roberts`)).text(), new RegExp(`/orders/${out.order_id}"`));
+  // Offered again on this customer's next quote.
+  assert.match(await (await fetch(`${base}/orders/new`)).text(), /"reps":\["Fred Roberts"\]/);
+});

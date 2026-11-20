@@ -862,6 +862,8 @@ async function savePortalQuote(l, existing, body, keys = null) {
     // A quote a login writes is theirs; one being edited keeps whose it was.
     customer_login_id: existing ? existing.customer_login_id : l.login_id,
     job_name: body.job_name, po_number: body.po_number, job_address_text: body.job_address_text,
+    // Their sales rep: as typed, else whoever wrote the quote (Tyler 2026-11-20).
+    sales_rep: String(body.sales_rep || '').trim() || (existing && existing.sales_rep) || l.full_name,
     contact_phone: body.contact_phone, contact_email: body.contact_email, fulfillment: body.fulfillment,
     // The Need by date is set when the order is placed (Tyler 2026-11-12).
     need_by: existing ? existing.need_by : null,

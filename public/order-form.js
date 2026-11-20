@@ -342,6 +342,16 @@
   }
 
   // Which of the customer's portal logins it's for (Tyler 2026-11-12). Logins that see
+  // The customer's sales rep (Tyler 2026-11-20): typed, with their portal logins and reps used
+  // before offered as suggestions. In the portal it's the person writing it unless changed.
+  function repField(h) {
+    const c = customers.find((x) => x.id === Number(h.customer_id));
+    const names = [...new Set([...((c && c.logins) || []).map((l) => l.name), ...((c && c.reps) || [])])];
+    return `<label>Sales rep (theirs)<input data-h="sales_rep" list="rep-list" value="${esc(h.sales_rep ?? '')}"
+      placeholder="${portal ? 'You, if left blank' : 'e.g. Fred Roberts'}" autocomplete="off">
+      <datalist id="rep-list">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist></label>`;
+  }
+
   // everything see it either way; one that sees only its own sees it only if picked here.
   function loginSelect(h) {
     const c = customers.find((x) => x.id === Number(h.customer_id));
@@ -422,6 +432,7 @@
       ${portal ? '' : loginSelect(h)}
       ${field('job_name', 'Job name')}
       ${field('po_number', 'Project / PO #')}
+      ${repField(h)}
       ${portal ? '' : field('need_by', 'Need by', 'date')}
       <label>Pickup, delivery or run on site
         <select data-h="fulfillment">
@@ -824,6 +835,13 @@
     }
     if (t.dataset.h === 'accessories_checked') t.closest('label').classList.toggle('missing', !t.checked);
     if (t.dataset.h === 'auto_screws') { toggleScrews(t.checked); return; }
+    // Picking whose quote it is fills the sales rep, if it's blank.
+    if (t.dataset.h === 'customer_login_id' && !String(state.header.sales_rep || '').trim()) {
+      const c = customers.find((x) => x.id === Number(state.header.customer_id));
+      const l = c && (c.logins || []).find((x) => x.id === Number(t.value));
+      const rep = root.querySelector('[data-h="sales_rep"]');
+      if (l && rep) { state.header.sales_rep = l.name; rep.value = l.name; }
+    }
     if (t.dataset.h === 'customer_id') {
       const c = customers.find((x) => x.id === Number(t.value));
       if (c) {

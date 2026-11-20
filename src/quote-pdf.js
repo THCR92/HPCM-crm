@@ -70,6 +70,7 @@ function layoutPdf(o, { sizeCol, areaLabel, files = new Map() }, spots) {
       ['Customer', o.customer_name], ['Job name', o.job_name],
       ['Project / PO #', o.po_number], [isQuote ? 'Valid until' : 'Need by', usDate(isQuote ? o.valid_until : o.need_by)],
       ['Job address', o.job_address_text], [fulfillLabel(o.fulfillment), ({ delivery: 'Delivered', run_on_site: 'Panels run on site' }[o.fulfillment] || 'Customer pickup')],
+      ...(o.sales_rep ? [['Sales rep', o.sales_rep]] : []),
     ];
     let y = 134;
     const half = width / 2;

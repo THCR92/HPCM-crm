@@ -131,7 +131,9 @@ async function loadCatalog() {
            COALESCE(c.premium_pct, tp.premium_pct, 0) AS premium,
            -- Portal logins, for "Who it's for" on the quote form.
            (SELECT json_agg(json_build_object('id', l.login_id, 'name', l.full_name, 'sees_all', l.sees_all) ORDER BY l.full_name)
-              FROM customer_logins l WHERE l.customer_id = c.customer_id AND l.active) AS logins
+              FROM customer_logins l WHERE l.customer_id = c.customer_id AND l.active) AS logins,
+           -- Sales reps used on this customer's quotes before, as suggestions.
+           (SELECT array_agg(DISTINCT o.sales_rep) FROM orders o WHERE o.customer_id = c.customer_id AND o.sales_rep IS NOT NULL) AS reps
     FROM customers c LEFT JOIN customer_type_premiums tp USING (customer_type)
     WHERE c.active ORDER BY lower(c.display_name)`);
   const { rows: [sp] } = await query("SELECT value FROM app_settings WHERE key = 'sized_trim_pricing'");
@@ -203,6 +205,8 @@ function parseHeader(b) {
     customer_login_id: Number(b.customer_login_id) > 0 ? Number(b.customer_login_id) : null,
     job_name: text(b.job_name),
     po_number: text(b.po_number),
+    // The customer's sales rep (Tyler 2026-11-20).
+    sales_rep: text(b.sales_rep, 100),
     job_address_text: text(b.job_address_text),
     contact_phone: text(b.contact_phone),
     contact_email: text(b.contact_email),
@@ -554,7 +558,7 @@ router.get('/', async (req, res) => {
     FROM orders o JOIN customers c USING (customer_id) JOIN v_order_totals t USING (order_id)
     WHERE ${TABS[tab].where}
       AND ($1 = '' OR o.order_number ILIKE '%' || $1 || '%' OR o.job_name ILIKE '%' || $1 || '%'
-           OR o.po_number ILIKE '%' || $1 || '%' OR c.display_name ILIKE '%' || $1 || '%')
+           OR o.po_number ILIKE '%' || $1 || '%' OR c.display_name ILIKE '%' || $1 || '%' OR o.sales_rep ILIKE '%' || $1 || '%')
     ORDER BY o.need_by NULLS LAST, o.order_id DESC`, [q]);
   const prices = can('prices');
   const { rows: [waiting] } = await query(`SELECT count(*)::int AS n FROM orders o WHERE ${Waiting.WAITING}`);
@@ -871,6 +875,7 @@ function customerSheet(o, { linePrices = true, totals = true,
         <dt>Customer</dt><dd>${o.customer_name}</dd>
         <dt>Job name</dt><dd>${o.job_name}</dd>
         <dt>Project / PO #</dt><dd>${o.po_number}</dd>
+        ${o.sales_rep ? html`<dt>Sales rep</dt><dd>${o.sales_rep}</dd>` : ''}
         <dt>${isQuote ? 'Valid until' : 'Need by'}</dt><dd>${date(isQuote ? o.valid_until : o.need_by)}</dd>
         <dt>Job address</dt><dd>${o.job_address_text}</dd>
         <dt>${fulfillLabel(o.fulfillment)}</dt><dd>${({ delivery: 'Delivered', run_on_site: 'Panels run on site' }[o.fulfillment] || 'Customer pickup')}</dd>
@@ -1087,7 +1092,8 @@ router.get('/:id(\\d+)', async (req, res) => {
       <!-- Big enough to find the job in a stack of sheets (Tyler 2026-11-12). -->
       <div class="sheet-key">
         <div class="key key-need"><span>Need by</span><strong>${o.need_by ? html`${weekday(o.need_by)} ${date(o.need_by)}` : '—'}</strong></div>
-        <div class="key key-cust"><span>Customer</span><strong><a href="/customers/${o.customer_id}">${o.customer_name}</a></strong></div>
+        <div class="key key-cust"><span>Customer</span><strong><a href="/customers/${o.customer_id}">${o.customer_name}</a></strong>
+          ${o.sales_rep ? html`<span class="key-rep">Sales rep: <strong>${o.sales_rep}</strong></span>` : ''}</div>
         <div class="key key-po"><span>Project / PO #</span><strong>${o.po_number || '—'}</strong></div>
       </div>
       <dl class="sheet-fields">
