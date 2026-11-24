@@ -233,7 +233,7 @@
   // A choice of screw spacing on the line, e.g. ridge cap every 18" or every 9".
   function screwOptionHtml(row, p) {
     if (!p) return '';
-    const { options, usual } = window.Screws.lineOptions(screwRules, p.id);
+    const { options, usual } = window.Screws.lineOptions(screwRules, p.id, p.category === 'panel' ? p.profile_id : null);
     if (options.length < 2) return '';
     const cur = options.includes(row.screw_option) ? row.screw_option : usual;
     return `<label class="screw-opt">Screws <select data-f="screw_option">${options.map((o) =>

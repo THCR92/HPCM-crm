@@ -72,6 +72,8 @@ if (require.main === module) {
       `Error: ${String(err && (err.stack || err.message) || err).slice(0, 1500)}`]).finally(done);
   });
   qbo.startChecks();
+  // Quotes a migration marked to get today's screw rules (Board & Batten, 2026-11-24).
+  setTimeout(() => require('./refigure').refigureMarked().catch((err) => console.error('Refigure:', err.message)), 5000).unref();
 }
 
 module.exports = app;

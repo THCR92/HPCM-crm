@@ -2555,3 +2555,41 @@ test('Board & Batten: 10" to 24" coverage, priced by the coil it takes; 13.5" ke
   assert.ok(bad.error, 'a 25" coverage is refused');
   assert.match(await (await fetch(`${base}/products`)).text(), /per sq ft of coil/);
 });
+
+test('Board & Batten screws: panheads every 6" (usual), 12" or 18" per line; marked quotes are figured again (Tyler 2026-11-24)', async () => {
+  const bb = await productId('PNL-BB-26');
+  const panhead = await productId('SCR-PANHEAD-1');
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('BB screws ' || gen_random_uuid()) RETURNING customer_id");
+  const quote = (option) => ({ customer_id: c.customer_id, auto_screws: true, framing: 'wood', sections: [{ area: 'wall', items: [
+    { product_id: bb, pieces: 50, length_in: 120, width_in: 13.5, unit_price: 3.75, ...(option ? { screw_option: option } : {}) }] }] });
+  const screwLine = async (id) => (await query(`SELECT oi.product_id, oi.pieces, oi.color_id, oi.description FROM order_items oi
+    JOIN order_sections s USING (section_id) WHERE oi.order_id = $1 AND s.is_auto`, [id])).rows;
+  // 50 panels x 10' every 6" = 1,000 screws = 4 bags of 250, no color.
+  const out = await (await post('/orders', quote(null))).json();
+  let lines = await screwLine(out.order_id);
+  assert.deepStrictEqual(lines.map((l) => [l.product_id, Number(l.pieces), l.color_id]), [[panhead, 4, null]]);
+  assert.match(lines[0].description, /^1000 screws: 1 every 0\.5' on 500' of panel/);
+  const again = await (await post(`/orders/${out.order_id}`, quote('every 12"'))).json();
+  assert.ok(again.ok, JSON.stringify(again));
+  assert.strictEqual(Number((await screwLine(out.order_id))[0].pieces), 2);
+  // The form offers the three choices on the line.
+  const { loadCatalog } = require('../src/routes/orders');
+  const Screws = require('../public/screws');
+  const cat = await loadCatalog();
+  const p = cat.products.find((x) => x.id === bb);
+  assert.deepStrictEqual(Screws.lineOptions(cat.screw_rules, p.id, p.profile_id),
+    { options: ['every 6"', 'every 12"', 'every 18" (not suggested)'], usual: 'every 6"' });
+
+  // A quote written before the rules (no screws yet), approved by the customer, gets them
+  // when marked, and keeps the customer's answer.
+  await query(`DELETE FROM order_items WHERE order_id = $1 AND section_id IN (SELECT section_id FROM order_sections WHERE order_id = $1 AND is_auto)`, [out.order_id]);
+  await query("UPDATE orders SET refigure_screws = true, customer_decision = 'approved', updated_by = 'Somebody' WHERE order_id = $1", [out.order_id]);
+  assert.strictEqual((await screwLine(out.order_id)).length, 0);
+  const { refigureMarked } = require('../src/refigure');
+  const r = await refigureMarked();
+  assert.ok(r.done >= 1);
+  lines = await screwLine(out.order_id);
+  assert.deepStrictEqual(lines.map((l) => Number(l.pieces)), [2], 'keeps the line\'s every 12" choice');
+  const { rows: [o] } = await query('SELECT refigure_screws, customer_decision, updated_by FROM orders WHERE order_id = $1', [out.order_id]);
+  assert.deepStrictEqual(o, { refigure_screws: false, customer_decision: 'approved', updated_by: 'Somebody' });
+});

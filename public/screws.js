@@ -6,7 +6,8 @@
 // panel, by coverage width), every N inches of each piece (rounded up per
 // piece), or a set number per piece.
 //   Panels: rules with a length are alternatives (the quote picks one, or the
-//     usual one); rules without a length always apply.
+//     usual one); rules with a line choice ("every 6"", Board & Batten, Tyler
+//     2026-11-24) are picked on each panel line; rules with neither always apply.
 //   Trim and accessories: rules say which panels they go with (through-fastener,
 //     standing seam, any). The quote picks which screws its trim gets, starting
 //     from the panels on it. A rule with no screw uses the same screw as those
@@ -54,7 +55,7 @@
       const len = Number(l.length_in);
       if (!(pieces > 0 && len > 0)) continue;
       if (p.fastening) systems.add(p.fastening);
-      const chosen = panelRules(rules, p.profile_id, framing, opts.length);
+      const chosen = panelRules(rules, p.profile_id, framing, opts.length, l.screw_option);
       if (!chosen.length) { missing.add(p.profile_name || p.name); continue; }
       for (const r of chosen) {
         const color = r.color_match ? Number(l.color_id) || null : null;
@@ -131,12 +132,15 @@
   }
 
   // The rules for one panel profile on this framing at this length.
-  function panelRules(rules, profileId, framing, length) {
+  function panelRules(rules, profileId, framing, length, option) {
     const fits = rules.filter((r) => r.profile_id && Number(r.profile_id) === Number(profileId)
       && (r.framing === framing || r.framing === 'any'));
-    const sized = fits.filter((r) => r.length_label);
+    const choices = fits.filter((r) => r.option_label);
+    const choice = choices.find((r) => r.option_label === option) || choices.find((r) => r.is_default) || choices[0];
+    const plain = fits.filter((r) => !r.option_label);
+    const sized = plain.filter((r) => r.length_label);
     const pick = sized.find((r) => r.length_label === length) || sized.find((r) => r.is_default) || sized[0];
-    return [...(pick ? [pick] : []), ...fits.filter((r) => !r.length_label)];
+    return [...(pick ? [pick] : []), ...(choice ? [choice] : []), ...plain.filter((r) => !r.length_label)];
   }
 
   // A product's rules for this kind of panel, with the line's choice.
@@ -166,9 +170,11 @@
     return { options: [...new Set(fits.map((r) => r.length_label))], usual: def ? def.length_label : null };
   }
 
-  // Choices offered on a line for this product (e.g. every 18" / every 9").
-  function lineOptions(rules, productId) {
-    const own = rules.filter((r) => Number(r.item_product_id) === Number(productId) && r.option_label);
+  // Choices offered on a line for this product (e.g. every 18" / every 9"), or for a panel
+  // of this profile (Board & Batten every 6" / 12" / 18").
+  function lineOptions(rules, productId, profileId = null) {
+    const own = rules.filter((r) => r.option_label && ((r.item_product_id && Number(r.item_product_id) === Number(productId))
+      || (profileId && r.profile_id && Number(r.profile_id) === Number(profileId))));
     const def = own.find((r) => r.is_default) || own[0];
     return { options: [...new Set(own.map((r) => r.option_label))], usual: def ? def.option_label : null };
   }

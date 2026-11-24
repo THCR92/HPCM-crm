@@ -367,7 +367,8 @@ router.get('/admin/screws', need('screws'), async (req, res) => {
         <li>New quotes add screws and clips from their panels, trim and accessories using these rules.
           Each piece is rounded up (a 10' piece with screws every 18" gets 7 spots), then totals round up to whole bags.</li>
         <li><strong>Panels:</strong> "Framing" picks wood or steel; a <strong>choice name</strong> (like 1.5") makes it one of the
-          lengths the quote can pick, and "Usual choice" is the one picked unless someone changes it.</li>
+          lengths the quote can pick, and "Usual choice" is the one picked unless someone changes it.
+          A choice name starting with "every" (like every 6") is picked on each panel line instead.</li>
         <li><strong>Trim and accessories:</strong> "With" says which panels the rule goes with; the quote picks which screws its trim
           gets. "Same screw as the panels" follows the quote's framing and length. A <strong>choice name</strong> (like every 18")
           puts a choice on the quote line.</li>
@@ -404,8 +405,10 @@ async function saveScrewRule(id, b) {
     item_product_id: kind === 'i' ? Number(forId) : null,
     framing: FRAMING[b.framing] ? b.framing : 'any',
     panel_system: !isPanel && SYSTEM[b.panel_system] ? b.panel_system : 'any',
-    length_label: isPanel ? choice : null,
-    option_label: isPanel ? null : choice,
+    // A panel choice named "every ..." is picked on each line (Board & Batten every 6");
+    // other panel choices are screw lengths the quote picks.
+    length_label: isPanel && !/^every\b/i.test(choice || '') ? choice : null,
+    option_label: isPanel && !/^every\b/i.test(choice || '') ? null : choice,
     product_id: Number(b.product_id) || null,
     basis: per === 'square' || per === 'each' ? per : 'spacing',
     qty: Number(b.qty),
