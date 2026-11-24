@@ -832,8 +832,9 @@ router.get('/portal/orders/:id(\\d+)/edit', signedIn, async (req, res) => {
 async function savePortalQuote(l, existing, body, keys = null) {
   const { rows: prices } = await query(`
     SELECT p.product_id, p.name, p.category, p.active, cp.unit_price, p.pricing_unit AS unit, p.girth_in AS girth,
-           p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate, g.gauge
-    FROM products p LEFT JOIN v_current_prices cp USING (product_id) LEFT JOIN gauges g USING (gauge_id)`);
+           p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate, g.gauge, pp.coil_extra_in AS coil_extra
+    FROM products p LEFT JOIN v_current_prices cp USING (product_id) LEFT JOIN gauges g USING (gauge_id)
+    LEFT JOIN panel_profiles pp USING (profile_id)`);
   const { rows: flats } = await query('SELECT color_id, gauge, price FROM v_flat_sheet_prices');
   const flatOf = new Map(flats.map((f) => [`${f.color_id}:${f.gauge}`, Number(f.price)]));
   const priceOf = new Map(prices.map((p) => [p.product_id, p]));
@@ -851,7 +852,7 @@ async function savePortalQuote(l, existing, body, keys = null) {
       const before = kept.get(Number(it.order_item_id));
       const same = before && before.product_id === Number(it.product_id) && (before.color_id || null) === (Number(it.color_id) || null)
         // Trim priced by its width keeps our price only at the same width.
-        && (!p || p.unit !== 'each' || Number(before.width_in || 0) === Number(it.width_in || 0));
+        && (!p || (p.unit !== 'each' && !(Number(p.coil_extra) > 0)) || Number(before.width_in || 0) === Number(it.width_in || 0));
       // A flat sheet's price comes from its color and gauge (finish included), not a premium.
       const flat = p && p.category === 'flat_sheet' ? flatOf.get(`${Number(it.color_id)}:${p.gauge}`) : undefined;
       const list = !p ? null : flat !== undefined ? CustomerTypes.withPremium(flat, pct)

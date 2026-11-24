@@ -2532,3 +2532,26 @@ test('gutter supplies: section renamed; gutter coil sold by the foot (Tyler 2026
   const { rows: [li] } = await query('SELECT line_total FROM order_items WHERE order_id = $1', [out.order_id]);
   assert.strictEqual(Number(li.line_total), 100);
 });
+
+test('Board & Batten: 10" to 24" coverage, priced by the coil it takes; 13.5" keeps its price (Tyler 2026-11-24)', async () => {
+  const TrimPrice = require('../public/trim-price');
+  const { loadCatalog } = require('../src/routes/orders');
+  const bb = (await loadCatalog()).products.find((p) => p.name === 'Board & Batten 24 GA');
+  assert.deepStrictEqual([Number(bb.cov_min), Number(bb.cov_max), Number(bb.coil_extra)], [10, 24, 3.625]);
+  const per = (w) => TrimPrice.piecePrice(bb, w);
+  // The coil price is set so 13.5" stays what it was ($4.75 in the seed price list).
+  assert.strictEqual(per(13.5), Math.round(Number(bb.price) * 17.125 / 13.5 * 100) / 100);
+  assert.ok(per(10) > per(13.5) && per(13.5) > per(20.375), 'narrow panels cost more per covered sq ft');
+  assert.strictEqual(per(20.375), Math.round(Number(bb.price) * 24 / 20.375 * 100) / 100);
+  // A 10" line saves, shows its coil and the guide rod note on the cut sheet.
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('BB ' || gen_random_uuid()) RETURNING customer_id");
+  const out = await (await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'wall', items: [
+    { product_id: bb.id, pieces: 2, length_in: 120, width_in: 10, unit_price: per(10) }] }] })).json();
+  const sheet = await (await fetch(`${base}/orders/${out.order_id}`)).text();
+  assert.match(sheet, /10" cov\. \(13-5\/8" coil\) · remove left guide rod|10&quot; cov\. \(13-5\/8&quot; coil\) · remove left guide rod/);
+  // Over 24" is refused.
+  const bad = await (await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'wall', items: [
+    { product_id: bb.id, pieces: 1, length_in: 120, width_in: 25, unit_price: 4 }] }] })).json();
+  assert.ok(bad.error, 'a 25" coverage is refused');
+  assert.match(await (await fetch(`${base}/products`)).text(), /per sq ft of coil/);
+});

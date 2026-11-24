@@ -16,9 +16,9 @@ const CATEGORY_LABEL = {
 router.get('/products', need('prices'), async (req, res) => {
   const { rows } = await query(`
     SELECT p.product_id, p.sku, p.name, p.category, p.pricing_unit, p.price_varies,
-           p.standard_length_in, p.girth_in, p.flat_extra_in,
+           p.standard_length_in, p.girth_in, p.flat_extra_in, pp.coil_extra_in AS coil_extra, pp.coverage_width_in AS cov,
            cp.unit_price, cp.effective_from
-    FROM products p LEFT JOIN v_current_prices cp USING (product_id)
+    FROM products p LEFT JOIN v_current_prices cp USING (product_id) LEFT JOIN panel_profiles pp USING (profile_id)
     WHERE p.active ORDER BY array_position(enum_range(NULL::product_category), p.category), p.name`);
   const { rows: [tax] } = await query("SELECT value FROM app_settings WHERE key = 'sales_tax_rate'");
   const premiums = await CustomerTypes.premiums();
@@ -67,15 +67,18 @@ router.get('/products', need('prices'), async (req, res) => {
           <tr><td>${p.name}<div class="muted small">${p.sku}${edit ? html` · <a href="/admin/products/${p.product_id}?back=products">edit</a>
             · <a href="/admin/products/new?from=${p.product_id}&back=products" title="Start a new product with this one's settings">copy</a>` : ''}${can('screws') && p.category !== 'panel' ? html` · <a href="/admin/screws?for=i:${p.product_id}">screws</a>` : ''}</div></td>
           <td>${p.category === 'custom_trim' ? `per inch of flat width, per ${num((p.standard_length_in || 120) / 12)}' piece`
-    : p.pricing_unit === 'each' && p.standard_length_in ? `per ${num(p.standard_length_in / 12)}' piece` : UNIT_LABEL[p.pricing_unit]}</td>
+    : p.pricing_unit === 'each' && p.standard_length_in ? `per ${num(p.standard_length_in / 12)}' piece`
+      : Number(p.coil_extra) > 0 ? html`per sq ft of coil<div class="muted small">coverage + ${num(p.coil_extra, 3)}"; at ${num(p.cov, 3)}" coverage
+        ${p.unit_price !== null ? money(Number(p.unit_price) * (Number(p.cov) + Number(p.coil_extra)) / Number(p.cov)) : ''} per sq ft covered</div>`
+        : UNIT_LABEL[p.pricing_unit]}</td>
           ${cut ? html`<td>${edit ? html`<form method="post" action="/products/${p.product_id}/girth" class="inline">
             <input name="girth_in" type="number" step="0.125" min="0" value="${p.girth_in ?? ''}" placeholder="inches" style="width:5.5rem">
             <button class="btn small">Save</button></form>` : (p.girth_in ? `${num(p.girth_in, 3)}"` : '')}${p.flat_extra_in && p.girth_in ? html`
             <div class="muted small">${num(p.girth_in - p.flat_extra_in, 3)}" finished; flat is ${num(p.flat_extra_in, 3)}" wider</div>` : ''}</td>` : ''}
-          <td class="num">${p.unit_price !== null ? money(p.unit_price) : html`<span class="muted">${p.price_varies ? 'Varies' : '—'}</span>`}</td>
+          <td class="num">${p.unit_price !== null ? (Number(p.coil_extra) > 0 ? `$${Number(p.unit_price).toFixed(4)}` : money(p.unit_price)) : html`<span class="muted">${p.price_varies ? 'Varies' : '—'}</span>`}</td>
           <td>${date(p.effective_from)}</td>
           <td>${edit ? html`<form method="post" action="/products/${p.product_id}/price" class="inline">
-            <input name="unit_price" type="number" step="0.01" min="0" placeholder="New price" required>
+            <input name="unit_price" type="number" step="any" min="0" placeholder="New price" required>
             <button class="btn small">Set</button></form>` : ''}</td></tr>`)}
         </tbody>
       </table>`;

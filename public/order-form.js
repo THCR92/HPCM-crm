@@ -209,8 +209,11 @@
       if (Number(p.cov_min) === Number(p.cov_max)) {
         return `<span class="fixed-width">${Number(p.cov)}" cov.</span>`;
       }
+      const coil = Number(p.coil_extra) > 0 && Number(row.width_in) > 0 ? Number(row.width_in) + Number(p.coil_extra) : null;
       return `<input class="w-num" data-f="width_in" type="number" step="0.125" min="${p.cov_min}" max="${p.cov_max}"
-                value="${esc(row.width_in)}" title="Coverage width, ${Number(p.cov_min)}–${Number(p.cov_max)} in"><span class="unit">" cov.</span>`;
+                value="${esc(row.width_in)}" title="Coverage width, ${Number(p.cov_min)}–${Number(p.cov_max)} in${Number(p.coil_extra) > 0
+                  ? `. Each panel takes its coverage + ${inchesText(Number(p.coil_extra))}" of coil, and is priced by the coil it takes.` : ''}"><span class="unit">" cov.</span>${
+                coil ? `<div class="muted small coil-note">uses ${inchesText(coil)}" coil${Number(row.width_in) < 11.375 ? ', remove left guide rod' : ''}</div>` : ''}`;
     }
     if (p.unit === 'each' && (p.girth || p.category === 'trim')) {
       const std = window.TrimPrice.standardWidth(p);
@@ -824,9 +827,13 @@
       }
       // Trim: the piece price follows the flat width.
       const p = productById.get(Number(r.row.product_id));
-      if (t.dataset.f === 'width_in' && p && p.unit === 'each') {
+      if (t.dataset.f === 'width_in' && p && (p.unit === 'each' || Number(p.coil_extra) > 0)) {
         r.row.unit_price = listPrice(p, Number(r.row.color_id), r.row.width_in);
         r.tr.querySelector('[data-f="unit_price"]').value = r.row.unit_price;
+        // Board & Batten: the coil it takes follows the coverage.
+        const note = r.tr.querySelector('.coil-note');
+        const w = Number(r.row.width_in);
+        if (note && w > 0) note.textContent = `uses ${inchesText(w + Number(p.coil_extra))}" coil${w < 11.375 ? ', remove left guide rod' : ''}`;
       }
     }
     if (t.dataset.cq) {

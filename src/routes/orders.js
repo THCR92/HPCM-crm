@@ -73,6 +73,7 @@ async function loadOrder(id) {
     SELECT oi.*, p.name AS product_name, p.sku, p.category, p.is_rental, p.needs_pitch, p.needs_dims,
            EXISTS (SELECT 1 FROM order_attachments a WHERE a.order_item_id = oi.order_item_id AND NOT a.is_proof) AS has_drawing, p.gauge_id AS product_gauge_id, p.girth_in AS product_girth_in,
            p.flat_extra_in AS product_flat_extra,
+           (SELECT pp.coil_extra_in FROM panel_profiles pp WHERE pp.profile_id = p.profile_id) AS coil_extra,
            g.gauge,
            -- The color without its coil supplier, on the cut sheet too (Tyler 2026-11-05).
            col.name || CASE WHEN col.finish <> 'smooth' THEN ' (' || col.finish_label || ')' ELSE '' END AS color_name,
@@ -110,7 +111,7 @@ async function loadCatalog() {
     SELECT p.product_id AS id, p.name, p.category, p.pricing_unit AS unit, p.price_varies, p.taxable,
            p.needs_pitch AS pitches, p.is_cut_to_length, p.standard_length_in, p.max_length_in, p.girth_in AS girth, p.no_color, p.needs_dims,
            p.flat_extra_in AS flat_extra, p.price_per_flat_in AS rate, cp.unit_price AS price,
-           pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max,
+           pp.coverage_width_in AS cov, pp.min_coverage_in AS cov_min, pp.max_coverage_in AS cov_max, pp.coil_extra_in AS coil_extra,
            pp.fastening::text AS fastening, p.profile_id, pp.name AS profile_name, g.gauge,
            pp.closure_product_id AS closure_id, pp.outer_closure_product_id AS outer_closure_id, pp.vented_closure_product_id AS vented_closure_id
     FROM products p
@@ -829,10 +830,24 @@ function allowedStatuses(from) {
   });
 }
 
+// 17.125 -> "17-1/8"
+const inches = (x) => {
+  const whole = Math.floor(x + 1e-9);
+  let n = Math.round((x - whole) * 16);
+  if (n === 16) return String(whole + 1);
+  if (!n) return String(whole);
+  let d = 16;
+  while (n % 2 === 0) { n /= 2; d /= 2; }
+  return `${whole}-${n}/${d}`;
+};
+
 // Width shown on a line: panel coverage, custom trim girth, or sized trim width.
 const sizeCol = (i, { shop = true } = {}) => {
   if (i.pricing_unit === 'sqft' && i.width_in) {
-    return `${num(i.width_in, 3)}" ${i.category === 'custom_trim' ? 'girth' : 'cov.'}`;
+    // Board & Batten: the coil it takes, and the BB750 guide rod note under 11-3/8" (Tyler 2026-11-24).
+    const coil = Number(i.coil_extra) > 0 ? Number(i.width_in) + Number(i.coil_extra) : null;
+    return `${num(i.width_in, 3)}" ${i.category === 'custom_trim' ? 'girth' : 'cov.'}${shop && coil ? ` (${inches(coil)}" coil)` : ''}${
+      shop && coil && Number(i.width_in) < 11.375 ? ' · remove left guide rod' : ''}`;
   }
   if (i.pricing_unit === 'each' && i.width_in) {
     return `${num(i.width_in, 3)}" flat${shop && i.product_flat_extra ? ` (${num(i.width_in - i.product_flat_extra, 3)}" finished)` : ''}`;

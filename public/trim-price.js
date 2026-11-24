@@ -6,13 +6,19 @@
 (function (root) {
   const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
-  // p: { price, unit, girth, flat_extra, rate }; width: flat inches; upcharge: color premium %.
+  // p: { price, unit, girth, flat_extra, rate, coil_extra }; width: flat inches (trim) or
+  // coverage (panels); upcharge: color premium %.
+  // Board & Batten (Tyler 2026-11-24): the list price is per sq ft of coil, and each panel
+  // takes its coverage + coil_extra (3-5/8"), so the price per covered sq ft is
+  // list x (coverage + extra) / coverage.
   function piecePrice(p, width, upcharge = 0) {
     if (!p) return null;
     const w = Number(width);
     const list = p.price === null || p.price === undefined ? null : Number(p.price);
     let base = list;
-    if (p.unit === 'each' && w > 0) {
+    if (p.unit === 'sqft' && Number(p.coil_extra) > 0 && w > 0 && list !== null) {
+      base = (list * (w + Number(p.coil_extra))) / w;
+    } else if (p.unit === 'each' && w > 0) {
       if (Number(p.rate) > 0) base = Number(p.rate) * w;
       else if (Number(p.girth) > 0 && w !== Number(p.girth) && list !== null) {
         base = (list / (Number(p.girth) - Number(p.flat_extra || 0))) * w;
