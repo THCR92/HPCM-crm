@@ -231,6 +231,13 @@ router.post('/orders/:id(\\d+)/qbo', need('approve', 'status'), async (req, res)
   res.redirect(`/orders/${req.params.id}`);
 });
 
+// A deposit invoice for part of the order, before the full invoice (Tyler 2026-11-24).
+router.post('/orders/:id(\\d+)/qbo-deposit', need('approve', 'status'), async (req, res) => {
+  const pct = Number(req.body.deposit_pct);
+  await qbo.sendDeposit(Number(req.params.id), pct > 0 && pct <= 100 ? pct : 50);
+  res.redirect(`/orders/${req.params.id}#deposit`);
+});
+
 // The order's number is on another customer's invoice in QuickBooks: take a new one.
 router.post('/orders/:id(\\d+)/qbo-renumber', need('approve', 'status'), async (req, res) => {
   await qbo.newNumber(Number(req.params.id));

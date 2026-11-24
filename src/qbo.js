@@ -586,6 +586,32 @@ async function productItem(p) {
   return id;
 }
 
+// Deposits (Tyler 2026-11-24): a "Customer Deposit" item on a "Customer Deposits" liability
+// account, so a deposit isn't counted as a sale until the job is invoiced. Made if missing.
+const DEPOSIT_ACCOUNT = 'Customer Deposits';
+const DEPOSIT_ITEM = 'Customer Deposit';
+async function depositItemId() {
+  const conn = await connection();
+  if (conn.deposit_item_id) return conn.deposit_item_id;
+  let item = ((await select(`select * from Item where Name = ${quote(DEPOSIT_ITEM)}`)).Item || [])[0];
+  if (!item) {
+    let account = ((await select(`select * from Account where Name = ${quote(DEPOSIT_ACCOUNT)}`)).Account || [])[0];
+    if (!account) {
+      account = (await api('POST', 'account', {
+        Name: DEPOSIT_ACCOUNT, AccountType: 'Other Current Liability', AccountSubType: 'OtherCurrentLiabilities',
+        Description: 'Deposits customers paid before their order is invoiced (from the CRM)',
+      }, { entity: 'Account', table: 'qbo', op: 'create' })).Account;
+    }
+    item = (await api('POST', 'item', {
+      Name: DEPOSIT_ITEM, Type: 'Service', Taxable: false,
+      Description: 'Deposit on an order, taken off its invoice when the order is ready',
+      IncomeAccountRef: { value: account.Id },
+    }, { entity: 'Item', table: 'qbo', op: 'create' })).Item;
+  }
+  await query('UPDATE qbo_connection SET deposit_item_id = $1 WHERE id = 1', [item.Id]);
+  return item.Id;
+}
+
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const denverDate = (d) => new Date(d || Date.now()).toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
 
@@ -644,6 +670,14 @@ async function invoiceBody(o) {
   }
   const discount = round2(Number(o.discount_amount) + lines.reduce((s, l) => s + Number(l.line_discount || 0), 0));
   if (discount > 0) Line.push({ DetailType: 'DiscountLineDetail', Amount: discount, DiscountLineDetail: { PercentBased: false } });
+  // A deposit invoiced earlier comes off here (after the discount, so it doesn't change it).
+  if (o.qbo_deposit_invoice_id && Number(o.deposit_invoice_amount) > 0) {
+    const amt = round2(o.deposit_invoice_amount);
+    Line.push({
+      DetailType: 'SalesItemLineDetail', Description: `Less deposit (invoice ${o.deposit_doc_number})`, Amount: -amt,
+      SalesItemLineDetail: { ItemRef: { value: await depositItemId() }, Qty: 1, UnitPrice: -amt, TaxCodeRef: { value: 'NON' } },
+    });
+  }
   const memo = [o.job_name && `Job: ${o.job_name}`, o.po_number && `PO: ${o.po_number}`, o.customer_memo,
     PAY_NOTE].filter(Boolean).join('\n');
   // The customer's invoice email wins over the order's (Capitol Roofing: invoices@, Tyler 2026-11-20).
@@ -764,6 +798,91 @@ async function pushInvoice(orderId) {
   }
 }
 
+// The deposit invoice (Tyler 2026-11-24): its own invoice, HP-n-D, for pct% of the order's
+// total with tax, due on receipt. It can be changed until any of it is paid.
+async function pushDeposit(orderId, pct) {
+  const { rows: [o] } = await query(`
+    SELECT o.*, c.qbo_customer_id, c.email AS customer_email, c.invoice_email, t.grand_total
+    FROM orders o JOIN customers c USING (customer_id) JOIN v_order_totals t USING (order_id)
+    WHERE o.order_id = $1`, [orderId]);
+  if (!o) return null;
+  const fail = async (msg) => {
+    await query('UPDATE orders SET deposit_error = $1 WHERE order_id = $2', [msg, o.order_id]);
+    throw new QboError(msg);
+  };
+  if (o.status === 'cancelled') return fail('This order is cancelled.');
+  if (o.qbo_invoice_id) return fail(`The full invoice ${o.qbo_doc_number} is already in QuickBooks, so a deposit invoice isn't needed.`);
+  pct = Number(pct || o.deposit_pct || 50);
+  if (!(pct > 0 && pct <= 100)) return fail('The deposit percent must be between 1 and 100.');
+  const amount = round2(Number(o.grand_total) * pct / 100);
+  if (!(amount > 0)) return fail('The order has no total yet.');
+  const log = { entity: 'Invoice', table: 'orders', id: o.order_id };
+  try {
+    let existing = null;
+    if (o.qbo_deposit_invoice_id) existing = (await api('GET', `invoice/${o.qbo_deposit_invoice_id}`).catch(() => null))?.Invoice || null;
+    if (existing && Number(existing.Balance) < Number(existing.TotalAmt)) {
+      return fail(`Deposit invoice ${existing.DocNumber} is already paid (or part paid), so it can't be changed.`);
+    }
+    o.qbo_customer_id = await pushCustomer(o.customer_id);
+    const docNumber = `${o.order_number}-D`;
+    if (!existing) {
+      const [same] = (await select(`select * from Invoice where DocNumber = ${quote(docNumber)}`)).Invoice || [];
+      if (same && String(same.CustomerRef?.value) !== String(o.qbo_customer_id)) {
+        return fail(`QuickBooks already has an invoice numbered ${docNumber} for ${same.CustomerRef?.name || 'another customer'}.`);
+      }
+      existing = same || null;
+    }
+    const email = o.invoice_email || o.contact_email || o.customer_email;
+    const ship = await shipTo(o);
+    const po = o.po_number ? await poField() : null;
+    const what = `${num2(pct)}% deposit on order ${o.order_number}${o.job_name ? `, ${o.job_name}` : ''}`;
+    const body = {
+      ...(po ? { CustomField: [{ DefinitionId: po.DefinitionId, Name: po.Name, Type: 'StringType', StringValue: cut(o.po_number, 31) }] } : {}),
+      ...(ship ? { ShipAddr: ship } : {}),
+      DocNumber: docNumber,
+      TxnDate: denverDate(),
+      DueDate: denverDate(),
+      CustomerRef: { value: o.qbo_customer_id },
+      Line: [{
+        DetailType: 'SalesItemLineDetail', Description: cut(what, 4000), Amount: amount,
+        SalesItemLineDetail: { ItemRef: { value: await depositItemId() }, Qty: 1, UnitPrice: amount, TaxCodeRef: { value: 'NON' } },
+      }],
+      CustomerMemo: { value: cut([o.job_name && `Job: ${o.job_name}`, o.po_number && `PO: ${o.po_number}`,
+        `Deposit to start order ${o.order_number}. The rest is invoiced when your order is ready, with this deposit taken off.`]
+        .filter(Boolean).join('\n'), 1000) },
+      PrivateNote: `Deposit from the CRM for order ${o.order_number}`,
+      ...(email ? { BillEmail: { Address: cut(email, 100) } } : {}),
+    };
+    const out = existing
+      ? await api('POST', 'invoice', { ...body, Id: existing.Id, SyncToken: existing.SyncToken, sparse: true }, { ...log, op: 'update' })
+      : await api('POST', 'invoice', body, { ...log, op: 'create' });
+    await query(`UPDATE orders SET deposit_pct = $1, deposit_invoice_amount = $2, qbo_deposit_invoice_id = $3, deposit_doc_number = $4,
+        deposit_invoiced_at = now(), deposit_balance = $5, deposit_paid_at = NULL, deposit_error = NULL WHERE order_id = $6`,
+    [pct, amount, out.Invoice.Id, out.Invoice.DocNumber || docNumber, out.Invoice.Balance ?? amount, o.order_id]);
+    return out.Invoice.Id;
+  } catch (err) {
+    if (err instanceof QboError && !err.status) throw err; // our own message, already saved
+    await query('UPDATE orders SET deposit_error = $1 WHERE order_id = $2', [err.message, o.order_id]);
+    throw err;
+  }
+}
+const num2 = (n) => String(Math.round(Number(n) * 100) / 100);
+
+// Whether deposit invoices are paid yet (on the regular check, and from the order page).
+async function checkDeposits(orderId = null) {
+  const { rows } = await query(`SELECT order_id, qbo_deposit_invoice_id FROM orders
+    WHERE qbo_deposit_invoice_id IS NOT NULL AND deposit_paid_at IS NULL AND status <> 'cancelled'
+      AND ($1::int IS NULL OR order_id = $1) ORDER BY order_id DESC LIMIT 100`, [orderId]);
+  for (const r of rows) {
+    const inv = (await api('GET', `invoice/${encodeURIComponent(r.qbo_deposit_invoice_id)}`).catch(() => null))?.Invoice;
+    if (!inv) continue;
+    const bal = Number(inv.Balance);
+    if (!Number.isFinite(bal)) continue;
+    await query(`UPDATE orders SET deposit_balance = $1::numeric,
+        deposit_paid_at = CASE WHEN $1::numeric <= 0 THEN now() END WHERE order_id = $2`, [bal, r.order_id]);
+  }
+}
+
 // When the order's number is already on another customer's invoice in QuickBooks
 // (QuickBooks counts up from the last HP number for invoices typed in there), the order
 // takes the next HP number that neither the CRM nor QuickBooks has used (Tyler 2026-11-16).
@@ -786,6 +905,7 @@ async function renumberOrder(orderId) {
 const whenConnected = (job) => later(async () => { if (await connected()) return job(); return null; });
 const customerChanged = (customerId) => whenConnected(() => pushCustomer(customerId));
 const orderCompleted = (orderId) => whenConnected(() => pushInvoice(orderId));
+const sendDeposit = (orderId, pct) => whenConnected(() => pushDeposit(orderId, pct));
 const newNumber = (orderId) => whenConnected(async () => {
   const n = await renumberOrder(orderId);
   if (n) await pushInvoice(orderId);
@@ -823,6 +943,7 @@ async function finishConnect(req, { code, state, realmId }, by) {
       refresh_token = EXCLUDED.refresh_token, refresh_expires_at = EXCLUDED.refresh_expires_at,
       connected_by = EXCLUDED.connected_by, connected_at = now(), last_error = NULL,
       income_account_id = CASE WHEN qbo_connection.realm_id = EXCLUDED.realm_id THEN qbo_connection.income_account_id END,
+      deposit_item_id = CASE WHEN qbo_connection.realm_id = EXCLUDED.realm_id THEN qbo_connection.deposit_item_id END,
       customers_checked_at = CASE WHEN qbo_connection.realm_id = EXCLUDED.realm_id THEN qbo_connection.customers_checked_at END`,
   [config().environment, String(realmId), seal(t.access_token), expiry(t.expires_in), seal(t.refresh_token),
     expiry(t.x_refresh_token_expires_in || 8640000), by]);
@@ -841,6 +962,8 @@ async function forgetCompany() {
   await query(`UPDATE orders SET qbo_invoice_id = NULL, qbo_doc_number = NULL, qbo_sync_token = NULL,
       qbo_sync_status = 'not_synced', qbo_synced_at = NULL, qbo_last_error = NULL
     WHERE status <> 'invoiced'`);
+  await query(`UPDATE orders SET qbo_deposit_invoice_id = NULL, deposit_doc_number = NULL, deposit_invoice_amount = NULL,
+      deposit_invoiced_at = NULL, deposit_balance = NULL, deposit_paid_at = NULL WHERE status <> 'invoiced'`);
   itemCache.clear();
 }
 
@@ -903,14 +1026,14 @@ async function handleWebhook(rawBody, signature) {
 // The catch-up check, every few minutes while the app runs. It also keeps the
 // QuickBooks sign-in fresh (it lapses after 100 days without use).
 function startChecks() {
-  const tick = () => whenConnected(async () => { await checkCustomers(); await checkEstimates(); }).catch(() => {});
+  const tick = () => whenConnected(async () => { await checkCustomers(); await checkEstimates(); await checkDeposits(); }).catch(() => {});
   setTimeout(tick, 30 * 1000).unref();
   setInterval(tick, CHECK_EVERY_MS).unref();
 }
 
 module.exports = {
   io, config, configured, redirectUri, connection, connected, later, idle,
-  customerChanged, orderCompleted, newNumber, renumberOrder, invoiceStillOpen, pushCustomer, pushInvoice, pullCustomer, pullCustomerById,
+  customerChanged, orderCompleted, newNumber, sendDeposit, pushDeposit, checkDeposits, renumberOrder, invoiceStillOpen, pushCustomer, pushInvoice, pullCustomer, pullCustomerById,
   checkCustomers, checkEstimates, pullEstimate, pullEstimateById, pullEstimateByNumber, syncAllCustomers, connectUrl, finishConnect, disconnect, handleWebhook, startChecks,
   QboError, API_BASE, poField, resetPoField: () => { poCache = null; },
 };

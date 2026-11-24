@@ -1143,6 +1143,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       <h2>Prices</h2>
       <p class="muted small">For the office only: prices don't show on the cut list, on screen or printed.</p>
       ${await qboLine(o)}
+      ${await depositLine(o)}
       <table class="list">
         <thead><tr><th class="num">Line</th><th>Item</th><th class="num">Billed</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
         <tbody>${o.sections.flatMap((s) => s.items).map((i) => html`
@@ -1345,6 +1346,36 @@ router.post('/:id(\\d+)/attachments/:aid(\\d+)/delete', need('drawings', 'produc
 // when the customer picks it up and back in when it's returned.
 // ---------------------------------------------------------------------------
 const canRent = () => can('inventory') || can('quotes');
+
+// The deposit invoice (Tyler 2026-11-24): send one for part of the total before the full
+// invoice, see whether it's paid, and change it until it is.
+async function depositLine(o) {
+  if (!can('prices') || !(await qbo.connected())) return '';
+  const act = can('approve') || can('status');
+  if (o.qbo_deposit_invoice_id && !o.deposit_paid_at && o.status !== 'cancelled') {
+    await qbo.checkDeposits(o.order_id).catch(() => {});
+    Object.assign(o, (await query('SELECT deposit_balance, deposit_paid_at FROM orders WHERE order_id = $1', [o.order_id])).rows[0]);
+  }
+  const form = (label, pct) => html`<form method="post" action="/orders/${o.order_id}/qbo-deposit" class="inline"
+      onsubmit="return confirm('${o.qbo_deposit_invoice_id ? 'Change' : 'Send'} the deposit invoice in QuickBooks?')">
+      <input name="deposit_pct" type="number" min="1" max="100" step="1" value="${num(pct)}" style="width:4.5rem" aria-label="Deposit percent">%
+      <button class="btn small">${label}</button></form>`;
+  const err = o.deposit_error ? html`<span class="warn-text"> ${o.deposit_error}</span>` : '';
+  if (o.qbo_deposit_invoice_id) {
+    const paid = o.deposit_paid_at ? html`<strong>Paid</strong> ${date(o.deposit_paid_at)}`
+      : Number(o.deposit_balance) < Number(o.deposit_invoice_amount) ? html`<span class="warn-text">Part paid: ${money(o.deposit_balance)} still owed</span>`
+        : html`<span class="warn-text">Not paid yet</span>`;
+    const canChange = act && !o.deposit_paid_at && Number(o.deposit_balance ?? o.deposit_invoice_amount) >= Number(o.deposit_invoice_amount)
+      && !o.qbo_invoice_id && o.status !== 'cancelled';
+    return html`<p class="no-print small" id="deposit">Deposit invoice ${o.deposit_doc_number}: ${num(o.deposit_pct)}%, ${money(o.deposit_invoice_amount)}, sent ${date(o.deposit_invoiced_at)}. ${paid}.
+      ${o.status === 'cancelled' ? html`<span class="warn-text">Cancelled: void or refund the deposit invoice in QuickBooks.</span>`
+    : html`<span class="muted">It comes off the full invoice when the order is Ready.</span>`}
+      ${canChange ? form('Change deposit', o.deposit_pct) : ''}${err}</p>`;
+  }
+  if (!act || o.qbo_invoice_id || o.status === 'cancelled') return err ? html`<p class="no-print small" id="deposit">${err}</p>` : '';
+  return html`<p class="no-print small" id="deposit">Need a deposit before buying materials? ${form('Send deposit invoice', o.deposit_pct || 50)}
+    <span class="muted">Makes invoice ${o.order_number}-D in QuickBooks for that percent of the total with tax.</span>${err}</p>`;
+}
 
 // Where a confirmed order stands with QuickBooks, with a button to send it again.
 async function qboLine(o) {

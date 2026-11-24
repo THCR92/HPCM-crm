@@ -1193,7 +1193,7 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
   const realm = `9130${Date.now()}`;
   const run = Date.now();
   // A pretend QuickBooks company.
-  const qb = { customers: new Map(), items: new Map(), invoices: new Map(), estimates: new Map(), vendors: new Set([`Metal Supplier ${run}`]), next: 1 };
+  const qb = { customers: new Map(), items: new Map(), invoices: new Map(), estimates: new Map(), accounts: new Map(), vendors: new Set([`Metal Supplier ${run}`]), next: 1 };
   const addCustomer = (c) => { const id = String(qb.next++); qb.customers.set(id, { ...c, Id: id, SyncToken: '0', Active: true }); return id; };
   const qbOnly = addCustomer({ DisplayName: `QB Only Roofing ${run}`, PrimaryPhone: { FreeFormNumber: '307-555-0100' },
     BillAddr: { Line1: '1 Main St', City: 'Cheyenne', CountrySubDivisionCode: 'WY', PostalCode: '82001' } });
@@ -1229,6 +1229,7 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     }
     if (path === 'customer') return reply(200, { Customer: save(qb.customers, body) });
     if (path === 'item') return reply(200, { Item: save(qb.items, body) });
+    if (path === 'account') return reply(200, { Account: save(qb.accounts, body) });
     if (path === 'invoice') return reply(200, { Invoice: save(qb.invoices, body) });
     let m = path.match(/^(customer|invoice|estimate)\/([\w-]+)$/);
     if (m) {
@@ -1238,6 +1239,8 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     }
     if (path === 'query') {
       const q = u.searchParams.get('query');
+      m = q.match(/from Account where Name = '([^']*)'/);
+      if (m) return reply(200, { QueryResponse: { Account: [...qb.accounts.values()].filter((a) => a.Name === m[1]) } });
       if (/from Account/.test(q)) return reply(200, { QueryResponse: { Account: [{ Id: '79', Name: 'Sales of Product Income' }] } });
       m = q.match(/from (Customer|Item) where (?:DisplayName|Name) = '((?:[^'\\]|\\.)*)'( and Active = false)?/);
       if (m) {
@@ -1469,6 +1472,40 @@ test('QuickBooks: connect, customers both ways, webhook, completed order becomes
     assert.match(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), new RegExp(`void invoice ${renum.order_number} in QuickBooks first`));
     Object.assign(qb.invoices.get(renum.qbo_invoice_id), { TotalAmt: 0, PrivateNote: 'Voided' });
     assert.strictEqual(await form(`/orders/${id}/delete`, { confirm: 'DELETE' }), '/orders');
+
+    // Deposit invoice before buying materials (Tyler 2026-11-24): its own invoice for half the
+    // total with tax, on a Customer Deposit item in a Customer Deposits liability account.
+    const dep = Number((await (await post('/orders', { customer_id: pulled.customer_id, need_by: '2030-01-01', job_name: 'Shop',
+      sections: [{ area: 'roof', items: [
+        { product_id: await productId('PNL-SL-26'), pieces: 10, length_in: 120, width_in: 18, unit_price: 4 }] }] })).json()).redirect.split('/').pop());
+    const { rows: [dt] } = await query('SELECT o.order_number, t.grand_total FROM orders o JOIN v_order_totals t USING (order_id) WHERE order_id = $1', [dep]);
+    assert.match(await (await fetch(`${base}/orders/${dep}`)).text(), /Send deposit invoice/);
+    await form(`/orders/${dep}/qbo-deposit`, { deposit_pct: '50' });
+    await qbo.idle();
+    const { rows: [d1] } = await query('SELECT * FROM orders WHERE order_id = $1', [dep]);
+    assert.strictEqual(d1.deposit_error, null);
+    const half = Math.round(Number(dt.grand_total) * 50) / 100;
+    assert.strictEqual(Number(d1.deposit_invoice_amount), half);
+    const dInv = qb.invoices.get(d1.qbo_deposit_invoice_id);
+    assert.strictEqual(dInv.DocNumber, `${dt.order_number}-D`);
+    const depItem = qb.items.get(dInv.Line[0].SalesItemLineDetail.ItemRef.value);
+    assert.strictEqual(depItem.Name, 'Customer Deposit');
+    assert.strictEqual(qb.accounts.get(depItem.IncomeAccountRef.value).AccountType, 'Other Current Liability');
+    assert.deepStrictEqual([dInv.Line.length, dInv.Line[0].Amount, dInv.Line[0].SalesItemLineDetail.TaxCodeRef.value], [1, half, 'NON']);
+    assert.strictEqual(d1.qbo_invoice_id, null, 'the full invoice waits for Ready');
+    // Paid in QuickBooks: the order page says so.
+    Object.assign(dInv, { TotalAmt: half, Balance: 0 });
+    assert.match(await (await fetch(`${base}/orders/${dep}`)).text(), /Deposit invoice .*-D.*<strong>Paid<\/strong>/s);
+    // At Ready the full invoice takes the deposit off.
+    await form(`/orders/${dep}/status`, { status: 'confirmed' });
+    await addPhotos(dep);
+    await form(`/orders/${dep}/status`, { status: 'ready' });
+    await qbo.idle();
+    const full = qb.invoices.get((await query('SELECT qbo_invoice_id FROM orders WHERE order_id = $1', [dep])).rows[0].qbo_invoice_id);
+    const less = full.Line.at(-1);
+    assert.deepStrictEqual([less.Amount, less.Description, less.SalesItemLineDetail.ItemRef.value],
+      [-half, `Less deposit (invoice ${dt.order_number}-D)`, depItem.Id]);
+    assert.strictEqual(qb.items.size, [...new Set([...qb.items.values()].map((i) => i.Name))].length, 'deposit item made once');
   } finally {
     await form('/qbo/disconnect', {});
     await qbo.idle();
