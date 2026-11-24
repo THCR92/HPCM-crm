@@ -8,7 +8,7 @@ const router = require('../async-router')();
 
 const CATEGORY_LABEL = {
   panel: 'Panels', custom_trim: 'Custom trim', trim: 'Trims & specialty cuts', flat_sheet: 'Flat sheet',
-  downspout: 'Downspouts & elbows',
+  downspout: 'Gutter Supplies',
   boot: 'Boots', jack: 'Jacks', fastener: 'Screws', accessory: 'Accessories',
   service: 'Services', delivery: 'Delivery',
 };

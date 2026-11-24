@@ -8,7 +8,7 @@ const router = require('../async-router')();
 
 const CATEGORIES = {
   panel: 'Panel', custom_trim: 'Custom trim', trim: 'Trim / specialty cut', flat_sheet: 'Flat sheet',
-  downspout: 'Downspout or elbow', boot: 'Boot', jack: 'Jack', fastener: 'Screws / fasteners',
+  downspout: 'Gutter supplies (downspouts, elbows, gutter coil)', boot: 'Boot', jack: 'Jack', fastener: 'Screws / fasteners',
   accessory: 'Accessory', service: 'Service', delivery: 'Delivery',
 };
 const UNITS = { sqft: 'per sq ft', lf: 'per linear foot', each: 'each', bag: 'per bag', roll: 'per roll' };

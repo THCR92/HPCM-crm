@@ -2483,3 +2483,15 @@ test('invoice and Ready emails: set per customer; Ready goes to who put it in or
     mail.io.send = realSend;
   }
 });
+
+test('gutter supplies: section renamed; gutter coil sold by the foot (Tyler 2026-11-24)', async () => {
+  const list = await (await fetch(`${base}/products`)).text();
+  assert.match(list, /<h2>Gutter Supplies<\/h2>/);
+  assert.match(list, /Gutter Coil 5&quot; \(11 7\/8&quot;\)|Gutter Coil 5" \(11 7\/8"\)/);
+  const coil = await productId('GUT-COIL-6');
+  const { rows: [c] } = await query("INSERT INTO customers (display_name) VALUES ('Gutter ' || gen_random_uuid()) RETURNING customer_id");
+  const out = await (await post('/orders', { customer_id: c.customer_id, need_by: '2030-01-01', sections: [{ area: 'other', items: [
+    { product_id: coil, pieces: 1, length_in: 600, unit_price: 2 }] }] })).json();
+  const { rows: [li] } = await query('SELECT line_total FROM order_items WHERE order_id = $1', [out.order_id]);
+  assert.strictEqual(Number(li.line_total), 100);
+});
