@@ -399,12 +399,20 @@ router.get('/:id(\\d+)/edit', need('customers'), async (req, res) => {
 router.post('/:id(\\d+)', need('customers'), async (req, res) => {
   const c = fromBody(req.body);
   try {
+    const { rows: [before] } = await query('SELECT email FROM customers WHERE customer_id = $1', [req.params.id]);
     await query(`
       UPDATE customers SET ${FIELDS.map((f, i) => `${f} = $${i + 1}`).join(', ')},
              tax_exempt = $${FIELDS.length + 1},
              premium_pct = CASE WHEN $${FIELDS.length + 3} THEN $${FIELDS.length + 4}::numeric ELSE premium_pct END
       WHERE customer_id = $${FIELDS.length + 2}`,
     [...FIELDS.map((f) => c[f]), c.tax_exempt, req.params.id, c.set_premium, c.premium_pct]);
+    // A new email reaches the customer's open quotes and orders that still had the old one
+    // as their contact email (Tyler 2026-11-25: Lene Whitt's quote kept emailing the old one).
+    if (before && before.email && c.email && before.email.toLowerCase() !== String(c.email).toLowerCase()) {
+      await query(`UPDATE orders SET contact_email = $2
+        WHERE customer_id = $1 AND lower(contact_email) = lower($3) AND status NOT IN ('completed', 'invoiced', 'cancelled')`,
+      [req.params.id, c.email, before.email]);
+    }
     qbo.customerChanged(Number(req.params.id));
     res.redirect(`/customers/${req.params.id}`);
   } catch (err) {

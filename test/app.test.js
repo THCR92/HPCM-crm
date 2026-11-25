@@ -2140,6 +2140,23 @@ test('VIP Contractor pays 15% below list; a customer can have their own percent 
   assert.ok(lp);
 });
 
+test("a customer's new email reaches their open quotes that had the old one", async () => {
+  const { rows: [c] } = await query(
+    "INSERT INTO customers (display_name, email) VALUES ('Test ' || gen_random_uuid(), 'old@example.com') RETURNING *");
+  const mk = (status, email) => query(`INSERT INTO orders (customer_id, status, contact_email, need_by)
+    VALUES ($1, $2, $3, CURRENT_DATE + 20) RETURNING order_id`, [c.customer_id, status, email]).then((r) => r.rows[0].order_id);
+  const open = await mk('quote', 'old@example.com');
+  const other = await mk('quote', 'someone.else@example.com');
+  const done = await mk('cancelled', 'old@example.com');
+  const body = new URLSearchParams({ display_name: c.display_name, customer_type: c.customer_type, email: 'new@example.com' });
+  const r = await fetch(`${base}/customers/${c.customer_id}`, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+  assert.strictEqual(r.status, 302);
+  const { rows } = await query('SELECT order_id, contact_email FROM orders WHERE customer_id = $1', [c.customer_id]);
+  const by = Object.fromEntries(rows.map((x) => [x.order_id, x.contact_email]));
+  assert.deepStrictEqual([by[open], by[other], by[done]], ['new@example.com', 'someone.else@example.com', 'old@example.com']);
+});
+
 test('emails: a portal quote goes to the shop inbox; a Ready order tells the customer with the PO in the subject', async () => {
   const mail = require('../src/mail');
   const notices = require('../src/notices');
