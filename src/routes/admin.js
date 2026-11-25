@@ -65,11 +65,14 @@ router.post('/admin/settings/photos', need('admin'), async (req, res) => {
 router.get('/admin/email', need('admin'), async (req, res) => {
   const { rows } = await query(`SELECT sent_at, to_address, subject, ok, error FROM email_log ORDER BY sent_at DESC LIMIT 25`);
   const when = (t) => new Date(t).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' });
+  const domain = mail.ownDomain();
+  const sendAs = await mail.sendAsOn();
   res.send(layout({
     title: 'Email', active: '/admin',
     body: html`
     <h1>Email</h1>
     ${req.query.sent ? html`<div class="notice">Test email sent to ${req.query.sent}. Check that inbox (and its spam folder).</div>` : ''}
+    ${req.query.saved ? html`<div class="notice">Saved.</div>` : ''}
     ${req.query.error ? html`<div class="alert">${req.query.error}</div>` : ''}
     <div class="card">
     ${mail.configured() ? html`
@@ -77,11 +80,28 @@ router.get('/admin/email', need('admin'), async (req, res) => {
       <form method="post" action="/admin/email/test" class="row">
         <label>Send a test email to<input name="to" type="email" required value="${req.user.email}"></label>
         <button class="btn primary">Send test</button>
+        ${domain ? html`<button class="btn" name="as_me" value="1">Send test from me</button>` : ''}
       </form>`
     : html`<p>Email isn't set up yet. In Render, open the hpcm-crm web service, then Environment, and add
       <strong>SMTP_USER</strong> (the sending address) and <strong>SMTP_PASS</strong> (the 16-letter App Password, no spaces).
       Save, wait a few minutes for the site to restart, then come back here.</p>`}
     </div>
+    ${mail.configured() && domain ? html`<div class="card">
+      <h2 style="margin-top:0">Quote emails from the person who sends them</h2>
+      <p>When this is on, a quote or order emailed from the customer copy page goes out <strong>from the
+        email of whoever presses Send</strong> (only addresses ending in <strong>@${domain}</strong>). Automatic
+        emails (Ready, portal invites, alerts) still come from ${process.env.SMTP_USER}. If Google refuses,
+        the quote still goes, from ${process.env.SMTP_USER} with replies to the sender, and the log below says why.</p>
+      <p class="muted small">Needs Google's SMTP relay turned on first: Google Admin &gt; Apps &gt; Google Workspace &gt;
+        Gmail &gt; Routing &gt; SMTP relay service &gt; Configure. Allowed senders: Only addresses in my domains;
+        tick Only accept mail from the specified IP addresses OFF; tick Require SMTP Authentication ON;
+        tick Require TLS encryption ON. Save, wait a few minutes, then turn this on and use Send test from me.</p>
+      <form method="post" action="/admin/email/send-as" class="row">
+        <label class="check"><input type="checkbox" name="on" value="1" ${sendAs ? 'checked' : ''}>
+          Send quote emails from the person who sends them</label>
+        <button class="btn">Save</button>
+      </form>
+    </div>` : ''}
     <h2>Recently sent</h2>
     <table class="list">
       <thead><tr><th>When</th><th>To</th><th>Subject</th><th>Result</th></tr></thead>
@@ -96,11 +116,23 @@ router.post('/admin/email/test', need('admin'), async (req, res) => {
   const to = String(req.body.to || '').trim();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return res.redirect('/admin/email?error=' + encodeURIComponent('Enter an email address.'));
   if (!mail.configured()) return res.redirect('/admin/email?error=' + encodeURIComponent('Email isn\'t set up yet.'));
+  const asMe = req.body.as_me === '1';
+  if (asMe && !(await mail.sendsAs(req.user.email))) {
+    return res.redirect('/admin/email?error=' + encodeURIComponent(`To send from yourself, your CRM email (${req.user.email}) must end in @${mail.ownDomain()} and "Send quote emails from the person who sends them" must be on.`));
+  }
   const ok = await mail.send({ to, subject: 'Test email from the HPCM CRM', kind: 'test',
+    ...(asMe ? { asUser: { name: req.user.full_name, email: req.user.email } } : {}),
     text: `This is a test from the HPCM CRM, sent by ${req.user.full_name}. If you can read this, email is working.` });
-  if (ok) return res.redirect('/admin/email?sent=' + encodeURIComponent(to));
   const { rows: [last] } = await query("SELECT error FROM email_log WHERE kind = 'test' ORDER BY sent_at DESC LIMIT 1");
+  if (ok && asMe && last && last.error) return res.redirect('/admin/email?error=' + encodeURIComponent(`The test went, but not from you: ${last.error}`));
+  if (ok) return res.redirect('/admin/email?sent=' + encodeURIComponent(to));
   res.redirect('/admin/email?error=' + encodeURIComponent(`The test didn't send: ${last ? last.error : 'unknown problem'}`));
+});
+
+router.post('/admin/email/send-as', need('admin'), async (req, res) => {
+  await query(`INSERT INTO app_settings (key, value) VALUES ('send_as_user', $1)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, [req.body.on === '1' ? 'true' : 'false']);
+  res.redirect('/admin/email?saved=1');
 });
 
 // ---------------------------------------------------------------------------

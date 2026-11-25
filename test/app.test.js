@@ -521,8 +521,37 @@ test('sales tax on taxable materials after discount; exempt customers pay none; 
     assert.match(m.attachments[0].content.subarray(0, 5).toString(), /%PDF-/);
     const bad = await fetch(`${base}/orders/${id}/email`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ to: 'not an email' }) });
     assert.match(decodeURIComponent(bad.headers.get('location')), /isn't an email address/);
+
+    // Sending as the staff member (Admin > Email setting, Google's SMTP relay): from them,
+    // on the relay; if the relay refuses, it still goes from the CRM with replies to them.
+    process.env.MAIL_FROM = 'HPCM <orders@example.com>';
+    const relayed = [];
+    mail.io.sendRelay = async (m) => { relayed.push(m); };
+    const post = () => fetch(`${base}/orders/${id}/email`, { method: 'POST', redirect: 'manual',
+      body: new URLSearchParams({ to: 'buyer@example.com', subject: 'Your quote', body: 'Here it is.' }) });
+    await post();
+    assert.strictEqual(relayed.length, 0, 'off by default');
+    assert.match(await (await fetch(`${base}/admin/email`)).text(), /from the person who sends them/);
+    await fetch(`${base}/admin/email/send-as`, { method: 'POST', redirect: 'manual', body: new URLSearchParams({ on: '1' }) });
+    assert.match(await (await fetch(`${base}/orders/${id}/customer`)).text(), /Goes from your email/);
+    const before = sent.length;
+    await post();
+    assert.strictEqual(relayed.length, 1);
+    assert.match(relayed[0].from, /<[^>]+@example\.com>$/);
+    assert.strictEqual(relayed[0].replyTo, undefined);
+    assert.strictEqual(sent.length, before, 'not also sent from the CRM');
+    mail.io.sendRelay = async () => { throw new Error('550 not allowed'); };
+    await post();
+    assert.strictEqual(sent.length, before + 1);
+    assert.match(sent.at(-1).from, /orders@example\.com/);
+    assert.match(sent.at(-1).replyTo, /@example\.com/);
+    const { rows: [lg] } = await query("SELECT ok, error FROM email_log WHERE kind = 'quote' ORDER BY sent_at DESC, email_id DESC LIMIT 1");
+    assert.strictEqual(lg.ok, true);
+    assert.match(lg.error, /refused .*550 not allowed/);
   } finally {
     mail.io.forceConfigured = false;
+    delete process.env.MAIL_FROM;
+    await query("DELETE FROM app_settings WHERE key = 'send_as_user'");
   }
 
   await query('UPDATE customers SET tax_exempt = true WHERE customer_id = $1', [c.customer_id]);

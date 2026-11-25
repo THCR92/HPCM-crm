@@ -959,6 +959,7 @@ router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
   const docName = isQuote ? 'Quote' : 'Order';
   const email = o.contact_email || o.customer_email;
   const { subject, body } = emailText(o, req.user.full_name);
+  const asMe = await mail.sendsAs(req.user.email);
   const { rows: sentLog } = await query(`SELECT sent_at, to_address, ok, error FROM email_log
     WHERE order_id = $1 AND kind = 'quote' ORDER BY sent_at DESC LIMIT 5`, [o.order_id]);
   const when = (t) => new Date(t).toLocaleString('en-US', { timeZone: 'America/Denver', dateStyle: 'medium', timeStyle: 'short' });
@@ -987,7 +988,7 @@ router.get('/:id(\\d+)/customer', need('prices'), async (req, res) => {
         <label class="span2">Subject<input name="subject" value="${subject}"></label>
         <label class="span2">Message<textarea name="body" rows="9">${body}</textarea></label>
         <div class="span2 actions"><button class="btn primary">Send with PDF</button>
-          <span class="muted small">Goes from the CRM's email; replies come to you (${req.user.email}).</span></div>
+          <span class="muted small">${asMe ? `Goes from your email (${req.user.email}).` : `Goes from the CRM's email; replies come to you (${req.user.email}).`}</span></div>
       </form>
     </details>
     ${sentLog.length ? html`<p class="muted small no-print">Emailed: ${sentLog.map((l) => `${when(l.sent_at)} to ${l.to_address}${l.ok ? '' : ' (failed)'}`).join(' · ')}</p>` : ''}`
@@ -1018,7 +1019,7 @@ router.post('/:id(\\d+)/email', need('prices'), async (req, res) => {
   if (!to.length || bad) return back(`error=${encodeURIComponent(bad ? `${bad} isn't an email address.` : 'Enter who to send it to.')}`);
   const def = emailText(o, req.user.full_name);
   const ok = await mail.send({
-    to, cc: cc.length ? cc : undefined, replyTo: req.user.email,
+    to, cc: cc.length ? cc : undefined, replyTo: req.user.email, asUser: { name: req.user.full_name, email: req.user.email },
     subject: String(req.body.subject || '').trim() || def.subject,
     text: String(req.body.body || '').trim() || def.body,
     signature: false, kind: 'quote', orderId: o.order_id,
